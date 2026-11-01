@@ -32,7 +32,7 @@ jobs:
             libgbm-dev libglu1-mesa-dev libgl1-mesa-dev libpipewire-0.3-dev \
             libudev-dev libwayland-dev libwayland-egl-backend-dev libx11-dev \
             libxcursor-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev \
-            libxtst-dev libtool nasm zlib1g-dev
+            libxtst-dev libtool libgpiod-dev nasm zlib1g-dev
 
       - name: Calculate external cache key
         run: |
@@ -44,16 +44,25 @@ jobs:
         with:
           path: external
           key: frame-linux-aarch64-release-${{ env.EXT_HASH }}
+          restore-keys: |
+            frame-linux-aarch64-partial-${{ env.EXT_HASH }}-
 
       - name: Build native ARM64 dependencies
         run: BUILD_TYPE=Release ./platforms/linux-aarch64/external.sh
 
-      - if: steps.cache.outputs.cache-hit != 'true'
-        name: Save external dependency cache
+      - if: success() && steps.cache.outputs.cache-hit != 'true'
+        name: Save completed external dependency cache
         uses: actions/cache/save@v5
         with:
           path: external
           key: frame-linux-aarch64-release-${{ env.EXT_HASH }}
+
+      - if: failure() && steps.cache.outputs.cache-hit != 'true'
+        name: Preserve partial external dependency cache
+        uses: actions/cache/save@v5
+        with:
+          path: external
+          key: frame-linux-aarch64-partial-${{ env.EXT_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Set build revision
         run: |
