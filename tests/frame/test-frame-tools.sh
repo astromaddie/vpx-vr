@@ -85,6 +85,11 @@ import sys
 
 assert sys.argv[1] == "--parms"
 parms = json.loads(sys.argv[2])
+# Steam resolves relative argv against ~/devkit-game/<gameid>, independently of
+# the directory field used by the Python helper for app-ID handling.
+game_directory = os.path.join(os.environ["HOME"], "devkit-game", parms["gameid"])
+assert parms["directory"] == game_directory, parms
+assert os.path.isfile(os.path.join(game_directory, parms["argv"][0])), parms
 with open(os.environ["VPX_TEST_REGISTRATION_FILE"], "w", encoding="utf-8") as output:
     json.dump(parms, output)
 print(json.dumps({"success": "fixture-registration"}))
@@ -96,7 +101,7 @@ XDG_DATA_HOME="$tmp/data" HOME="$home" VPX_FRAME_INSTALL_ROOT="$install_root" \
    VPX_TEST_REGISTRATION_FILE="$tmp/registration.json" \
    bash "$repo_root/tools/frame/add-table-entry.sh" "$tmp/Table with spaces and apostrophe's.vpx" 'Test Table'
 
-python3 - "$tmp/registration.json" "$install_root" <<'PY_ASSERT_REGISTRATION'
+python3 - "$tmp/registration.json" "$home/devkit-game/VPX_Test_Table" <<'PY_ASSERT_REGISTRATION'
 import json
 import sys
 
@@ -104,13 +109,24 @@ parms = json.load(open(sys.argv[1], encoding="utf-8"))
 assert parms["gameid"] == "VPX_Test_Table", parms
 assert parms["directory"] == sys.argv[2], parms
 assert parms["force_appid"] == "", parms
-assert len(parms["argv"]) == 1 and parms["argv"][0].startswith("launchers/VPX_Test_Table-"), parms
+assert len(parms["argv"]) == 1 and parms["argv"][0].startswith("launch-"), parms
 assert parms["settings"] == {"steam_play": "0", "compat_tool": "SteamLinuxRuntime_4-arm64"}, parms
 assert parms["env"] == {}, parms
 PY_ASSERT_REGISTRATION
 [[ ! -e "$install_root/steam_appid.txt" ]]
 
-launcher=$(find "$install_root/launchers" -name 'VPX_Test_Table-*.sh' -print -quit)
+mkdir -p "$home/devkit-game/VPX_Existing"
+printf 'user-owned content\n' > "$home/devkit-game/VPX_Existing/keep.txt"
+if HOME="$home" VPX_FRAME_INSTALL_ROOT="$install_root" \
+   VPX_TEST_REGISTRATION_FILE="$tmp/registration.json" \
+   bash "$repo_root/tools/frame/add-table-entry.sh" "$tmp/Table with spaces and apostrophe's.vpx" 'Existing'; then
+   echo 'Entry generator accepted an unrecognised game folder.' >&2
+   exit 1
+fi
+[[ $(cat "$home/devkit-game/VPX_Existing/keep.txt") == 'user-owned content' ]]
+[[ ! -e "$home/devkit-game/VPX_Existing/.vpx-frame-entry" ]]
+
+launcher=$(find "$home/devkit-game/VPX_Test_Table" -name 'launch-*.sh' -print -quit)
 [[ -n "$launcher" ]]
 pref_dir="$tmp/data/VPXFrame/10.8"
 mkdir -p "$pref_dir"
@@ -141,7 +157,7 @@ HOME="$home" VPX_FRAME_INSTALL_ROOT="$install_root" \
    VPX_TEST_REGISTRATION_FILE="$tmp/registration.json" \
    bash "$repo_root/tools/frame/add-table-entry.sh" \
    "$install_root/current/assets/exampleTable.vpz" 'VPX Example Table'
-example_launcher=$(find "$install_root/launchers" -name 'VPX_VPX_Example_Table-*.sh' -print -quit)
+example_launcher=$(find "$home/devkit-game/VPX_VPX_Example_Table" -name 'launch-*.sh' -print -quit)
 [[ -n "$example_launcher" ]]
 XDG_DATA_HOME="$tmp/data" HOME="$home" VPX_TEST_ARGS_FILE="$tmp/example-args" bash "$example_launcher"
 python3 - "$tmp/example-args" "$install_root/current/assets/exampleTable.vpz" <<'PY_ASSERT_EXAMPLE'

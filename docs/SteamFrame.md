@@ -69,7 +69,7 @@ bash add-table-entry.sh \
   "<table name>"
 ```
 
-The script writes a small wrapper under `~/devkit-game/VPXFrame/launchers/` and registers a
+The script writes a small wrapper under `~/devkit-game/VPX_<table_name>/` and registers a
 readable alphanumeric `VPX_<table_name>` library title through the Frame's native Steam
 helper. It sets `SteamLinuxRuntime_4-arm64` and `steam_play=0` for the entry. Each launch opens
 the supplied table from its original folder, retains table-local companions and forces OpenXR

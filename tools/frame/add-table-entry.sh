@@ -49,9 +49,15 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
    table_hash=$(printf '%s' "$table" | shasum -a 256 | cut -c1-10)
 fi
-launcher_dir="$install_root/launchers"
-mkdir -p "$launcher_dir"
-launcher="$launcher_dir/$gameid-$table_hash.sh"
+game_directory="$HOME/devkit-game/$gameid"
+entry_marker="$game_directory/.vpx-frame-entry"
+if [[ -e "$game_directory" && ! -f "$entry_marker" ]]; then
+   echo "Refusing to replace an unrecognised Steam game folder: $game_directory" >&2
+   exit 1
+fi
+mkdir -p "$game_directory"
+printf '%s\n' "$install_root" > "$entry_marker"
+launcher="$game_directory/launch-$table_hash.sh"
 quoted_table=$(printf '%q' "$table")
 quoted_root=$(printf '%q' "$install_root")
 
@@ -106,8 +112,8 @@ exec "\$app" -prefpath "\$pref_dir" -play $quoted_table
 EOF_LAUNCHER
 chmod 755 "$launcher"
 
-relative_launcher=${launcher#"$install_root"/}
-parms=$(python3 - "$gameid" "$install_root" "$relative_launcher" <<'PY_PARMS'
+relative_launcher=$(basename "$launcher")
+parms=$(python3 - "$gameid" "$game_directory" "$relative_launcher" <<'PY_PARMS'
 import json
 import sys
 
