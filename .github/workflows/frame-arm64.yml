@@ -131,4 +131,5 @@ jobs:
             tmp/VPXFrame-linux-aarch64-*.tar.gz.sha256
             tmp/install-bundle.sh
             tmp/add-table-entry.sh
-          archive: false
+          archive: true
+          compression-level: 0
