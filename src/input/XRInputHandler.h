@@ -154,7 +154,7 @@ public:
       {
          for (const VPX::XRInput::ButtonBinding& binding : VPX::XRInput::DefaultButtonBindings)
          {
-            if (binding.frameOnly && !frameControllerProfileSupported)
+            if (binding.frameOnly && !m_frameControllerProfileSupported)
                continue;
             const auto actionIndex = VPX::XRInput::FindActionPath(binding.path);
             assert(actionIndex != VPX::XRInput::MissingActionPath);
@@ -185,7 +185,7 @@ public:
                map.MapAction(ButtonMapping::Create(m_joyId, inputId), targetAction);
             else
                map.MapAction(ButtonMapping::Create(m_joyId, inputId, binding.threshold, binding.reversed), targetAction);
-            if (frameControllerProfileSupported && binding.action == VPX::XRInput::PinballAction::Start)
+            if (m_frameControllerProfileSupported && binding.action == VPX::XRInput::PinballAction::Start)
                map.MapAction(ButtonMapping::Create(m_joyId, inputId), m_pininput.GetUIRightActionId()); // A confirms while the in-game UI is open
          }
 
