@@ -56,9 +56,9 @@ Unassigned controls remain available for user customization. When the action bec
 on focus loss or profile change, button and axis state is released to avoid stuck flippers or
 nudge input. This input path does not alter audio mute or volume state.
 
-There is no three-second standing-height recalibration gesture for pinball: the player is seated
-and table placement already relates the playfield to the physical floor and lockbar, so height
-cannot be inferred from a seated pose. The existing per-table VR view offsets remain available.
+There is no three-second standing-height recalibration gesture for pinball: table placement
+already relates the playfield to the physical floor and lockbar. A seated head pose does not
+establish standing height. The existing per-table VR view offsets remain available.
 
 ## Persistent data
 
