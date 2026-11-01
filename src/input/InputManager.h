@@ -64,6 +64,7 @@ public:
    unsigned int GetVRViewUpActionId() const { return m_vrViewUpActionId; }
    unsigned int GetVRViewDownActionId() const { return m_vrViewDownActionId; }
    bool IsUINavigationActionId(unsigned int id) const;
+   bool IsInGameUIOpened() const;
    bool IsPressed(int actionId) const;
    int GetWindowVirtualKeyForAction(unsigned int actionId) const;
 

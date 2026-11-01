@@ -80,6 +80,9 @@
     <ClCompile Include="../../tests/input/test-sensormapping.cpp">
       <Filter>input</Filter>
     </ClCompile>
+    <ClCompile Include="../../tests/input/test-xrinputbindings.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
     <ClCompile Include="../../tests/misc/test-collection.cpp">
       <Filter>misc</Filter>
     </ClCompile>

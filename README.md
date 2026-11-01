@@ -1,8 +1,13 @@
-# Visual Pinball
+# Visual Pinball for Steam Frame
+
+This fork adds native Linux ARM64/OpenXR packaging and Valve Frame controller support.
+See the [Steam Frame build, installation and table guide](docs/SteamFrame.md) and
+[VR architecture](docs/VR_ARCHITECTURE.md). Builds are available from the manual
+[Steam Frame ARM64 workflow](https://github.com/astromaddie/vpx-vr/actions/workflows/frame-arm64.yml).
 
 *An open source pinball table editor and simulator.*
 
-This project was started by Randy Davis, open sourced in 2010 and continued by the Visual Pinball development team. This is the official repository.
+This project was started by Randy Davis, open sourced in 2010 and continued by the Visual Pinball development team. The [official upstream repository](https://github.com/vpinball/vpinball) maintains Visual Pinball.
 
 ## Features
 

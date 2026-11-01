@@ -28,6 +28,7 @@ set(VPX_TEST_SOURCES
    tests/input/test-plunger-kalman.cpp
    tests/input/test-scancodes.cpp
    tests/input/test-sensormapping.cpp
+   tests/input/test-xrinputbindings.cpp
    tests/misc/test-collection.cpp
    tests/misc/test-material.cpp
    tests/misc/test-pinbinary.cpp
@@ -81,6 +82,10 @@ set(VPX_TEST_SOURCES
    tests/vpx-test.cpp
    tests/vpx-test.h
 )
+
+# This test exercises the OpenXR binding description and hold-gesture helper without needing
+# the application-wide precompiled header or a live OpenXR runtime.
+set_source_files_properties(tests/input/test-xrinputbindings.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 # Win32 Editor build (BGFX / GL / DX9)
 

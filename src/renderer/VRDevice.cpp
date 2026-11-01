@@ -35,6 +35,7 @@ extern marker_series series;
    #include <map>
    #include <vector>
    #include <time.h>
+   #include <chrono>
 
 static inline const char* GetXRErrorString(XrInstance xrInstance, XrResult result)
 {
@@ -129,6 +130,7 @@ VRDevice::VRDevice(const Settings& settings)
    m_tableOffset.z = settings.GetPlayerVR_TableOffsetZ();
 
    #if defined(ENABLE_XR)
+      const auto xrInstanceStart = std::chrono::steady_clock::now();
       // Relative scale factor and positioning
       m_lockbarWidth = appSettings.GetPlayer_LockbarWidth();
       m_lockbarHeight = appSettings.GetPlayer_LockbarHeight();
@@ -237,6 +239,9 @@ VRDevice::VRDevice(const Settings& settings)
       m_depthExtensionSupported = EnableExtensionIfSupported(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
       m_colorSpaceExtensionSupported = EnableExtensionIfSupported(XR_FB_COLOR_SPACE_EXTENSION_NAME);
       m_visibilityMaskExtensionSupported = EnableExtensionIfSupported(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
+      m_frameControllerProfileSupported = EnableExtensionIfSupported("XR_VALVE_frame_controller_interaction");
+      PLOGI << "Steam Frame controller interaction profile "
+            << (m_frameControllerProfileSupported ? "supported and enabled" : "not advertised by the OpenXR runtime");
       #if BX_PLATFORM_WINDOWS
          m_win32PerfCounterExtensionSupported = EnableExtensionIfSupported(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
       #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
@@ -312,6 +317,8 @@ VRDevice::VRDevice(const Settings& settings)
                                  << XR_VERSION_MAJOR(instanceProperties.runtimeVersion) << '.'
                                  << XR_VERSION_MINOR(instanceProperties.runtimeVersion) << '.'
                                  << XR_VERSION_PATCH(instanceProperties.runtimeVersion);
+      PLOGI << "OpenXR instance initialization took "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - xrInstanceStart).count() << " ms";
    #endif
 }
 
@@ -643,6 +650,7 @@ void VRDevice::CreateSession()
    assert(m_systemID != XR_NULL_SYSTEM_ID);
    assert(m_session == XR_NULL_HANDLE);
    assert(m_backend != nullptr);
+   const auto xrSessionStart = std::chrono::steady_clock::now();
 
    m_visibilityMaskDirty = true;
 
@@ -808,7 +816,7 @@ void VRDevice::CreateSession()
       }
    }
 
-   auto inputHandler = std::make_unique<XRInputHandler>(g_pplayer->m_pininput, m_xrInstance, m_session);
+   auto inputHandler = std::make_unique<XRInputHandler>(g_pplayer->m_pininput, m_xrInstance, m_session, m_frameControllerProfileSupported);
    XrAction leftPoseAction = inputHandler->GetAction("/user/hand/left/input/grip/pose");
    if (leftPoseAction != XR_NULL_HANDLE)
    {
@@ -827,6 +835,9 @@ void VRDevice::CreateSession()
    }
    m_xrInputHandler = inputHandler.get();
    g_pplayer->m_pininput.AddInputHandler(std::move(inputHandler));
+   PLOGI << "OpenXR session initialization took "
+         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - xrSessionStart).count()
+         << " ms; stereo views=" << m_viewConfigurationViews.size() << ", eye=" << m_eyeWidth << 'x' << m_eyeHeight;
 }
 
 void VRDevice::ReleaseSession()

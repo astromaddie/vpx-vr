@@ -64,6 +64,9 @@
     <ClCompile Include="../../tests/input/test-plunger-kalman.cpp" />
     <ClCompile Include="../../tests/input/test-scancodes.cpp" />
     <ClCompile Include="../../tests/input/test-sensormapping.cpp" />
+    <ClCompile Include="../../tests/input/test-xrinputbindings.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="../../tests/misc/test-collection.cpp" />
     <ClCompile Include="../../tests/misc/test-material.cpp" />
     <ClCompile Include="../../tests/misc/test-pinbinary.cpp" />

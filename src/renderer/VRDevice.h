@@ -319,6 +319,7 @@ private:
 
    bool m_depthExtensionSupported = false;
    bool m_colorSpaceExtensionSupported = false;
+   bool m_frameControllerProfileSupported = false;
    #if BX_PLATFORM_WINDOWS
    bool m_win32PerfCounterExtensionSupported = false;
    PFN_xrConvertTimeToWin32PerformanceCounterKHR m_xrConvertTimeToWin32PerformanceCounterKHR = nullptr;

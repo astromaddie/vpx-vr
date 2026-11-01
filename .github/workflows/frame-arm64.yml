@@ -24,6 +24,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Run Frame input binding and gesture tests
+        run: |
+          cat > "$RUNNER_TEMP/xrinputbindings-test-main.cpp" <<'EOF'
+          #define DOCTEST_CONFIG_IMPLEMENT
+          #include "doctest.h"
+          int main(int argc, char** argv) { doctest::Context context; context.applyCommandLine(argc, argv); return context.run(); }
+          EOF
+          g++ -std=c++20 -Ithird-party/include -Isrc \
+            tests/input/test-xrinputbindings.cpp "$RUNNER_TEMP/xrinputbindings-test-main.cpp" \
+            -o "$RUNNER_TEMP/test-xrinputbindings"
+          "$RUNNER_TEMP/test-xrinputbindings"
+          tests/frame/test-frame-tools.sh
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -87,20 +100,35 @@ jobs:
         run: |
           file build/frame-arm64/VPinballX_BGFX
           readelf -h build/frame-arm64/VPinballX_BGFX | grep -E 'Class:|Machine:'
+          readelf -h build/frame-arm64/VPinballX_BGFX | grep -q 'Machine:.*AArch64'
           grep -q '^ENABLE_XR:BOOL=ON$' build/frame-arm64/CMakeCache.txt
 
       - name: Stage Frame artifact
         run: |
-          mkdir -p tmp/frame-arm64
+          mkdir -p tmp/frame-arm64/tools/frame
           cp build/frame-arm64/VPinballX_BGFX tmp/frame-arm64/
           cp -a build/frame-arm64/*.so* tmp/frame-arm64/
           cp -a build/frame-arm64/assets build/frame-arm64/plugins build/frame-arm64/scripts build/frame-arm64/docs tmp/frame-arm64/
-          printf 'source=%s\narchitecture=aarch64\nrenderer=BGFX\nopenxr=enabled\n' "$(git rev-parse HEAD)" > tmp/frame-arm64/BUILD-METADATA.txt
-          tar -czf "tmp/VPXFrame-linux-aarch64-$(git rev-parse --short=12 HEAD).tar.gz" -C tmp/frame-arm64 .
+          cp tools/frame/install-bundle.sh tools/frame/add-table-entry.sh tmp/frame-arm64/tools/frame/
+          cp tools/frame/install-bundle.sh tools/frame/add-table-entry.sh tmp/
+          printf 'source=%s\nrun_id=%s\nrun_attempt=%s\narchitecture=aarch64\nrenderer=BGFX\nopenxr=enabled\n' \
+            "$(git rev-parse HEAD)" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > tmp/frame-arm64/BUILD-METADATA.txt
+          (
+            cd tmp/frame-arm64
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+          bundle="VPXFrame-linux-aarch64-$(git rev-parse --short=12 HEAD).tar.gz"
+          tar -czf "tmp/$bundle" -C tmp/frame-arm64 .
+          (cd tmp && sha256sum "$bundle" > "$bundle.sha256")
 
       - name: Upload Steam Frame build artifact
         uses: actions/upload-artifact@v7
         with:
           name: VPXFrame-linux-aarch64-${{ github.sha }}
-          path: tmp/VPXFrame-linux-aarch64-*.tar.gz
+          retention-days: 7
+          path: |
+            tmp/VPXFrame-linux-aarch64-*.tar.gz
+            tmp/VPXFrame-linux-aarch64-*.tar.gz.sha256
+            tmp/install-bundle.sh
+            tmp/add-table-entry.sh
           archive: false
