@@ -2,6 +2,7 @@
 
 #include "core/stdafx.h"
 #include "InputManager.h"
+#include "input/InputLayoutPolicy.h"
 
 #include "core/player.h"
 #include "core/TournamentFile.h"
@@ -208,10 +209,11 @@ void InputManager::ClearDeviceMappings(uint16_t deviceId)
    m_nudgeHandler->UnmapDevice(deviceId);
 }
 
-void InputManager::SetDeviceDefaultMapping(uint16_t deviceId, const std::function<void(MappingSetupHandler&)>& mapper)
+void InputManager::SetDeviceDefaultMapping(uint16_t deviceId, const std::function<void(MappingSetupHandler&)>& mapper, const bool preserveExistingMappings)
 {
    assert(deviceId < m_inputDevices.size());
    m_inputDevices[deviceId].m_defaultMapping = mapper;
+   m_inputDevices[deviceId].m_preserveExistingMappings = preserveExistingMappings;
 
    // Evaluate if we have a default layout pending that should be proposed to the user
    class ValidateMapping : public MappingSetupHandler
@@ -366,10 +368,14 @@ bool InputManager::IsDeviceConnected(uint16_t deviceId) const
 
 bool InputManager::IsDeviceMapped(uint16_t deviceId) const {
    assert(deviceId < m_inputDevices.size());
+   bool hasActionMappings = false;
    for (const auto& action : m_inputActions)
       if (action->IsMappedToDevice(deviceId))
-         return true;
-   return m_plungerHandler->IsMappedToDevice(deviceId) || m_nudgeHandler->IsMappedToDevice(deviceId);
+      {
+         hasActionMappings = true;
+         break;
+      }
+   return VPX::Input::HasAnyDeviceMappings(hasActionMappings, m_plungerHandler->IsMappedToDevice(deviceId), m_nudgeHandler->IsMappedToDevice(deviceId));
 }
 
 string InputManager::GetDeviceElementName(uint16_t deviceId, uint16_t buttonOrAxisId) const
@@ -486,9 +492,10 @@ void InputManager::ProcessInput()
          const auto noAutoLayoutId = Settings::GetRegistry().GetPropertyId("Input"s, "Device." + device.m_settingsId + ".NoAutoLayout").value();
          if (m_appSettings.GetBool(noAutoLayoutId))
             device.m_hasPendingLayoutApply = false;
-         else if (device.m_type == DeviceType::VRController)
+         else if (device.m_type == DeviceType::VRController
+            && VPX::Input::ShouldAutoApplyVRControllerLayout(device.m_preserveExistingMappings, IsDeviceMapped(device.m_id)))
          {
-            // The propose-layout dialog isn't reachable in the headset before the VR controller is registered, so auto-apply
+            // Fresh VR layouts auto-apply because the proposal dialog isn't reachable before the controller is registered.
             ApplyDefaultDeviceMapping(device.m_id);
             device.m_hasPendingLayoutApply = false;
          }

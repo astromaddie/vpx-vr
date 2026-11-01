@@ -37,11 +37,15 @@ different install location. VPX settings, saves and other preferences use the is
 table entry passes this directory as `-prefpath` and ensures OpenXR mode is enabled there.
 
 For a startup check before importing user tables, register the bundled upstream example table
-with the same helper used for user tables:
+with the same helper used for user tables. Copy the example pack into persistent table storage
+first, so its saves and cache do not go into the versioned application bundle:
 
 ```bash
+mkdir -p ~/Documents/VPXFrame/Tables
+cp -a ~/devkit-game/VPXFrame/current/assets/exampleTable.vpz \
+  ~/Documents/VPXFrame/Tables/
 bash ~/devkit-game/VPXFrame/current/tools/frame/add-table-entry.sh \
-  ~/devkit-game/VPXFrame/current/assets/exampleTable.vpz "VPX Example Table"
+  ~/Documents/VPXFrame/Tables/exampleTable.vpz "Example Table"
 ```
 
 The helper creates and registers a Steam library entry with `steam-client-create-shortcut`,
@@ -72,20 +76,23 @@ the supplied table from its original folder, retains table-local companions and 
 mode through the separate Frame preferences file. No table or ROM is copied into the app
 bundle, and no custom launcher UI is added.
 
-Use the existing in-game Menu button to open VR settings. Saved input bindings are retained;
-the default mapping proposal can be applied through VPX's existing input settings if needed.
+Use the existing in-game Menu button to open VR settings. A new Frame configuration applies the
+usable default layout automatically. If saved Frame action or sensor mappings differ, VPX keeps
+them and presents its existing layout proposal so defaults are applied only if chosen.
 Preferences and saves are isolated from other VPX builds and persist in
 `$XDG_DATA_HOME/VPXFrame/10.8`.
 
 ## Table acceptance list
 
-Exact user versions have not yet been copied to the Frame, so these are compatibility gates,
-not passing claims. Use each table's own script and companion files as authoritative for ROM
-requirements; do not substitute a ROM set by name alone.
+Black Hole BigusMOD 2.0 and 4 Queens 1.2 are stored under
+`~/Documents/VPXFrame/Tables/` on the Frame. Transfer sizes and SHA-256 hashes match the
+extracted iCloud originals. These are compatibility gates, not passing claims. Use each
+table's own script and companion files as authoritative for ROM requirements; do not
+substitute a ROM set by name alone.
 
 | Target | Known setup | Acceptance gate |
 | --- | --- | --- |
-| Black Hole (Gottlieb, 1981) | User's BigusMOD 2.0 table; its script selects ROM names `blckhole`, `blkhole2`, `bhol_ltd`, `blkholea`, `blkhole7` or `blkhol7s` by its ROM-set choice | Load the supplied file, confirm the selected ROM set and playfield rendering |
+| Black Hole (Gottlieb, 1981) | User's BigusMOD 2.0 table defaults to `RomSet = 2`, requiring `blkhole2.zip`; that ROM file is pending | Load the supplied file and verify playfield rendering and gameplay |
 | Time Machine (Data East, 1988) | User confirmed Data East version; common set is `tmac_a24`, but its exact table file is pending | Inspect the supplied table script, verify its ROM requirement and gameplay |
 | 4 Queens (Bally, 1970) | User's 1.2 table is electromechanical; embedded game name is `Bally4Queens_1970` and no ROM is referenced | Verify the exact VPX file loads and its controller script works in standalone mode |
 | Attack from Mars (Bally, 1995) | PinMAME ROM table; common set is `afm_113b`, but its exact table file is pending | Inspect the supplied table script, verify its ROM requirement and gameplay |

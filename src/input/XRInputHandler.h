@@ -201,7 +201,7 @@ public:
             static_cast<uint16_t>(XRInput::FindActionPath(XRInput::DefaultAxisBindings[2].path)), SensorMapping::Type::Position));
          map.MapNudge(std::move(nudge));
       };
-      m_pininput.SetDeviceDefaultMapping(m_joyId, defaultMapping);
+      m_pininput.SetDeviceDefaultMapping(m_joyId, defaultMapping, frameControllerProfileSupported);
 
       m_viewBackActionSlot = m_pininput.GetInputActions()[m_pininput.GetExitGameActionId()]->NewDirectStateSlot();
       m_buttonBackActionSlot = m_pininput.GetInputActions()[m_pininput.GetExitGameActionId()]->NewDirectStateSlot();

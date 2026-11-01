@@ -1,6 +1,7 @@
 // license:GPLv3+
 
 #include "input/XRInputBindings.h"
+#include "input/InputLayoutPolicy.h"
 
 #include "doctest.h"
 
@@ -138,6 +139,38 @@ TEST_CASE("thumbstick profile transitions release the old source before sampling
             source == StickSource::FrameVector, true, -0.4f, samples);
 
       REQUIRE(samples == std::vector<float> { 0.f, -0.4f });
+   }
+}
+
+TEST_CASE("VR default layout policy preserves configured Frame mappings for an explicit choice")
+{
+   CHECK_FALSE(VPX::Input::HasAnyDeviceMappings(false, false, false));
+
+   SUBCASE("a fresh Frame profile without saved actions or sensors still auto-applies defaults")
+   {
+      CHECK(VPX::Input::ShouldAutoApplyVRControllerLayout(true, false));
+   }
+
+   SUBCASE("saved action, plunger or nudge mappings leave the default proposal pending")
+   {
+      for (const auto& [actions, plunger, nudge] : { std::array { true, false, false }, std::array { false, true, false }, std::array { false, false, true } })
+      {
+         const bool hasMappings = VPX::Input::HasAnyDeviceMappings(actions, plunger, nudge);
+         CHECK(hasMappings);
+         CHECK_FALSE(VPX::Input::ShouldAutoApplyVRControllerLayout(true, hasMappings));
+      }
+   }
+
+   SUBCASE("ordinary VR controller auto-apply behavior remains unchanged")
+   {
+      CHECK(VPX::Input::ShouldAutoApplyVRControllerLayout(false, true));
+   }
+
+   SUBCASE("explicit default application remains available regardless of saved mappings")
+   {
+      // This policy guards only the automatic path; the existing proposal callback continues to
+      // call ApplyDefaultDeviceMapping directly when the player accepts the default layout.
+      CHECK_FALSE(VPX::Input::ShouldAutoApplyVRControllerLayout(true, true));
    }
 }
 
