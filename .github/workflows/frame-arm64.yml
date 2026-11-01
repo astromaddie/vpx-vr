@@ -1,0 +1,97 @@
+name: Steam Frame ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: steam-frame-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build native OpenXR ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            autoconf automake bison cmake libasound2-dev libdrm-dev libegl-dev \
+            libgbm-dev libglu1-mesa-dev libgl1-mesa-dev libpipewire-0.3-dev \
+            libudev-dev libwayland-dev libwayland-egl-backend-dev libx11-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev \
+            libxtst-dev libtool nasm zlib1g-dev
+
+      - name: Calculate external cache key
+        run: |
+          echo "EXT_HASH=$(cat platforms/config.sh platforms/linux-aarch64/external.sh | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+
+      - name: Restore external dependency cache
+        id: cache
+        uses: actions/cache/restore@v5
+        with:
+          path: external
+          key: frame-linux-aarch64-release-${{ env.EXT_HASH }}
+
+      - name: Build native ARM64 dependencies
+        run: BUILD_TYPE=Release ./platforms/linux-aarch64/external.sh
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Save external dependency cache
+        uses: actions/cache/save@v5
+        with:
+          path: external
+          key: frame-linux-aarch64-release-${{ env.EXT_HASH }}
+
+      - name: Set build revision
+        run: |
+          sed -i "s/9999/$(git rev-list --count HEAD)/; s/unknown/$(git rev-parse --short=12 HEAD)/" src/core/git_version.h
+
+      - name: Configure native Steam Frame build
+        run: |
+          cmake \
+            -DRENDERER=BGFX \
+            -DPLATFORM=linux \
+            -DARCH=aarch64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_XR=ON \
+            -DBUILD_RPI=OFF \
+            -DBUILD_RK3588=OFF \
+            -B build/frame-arm64
+
+      - name: Build application
+        run: cmake --build build/frame-arm64 --parallel "$(nproc)"
+
+      - name: Verify artifact architecture and XR configuration
+        run: |
+          file build/frame-arm64/VPinballX_BGFX
+          readelf -h build/frame-arm64/VPinballX_BGFX | grep -E 'Class:|Machine:'
+          grep -q '^ENABLE_XR:BOOL=ON$' build/frame-arm64/CMakeCache.txt
+
+      - name: Stage Frame artifact
+        run: |
+          mkdir -p tmp/frame-arm64
+          cp build/frame-arm64/VPinballX_BGFX tmp/frame-arm64/
+          cp -a build/frame-arm64/*.so* tmp/frame-arm64/
+          cp -a build/frame-arm64/assets build/frame-arm64/plugins build/frame-arm64/scripts build/frame-arm64/docs tmp/frame-arm64/
+          printf 'source=%s\narchitecture=aarch64\nrenderer=BGFX\nopenxr=enabled\n' "$(git rev-parse HEAD)" > tmp/frame-arm64/BUILD-METADATA.txt
+          tar -czf "tmp/VPXFrame-linux-aarch64-$(git rev-parse --short=12 HEAD).tar.gz" -C tmp/frame-arm64 .
+
+      - name: Upload Steam Frame build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VPXFrame-linux-aarch64-${{ github.sha }}
+          path: tmp/VPXFrame-linux-aarch64-*.tar.gz
+          archive: false
