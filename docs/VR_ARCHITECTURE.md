@@ -74,12 +74,35 @@ point to the table path directly. The build includes the upstream example table,
 or commercial tables, ROMs, or other user-owned content are bundled or tracked here. See
 [Steam Frame build and table setup](SteamFrame.md).
 
-## Acceptance boundary
+## Verified build and startup
 
-Source and build configuration establish a native ARM64 OpenXR route, not a successful
-headset session or stereoscopic image. Device acceptance still needs a Steam Linux Runtime 4
-launch, OpenXR runtime/session logs, both-eye output confirmation, controller tests while
-focused, standby/focus recovery, and a wearer-run comfort/play test. The existing source logs
-identify the OpenXR runtime and session errors; build/session startup timings are logged for
-diagnosis. No eye-image readback has been added, so stereo image evidence must come from
-runtime capture or wearer inspection.
+The native package from commit `b7a68edf6cf4233087958a58fb4024bae23d29ea` passed
+[ARM64 CI run 41325381021](https://github.com/astromaddie/vpx-vr/actions/runs/41325381021).
+Its archive SHA-256 is
+`1ff651443e5fcd1440b74f3c451b6b07d933b708e3ac3bf5388ea25e6cf5a9a8`.
+The installed executable is an AArch64 ELF PIE; its SHA-256 is
+`419c7a2080e000ee72242b86e260e92306f4dd6a309fc1baf33788755a93eeac`.
+All 3,562 packaged file hashes passed verification before installation.
+
+On 2026-11-02, the bundled example and the supplied 4 Queens 1.2 table loaded through
+Steam Linux Runtime 4 and created SteamVR/OpenXR 2.18.2 sessions with two 1728×1728 views.
+The runtime accepted all 20 explicit Frame controller bindings. These startup checks used
+the `521ca05` executable; the engine C++ sources are identical in `b7a68ed`, which changes
+table registration tooling, its tests, and documentation. Both sessions were stopped through
+Steam and the speaker and EQ sink mute/volume states matched their pre-test values.
+
+The 4 Queens input file remained unchanged at SHA-256
+`f5e6ca897820ce0d12c426c3a646b6f66469341025be5de3a609b9914e7e3805`.
+Its current Steam display name is `Devkit Game: VPX_4_Queens`. Black Hole BigusMOD 2.0 is
+also imported; its default ROM set requires the separately supplied `blkhole2.zip`.
+
+Reproduction details: relative launcher paths must live under `~/devkit-game/<gameid>`;
+the shortcut helper's `directory` field does not change Steam's path resolution. Automated
+Steam stop calls use the unsigned 64-bit game ID as a string. For this device's 4 Queens
+entry that is `13227685663173771264`, rather than the 32-bit shortcut AppID `3079810567`.
+
+Startup logged an SDL desktop-backbuffer-format error, then selected RGBA8 and initialized
+the Vulkan backend and OpenXR session. Session creation establishes initialization, not
+rendered stereo, frame pacing, physical controls, or comfort. Check those during use before
+performance tuning. Eye-image readback is not implemented; use runtime capture or direct
+headset inspection for visual evidence.
