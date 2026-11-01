@@ -29,8 +29,8 @@ private:
       bool isPressed = false;
       uint16_t pinInputId;
       uint16_t secondPinInputId = 0;
-      XRInput::StickSource stickSource = XRInput::StickSource::None;
-      XRInput::StickAxisRoute stickAxisRoute;
+      VPX::XRInput::StickSource stickSource = VPX::XRInput::StickSource::None;
+      VPX::XRInput::StickAxisRoute stickAxisRoute;
       bool isLeftHand = false;
    };
 
@@ -63,20 +63,20 @@ public:
       // Bind them
       uint16_t actionId = 0;
       std::vector<XrActionSuggestedBinding> bindings;
-      for (const XRInput::ActionPath& definition : XRInput::ActionPaths)
+      for (const VPX::XRInput::ActionPath& definition : VPX::XRInput::ActionPaths)
       {
          ActionTracker tracker;
          tracker.path = definition.path;
          tracker.type = ToXrActionType(definition.type);
          tracker.pinInputId = actionId;
          actionId++;
-         tracker.stickSource = XRInput::GetStickSource(definition);
-         tracker.isLeftHand = XRInput::IsLeftHandPath(definition.path);
-         if (definition.type == XRInput::ActionType::Vector2)
+         tracker.stickSource = VPX::XRInput::GetStickSource(definition);
+         tracker.isLeftHand = VPX::XRInput::IsLeftHandPath(definition.path);
+         if (definition.type == VPX::XRInput::ActionType::Vector2)
          {
-            const std::size_t xIndex = XRInput::FindActionPath(definition.vector2XAxisPath);
-            const std::size_t yIndex = XRInput::FindActionPath(definition.vector2YAxisPath);
-            assert(xIndex < XRInput::ActionPaths.size() && yIndex < XRInput::ActionPaths.size());
+            const std::size_t xIndex = VPX::XRInput::FindActionPath(definition.vector2XAxisPath);
+            const std::size_t yIndex = VPX::XRInput::FindActionPath(definition.vector2YAxisPath);
+            assert(xIndex < VPX::XRInput::ActionPaths.size() && yIndex < VPX::XRInput::ActionPaths.size());
             tracker.pinInputId = static_cast<uint16_t>(xIndex);
             tracker.secondPinInputId = static_cast<uint16_t>(yIndex);
          }
@@ -104,8 +104,8 @@ public:
             m_pininput.RegisterElementName(m_joyId, tracker.type == XR_ACTION_TYPE_FLOAT_INPUT, tracker.pinInputId, name);
          else if (tracker.type == XR_ACTION_TYPE_VECTOR2F_INPUT)
          {
-            const std::string xName = SanitizePath(XRInput::ActionPaths[tracker.pinInputId].path);
-            const std::string yName = SanitizePath(XRInput::ActionPaths[tracker.secondPinInputId].path);
+            const std::string xName = SanitizePath(VPX::XRInput::ActionPaths[tracker.pinInputId].path);
+            const std::string yName = SanitizePath(VPX::XRInput::ActionPaths[tracker.secondPinInputId].path);
             m_pininput.RegisterElementName(m_joyId, true, tracker.pinInputId, xName);
             m_pininput.RegisterElementName(m_joyId, true, tracker.secondPinInputId, yName);
          }
@@ -128,8 +128,8 @@ public:
       if (frameControllerProfileSupported)
       {
          std::vector<XrActionSuggestedBinding> frameBindings;
-         frameBindings.reserve(XRInput::FrameProfileActionIndices.size());
-         for (std::size_t index : XRInput::FrameProfileActionIndices)
+         frameBindings.reserve(VPX::XRInput::FrameProfileActionIndices.size());
+         for (std::size_t index : VPX::XRInput::FrameProfileActionIndices)
          {
             assert(index < m_trackers.size());
             XrPath xrPath;
@@ -139,7 +139,7 @@ public:
             else
                PLOGE << "Failed to resolve Frame controller input path " << m_trackers[index].path << " (" << pathResult << ')';
          }
-         if (frameBindings.size() == XRInput::FrameProfileActionIndices.size())
+         if (frameBindings.size() == VPX::XRInput::FrameProfileActionIndices.size())
             SuggestBindingsExact("/interaction_profiles/valve/frame_controller_valve", frameBindings);
          else
             PLOGE << "Frame controller binding was not suggested because one or more declared paths could not be resolved";
@@ -152,53 +152,53 @@ public:
 
       auto defaultMapping = [this](InputManager::MappingSetupHandler& map)
       {
-         for (const XRInput::ButtonBinding& binding : XRInput::DefaultButtonBindings)
+         for (const VPX::XRInput::ButtonBinding& binding : VPX::XRInput::DefaultButtonBindings)
          {
             if (binding.frameOnly && !frameControllerProfileSupported)
                continue;
-            const auto actionIndex = XRInput::FindActionPath(binding.path);
-            assert(actionIndex != XRInput::MissingActionPath);
+            const auto actionIndex = VPX::XRInput::FindActionPath(binding.path);
+            assert(actionIndex != VPX::XRInput::MissingActionPath);
             const uint16_t inputId = static_cast<uint16_t>(actionIndex);
             unsigned int targetAction = 0;
             switch (binding.action)
             {
-            case XRInput::PinballAction::LeftFlipper: targetAction = m_pininput.GetLeftFlipperActionId(); break;
-            case XRInput::PinballAction::RightFlipper: targetAction = m_pininput.GetRightFlipperActionId(); break;
-            case XRInput::PinballAction::StagedLeftFlipper: targetAction = m_pininput.GetStagedLeftFlipperActionId(); break;
-            case XRInput::PinballAction::StagedRightFlipper: targetAction = m_pininput.GetStagedRightFlipperActionId(); break;
-            case XRInput::PinballAction::LeftMagna: targetAction = m_pininput.GetLeftMagnaActionId(); break;
-            case XRInput::PinballAction::RightMagna: targetAction = m_pininput.GetRightMagnaActionId(); break;
-            case XRInput::PinballAction::LeftStickClick: targetAction = m_pininput.GetVRControllerViewCenteringActionId(); break;
-            case XRInput::PinballAction::RightStickClick: targetAction = m_pininput.GetLaunchBallActionId(); break;
-            case XRInput::PinballAction::Start: targetAction = m_pininput.GetStartActionId(); break;
-            case XRInput::PinballAction::Back: targetAction = m_pininput.GetAddCreditActionId(0); break;
-            case XRInput::PinballAction::Credit: targetAction = m_pininput.GetAddCreditActionId(0); break;
-            case XRInput::PinballAction::Pause: targetAction = m_pininput.GetOpenInGameUIActionId(); break;
-            case XRInput::PinballAction::UIUp: targetAction = m_pininput.GetUIUpActionId(); break;
-            case XRInput::PinballAction::UIDown: targetAction = m_pininput.GetUIDownActionId(); break;
-            case XRInput::PinballAction::UILeft: targetAction = m_pininput.GetUILeftActionId(); break;
-            case XRInput::PinballAction::UIRight: targetAction = m_pininput.GetUIRightActionId(); break;
-            case XRInput::PinballAction::OpenInGameUI: targetAction = m_pininput.GetOpenInGameUIActionId(); break;
-            case XRInput::PinballAction::ExitGame: targetAction = m_pininput.GetExitGameActionId(); break;
+            case VPX::XRInput::PinballAction::LeftFlipper: targetAction = m_pininput.GetLeftFlipperActionId(); break;
+            case VPX::XRInput::PinballAction::RightFlipper: targetAction = m_pininput.GetRightFlipperActionId(); break;
+            case VPX::XRInput::PinballAction::StagedLeftFlipper: targetAction = m_pininput.GetStagedLeftFlipperActionId(); break;
+            case VPX::XRInput::PinballAction::StagedRightFlipper: targetAction = m_pininput.GetStagedRightFlipperActionId(); break;
+            case VPX::XRInput::PinballAction::LeftMagna: targetAction = m_pininput.GetLeftMagnaActionId(); break;
+            case VPX::XRInput::PinballAction::RightMagna: targetAction = m_pininput.GetRightMagnaActionId(); break;
+            case VPX::XRInput::PinballAction::LeftStickClick: targetAction = m_pininput.GetVRControllerViewCenteringActionId(); break;
+            case VPX::XRInput::PinballAction::RightStickClick: targetAction = m_pininput.GetLaunchBallActionId(); break;
+            case VPX::XRInput::PinballAction::Start: targetAction = m_pininput.GetStartActionId(); break;
+            case VPX::XRInput::PinballAction::Back: targetAction = m_pininput.GetAddCreditActionId(0); break;
+            case VPX::XRInput::PinballAction::Credit: targetAction = m_pininput.GetAddCreditActionId(0); break;
+            case VPX::XRInput::PinballAction::Pause: targetAction = m_pininput.GetOpenInGameUIActionId(); break;
+            case VPX::XRInput::PinballAction::UIUp: targetAction = m_pininput.GetUIUpActionId(); break;
+            case VPX::XRInput::PinballAction::UIDown: targetAction = m_pininput.GetUIDownActionId(); break;
+            case VPX::XRInput::PinballAction::UILeft: targetAction = m_pininput.GetUILeftActionId(); break;
+            case VPX::XRInput::PinballAction::UIRight: targetAction = m_pininput.GetUIRightActionId(); break;
+            case VPX::XRInput::PinballAction::OpenInGameUI: targetAction = m_pininput.GetOpenInGameUIActionId(); break;
+            case VPX::XRInput::PinballAction::ExitGame: targetAction = m_pininput.GetExitGameActionId(); break;
             }
             if (binding.threshold == 0.f && !binding.reversed)
                map.MapAction(ButtonMapping::Create(m_joyId, inputId), targetAction);
             else
                map.MapAction(ButtonMapping::Create(m_joyId, inputId, binding.threshold, binding.reversed), targetAction);
-            if (frameControllerProfileSupported && binding.action == XRInput::PinballAction::Start)
+            if (frameControllerProfileSupported && binding.action == VPX::XRInput::PinballAction::Start)
                map.MapAction(ButtonMapping::Create(m_joyId, inputId), m_pininput.GetUIRightActionId()); // A confirms while the in-game UI is open
          }
 
          std::unique_ptr<PlungerSensor> plunger = std::make_unique<PlungerSensor>(&m_pininput);
          plunger->GetPositionSensor()->SetMapping(SensorMapping::Create(m_joyId,
-            static_cast<uint16_t>(XRInput::FindActionPath(XRInput::DefaultAxisBindings[0].path)), SensorMapping::Type::Position));
+            static_cast<uint16_t>(VPX::XRInput::FindActionPath(VPX::XRInput::DefaultAxisBindings[0].path)), SensorMapping::Type::Position));
          plunger->GetPositionSensor()->GetMapping().SetScale(-1.f);
          map.MapPlunger(std::move(plunger));
          std::unique_ptr<VPX::Physics::GamepadNudge> nudge = std::make_unique<VPX::Physics::GamepadNudge>(&m_pininput);
          nudge->GetXSensor().SetMapping(SensorMapping::Create(m_joyId,
-            static_cast<uint16_t>(XRInput::FindActionPath(XRInput::DefaultAxisBindings[1].path)), SensorMapping::Type::Position));
+            static_cast<uint16_t>(VPX::XRInput::FindActionPath(VPX::XRInput::DefaultAxisBindings[1].path)), SensorMapping::Type::Position));
          nudge->GetYSensor().SetMapping(SensorMapping::Create(m_joyId,
-            static_cast<uint16_t>(XRInput::FindActionPath(XRInput::DefaultAxisBindings[2].path)), SensorMapping::Type::Position));
+            static_cast<uint16_t>(VPX::XRInput::FindActionPath(VPX::XRInput::DefaultAxisBindings[2].path)), SensorMapping::Type::Position));
          map.MapNudge(std::move(nudge));
       };
       m_pininput.SetDeviceDefaultMapping(m_joyId, defaultMapping, frameControllerProfileSupported);
@@ -228,7 +228,7 @@ public:
 
       for (auto& t : m_trackers)
       {
-         if (t.stickSource != XRInput::StickSource::None)
+         if (t.stickSource != VPX::XRInput::StickSource::None)
             continue;
 
          XrActionStateGetInfo getInfo { XR_TYPE_ACTION_STATE_GET_INFO, nullptr, t.action };
@@ -240,7 +240,7 @@ public:
 
             if (t.path == "/user/hand/left/input/view/click")
             {
-               const XRInput::ViewHoldEvents events = m_viewHoldGesture.Update(
+               const VPX::XRInput::ViewHoldEvents events = m_viewHoldGesture.Update(
                   frameLeftProfileActive && state.isActive && state.currentState, nowMs, frameLeftProfileActive && state.isActive != XR_FALSE);
                if (events.back && m_pininput.IsInGameUIOpened())
                   TriggerAction(m_pininput.GetExitGameActionId(), m_viewBackActionSlot);
@@ -328,9 +328,9 @@ public:
 private:
    void UpdateThumbstickSources(const bool leftHand, const bool frameProfileActive)
    {
-      const XRInput::StickSource selectedSource = frameProfileActive ? XRInput::StickSource::FrameVector : XRInput::StickSource::LegacyScalar;
+      const VPX::XRInput::StickSource selectedSource = frameProfileActive ? VPX::XRInput::StickSource::FrameVector : VPX::XRInput::StickSource::LegacyScalar;
       const uint64_t timestamp = usec() * 1000ULL;
-      for (const XRInput::StickSource source : XRInput::StickSamplingOrder(frameProfileActive))
+      for (const VPX::XRInput::StickSource source : VPX::XRInput::StickSamplingOrder(frameProfileActive))
       {
          for (auto& tracker : m_trackers)
          {
@@ -374,15 +374,15 @@ private:
       return xrGetCurrentInteractionProfile(m_session, userPath, &state) == XR_SUCCESS && state.interactionProfile == m_frameProfilePath;
    }
 
-   static XrActionType ToXrActionType(const XRInput::ActionType type)
+   static XrActionType ToXrActionType(const VPX::XRInput::ActionType type)
    {
       switch (type)
       {
-      case XRInput::ActionType::Boolean: return XR_ACTION_TYPE_BOOLEAN_INPUT;
-      case XRInput::ActionType::Float: return XR_ACTION_TYPE_FLOAT_INPUT;
-      case XRInput::ActionType::Vector2: return XR_ACTION_TYPE_VECTOR2F_INPUT;
-      case XRInput::ActionType::Pose: return XR_ACTION_TYPE_POSE_INPUT;
-      case XRInput::ActionType::Haptic: return XR_ACTION_TYPE_VIBRATION_OUTPUT;
+      case VPX::XRInput::ActionType::Boolean: return XR_ACTION_TYPE_BOOLEAN_INPUT;
+      case VPX::XRInput::ActionType::Float: return XR_ACTION_TYPE_FLOAT_INPUT;
+      case VPX::XRInput::ActionType::Vector2: return XR_ACTION_TYPE_VECTOR2F_INPUT;
+      case VPX::XRInput::ActionType::Pose: return XR_ACTION_TYPE_POSE_INPUT;
+      case VPX::XRInput::ActionType::Haptic: return XR_ACTION_TYPE_VIBRATION_OUTPUT;
       }
       assert(false && "Unknown XR input action type");
       return XR_ACTION_TYPE_BOOLEAN_INPUT;
@@ -463,7 +463,7 @@ private:
    XrActionSet m_actionSet;
    std::vector<ActionTracker> m_trackers;
    std::vector<XrAction> m_hapticActions;
-   XRInput::ViewHoldGesture m_viewHoldGesture;
+   VPX::XRInput::ViewHoldGesture m_viewHoldGesture;
    int m_buttonBackActionSlot = -1;
    int m_viewBackActionSlot = -1;
    int m_recenterActionSlot = -1;
