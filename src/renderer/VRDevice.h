@@ -235,6 +235,7 @@ public:
    void* GetGraphicContext() const;
    void* GetGraphicPlatformQueue() const;
    bgfx::RendererType::Enum GetGraphicContextType() const;
+   int IsBlendableRenderTargetFormat(bgfx::TextureFormat::Enum format) const; // 1 if the device can render, blend into and sample the format, 0 if not, -1 if unknown
    void PollEvents();
    void RenderFrame(class RenderDevice* rd, const std::function<bool(RenderTarget* vrRenderTarget)>& submitFrame);
    RenderTarget* GetUIRenderTarget() const { return m_uiRenderTarget; } // Acquired swapchain target for the UI composition layer (or nullptr if unsupported/not acquired yet)

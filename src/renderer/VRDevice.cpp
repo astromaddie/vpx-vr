@@ -492,6 +492,8 @@ void* VRDevice::GetGraphicPlatformQueue() const { return m_backend->GetGraphicPl
 
 bgfx::RendererType::Enum VRDevice::GetGraphicContextType() const { return m_backend->GetRendererType(); }
 
+int VRDevice::IsBlendableRenderTargetFormat(bgfx::TextureFormat::Enum format) const { return m_backend ? m_backend->IsBlendableRenderTargetFormat(format) : -1; }
+
 void VRDevice::SetupHMD()
 {
    assert(m_backend == nullptr);

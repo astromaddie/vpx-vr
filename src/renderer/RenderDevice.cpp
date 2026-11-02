@@ -1385,6 +1385,70 @@ std::vector<std::string> RenderDevice::GetSelectableBackendNames()
    }
    return result;
 }
+
+// Logical RGB16F render targets (scene and previous frame, reflection/refraction probes, bloom and transmitted light, SSR, motion blur)
+// never store anything in alpha, as on desktop OpenGL where they are already alpha-less, so they may use the 32 bit packed RG11B10F
+// format instead of RGBA16F, halving their bandwidth (no alpha, no negatives, 6/6/5 bit mantissa). It is decided once for all targets,
+// since they are copied into each other (refraction probe, static prerender) which requires matching formats.
+static bool SelectPackedHDR(const bool fromSettings, const int nMSAASamples)
+{
+   bool requested = fromSettings;
+   const char* source = "setting";
+   // VPX_PACKED_HDR=0|1 overrides the setting, for A/B runs on a device
+   if (const char* const env = std::getenv("VPX_PACKED_HDR"); env != nullptr && env[0] != '\0')
+   {
+      if ((env[0] == '0' || env[0] == '1') && env[1] == '\0')
+      {
+         requested = env[0] == '1';
+         source = "VPX_PACKED_HDR";
+      }
+      else
+         PLOGW << "Ignoring VPX_PACKED_HDR='" << env << "' (expected 0 or 1)";
+   }
+   if (!requested)
+   {
+      PLOGI << "Packed HDR render targets: off (" << source << "), HDR targets use RGBA16F";
+      return false;
+   }
+
+   const uint32_t caps = bgfx::getCaps()->formats[bgfx::TextureFormat::RG11B10F];
+   const char* refusal = nullptr;
+   if ((caps & BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER) == 0)
+      refusal = "RG11B10F is not renderable";
+   else if (nMSAASamples > 1)
+   {
+      uint32_t msaaCap = 0;
+      switch (nMSAASamples)
+      {
+      case 2: msaaCap = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X2; break;
+      case 4: msaaCap = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X4; break;
+      case 8: msaaCap = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X8; break;
+      case 16: msaaCap = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X16; break;
+      default: break;
+      }
+      if ((caps & msaaCap) == 0)
+         refusal = "RG11B10F does not support the selected MSAA sample count";
+   }
+   // BGFX caps do not tell if a format can be blended into (most lights and flashers are blended), so ask the XR graphics backend when it can tell
+   const char* blendCheck = "not checked";
+   #ifdef ENABLE_XR
+   if (refusal == nullptr && g_pplayer->m_vrDevice)
+   {
+      const int blendable = g_pplayer->m_vrDevice->IsBlendableRenderTargetFormat(bgfx::TextureFormat::RG11B10F);
+      if (blendable == 0)
+         refusal = "the device does not report RG11B10F attachment, blend, linear filtering and copy support";
+      else if (blendable == 1)
+         blendCheck = "checked";
+   }
+   #endif
+   if (refusal != nullptr)
+   {
+      PLOGW << "Packed HDR render targets: requested (" << source << ") but " << refusal << ", falling back to RGBA16F";
+      return false;
+   }
+   PLOGI << "Packed HDR render targets: on (" << source << "), RGB16F targets use RG11B10F (MSAA x" << nMSAASamples << ", blending " << blendCheck << ')';
+   return true;
+}
 #endif
 
 RenderDevice::RenderDevice(
@@ -1539,6 +1603,7 @@ RenderDevice::RenderDevice(
 #endif
    }
    m_useLowPrecision = bgfx::getRendererType() == bgfx::RendererType::OpenGLES;
+   m_packedHDR = SelectPackedHDR(g_pplayer->m_ptable->GetSettings().GetPlayer_PackedHDR(), nMSAASamples);
 
 #elif defined(ENABLE_OPENGL)
    ///////////////////////////////////

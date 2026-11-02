@@ -170,3 +170,48 @@ Diagnostics and overrides:
   `BGFX VK descriptor cache: mode ...` once. Writing a set also records the image layout
   transitions of its textures, so a fault that goes away under `0` points at either the
   cache identity or a layout transition skipped on reuse; `verify` tells the first apart.
+
+## Packed HDR render targets
+
+VPX asks for its HDR render targets as `RGB16F`, which BGFX stores as `RGBA16F`, 8 bytes per
+pixel. With `[Player] PackedHDR` on, every `RGB16F` target is created as `RG11B10F` instead:
+4 bytes per pixel, unsigned floats with 6/6/5 mantissa bits and the same range as half
+floats, no alpha. The setting defaults to on for standalone Linux ARM64 XR builds
+(`VPX_STANDALONE_XR_DEFAULTS`) and off everywhere else. `VPX_PACKED_HDR=0|1` overrides it.
+It only applies to BGFX builds and is read once at startup.
+
+Packed:
+
+- Main scene buffers (both eye layers), including the previous frame the ball samples for
+  its playfield reflection, and the VR desktop mirror's scene buffers.
+- Playfield reflection probes and refraction (screen-space transparency) probes, with their
+  roughness blur targets.
+- Bloom and transmitted-light ping-pong buffers.
+- The SSR buffer (off by default), and the motion blur buffer and static prerender, which VR
+  does not use.
+
+Not packed, because they are created as `RGBA16F` or another format on purpose:
+
+- The environment irradiance target and ancillary window HDR buffers (`RGBA16F`).
+- Post-process, AO and swapchain targets, which are 8 or 10 bit already.
+
+Why alpha and negative values are not a problem: no pass reads alpha back from an `RGB16F`
+target (all post-process, probe and ball shaders sample `.rgb`), no blend state uses
+destination alpha, and desktop OpenGL already allocates these targets as alpha-less
+`GL_RGB16F`. Lights and additive flashers write negative colours, but only as the source of a
+reverse-subtract blend whose result stays positive; Vulkan does not clamp blend inputs for
+float attachments, and only the stored result is clamped at zero.
+
+All targets switch together, because the refraction probe and the static prerender are
+copied from the scene buffer with `vkCmdCopyImage`, which needs matching formats. Startup
+checks that BGFX can render to `RG11B10F` at the selected MSAA sample count and, through the
+XR Vulkan backend, that the physical device reports colour attachment, blend, linear
+filtering and transfer support for `VK_FORMAT_B10G11R11_UFLOAT_PACK32`. If any check fails
+it falls back to `RGBA16F`. One line starting with `Packed HDR render targets:` logs the
+decision and its source.
+
+Upstream briefly mapped `RGB16F` to `RG11B10F` on Android (vpinball PR #3934) and dropped
+it in a mobile cleanup commit (PR #4074) without giving a reason. The visible cost of the
+format is precision: about 1.6% steps in red and green and 3.1% in blue, which can show as
+banding or a slight hue shift in bright, smooth gradients and in heavily stacked light
+blending.
