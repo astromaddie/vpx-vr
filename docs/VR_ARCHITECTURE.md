@@ -79,7 +79,7 @@ With the defaults and the Frame's eye FOV, the pictures have about 0.27 (coarse)
 | Geometry, depth, lighting, ball shadows | Per picture |
 | Transmitted bulb light | Per picture, in dedicated 6-layer quarter resolution buffers; the blur tap spacing is scaled per picture so it covers the same part of the eye |
 | Playfield and plane reflection probes | Per picture; roughness blur scaled per picture as above |
-| Screen-space refraction probes | Per picture copy of colour and depth |
+| Screen-space refraction probes | Per picture copy of colour and depth; a refracted lookup that leaves a window's picture keeps the unrefracted position |
 | Ball playfield reflection (previous frame) | Same picture of the previous frame; reflected points outside a window use the coarse picture of the same eye |
 | SSR, bloom, tonemap, dither, post AA, sharpening | Composed eyes |
 | AO, ball motion blur, static prerender | Disabled in VR, as without foveation |
@@ -97,7 +97,7 @@ Known gaps:
 
 - Each pass draws three times as many instances; reflection probes multiply that again.
   Per picture blurs are separate passes (two per picture).
-- Refraction lookups that leave a window's picture are clamped to its edge instead of
+- Refraction lookups that leave a window's picture lose their refraction offset instead of
   falling back to the coarse picture.
 - The hidden area mask is not applied, so the corners of the coarse pictures are shaded.
 - Derivative based filtering (DMD, CRT, segment displays) and the ball reflection's texel

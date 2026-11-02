@@ -154,6 +154,12 @@ vec3 compute_refraction(const vec3 pos, const vec3 screenCoord, const vec3 N, co
    vec2 uv = vec2(0.5, 0.5) + vec2(proj.x, -proj.y) * (0.5 / proj.w);
    #endif
 
+   #ifdef FOVEATED
+   // Foveated rendering: a refracted position outside of a window picture is not available, keep the unrefracted one instead of stretching the picture edge
+   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+      uv = screenCoord.xy * w_h_height.xy;
+   #endif
+
    // Check if the sample position is behind the object pos. If not, don't perform refraction as it would lead to refract things above us (so reflect)
    const float d = texStereo(tex_probe_depth, uv).x;
    if (d < screenCoord.z)
