@@ -470,8 +470,8 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
          init.platformData.queue = g_pplayer->m_vrDevice->GetGraphicPlatformQueue();
       assert(init.platformData.context != nullptr);
       // For the time being, we do not support having a desktop swapchain along the headset swapchain under Vulkan, so we run BGFX in headless mode
-      // Note that this is needed for native VR (running directly on the headset)
-      if (init.type == bgfx::RendererType::Vulkan && g_isAndroid)
+      // Note that this is needed for native VR (running directly on the headset), and when the desktop display is disabled
+      if (init.type == bgfx::RendererType::Vulkan && (g_isAndroid || rd->m_outputWnd.size() < 2))
          init.swapChain.nwh = nullptr;
 #endif
    }
@@ -1380,7 +1380,9 @@ RenderDevice::RenderDevice(
 
    // Create the desktop display in the render device as it holds the desktop swapchain (not really clean and should be refactored for all windows to be added/removed by the client)
    // It is configured as the playfield display: all of its settings come from the playfield window properties
-   if (isVR && !g_isAndroid)
+   // When the desktop display is disabled, no desktop window nor swapchain is created: its presentation would otherwise
+   // pace the render thread and gate the headset submission (standalone headsets like the Steam Frame have no desktop to show)
+   if (isVR && !g_isAndroid && g_pplayer->m_ptable->GetSettings().GetPlayerVR_DesktopDisplay() != 0)
    {
       VPX::Window* desktopWnd = new VPX::Window("Visual Pinball Desktop Display"s, g_settingsService.GetActiveSettings(), VPXWindowId::VPXWINDOW_Playfield);
 #ifdef ENABLE_BGFX
