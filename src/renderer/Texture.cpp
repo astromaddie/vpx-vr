@@ -6,6 +6,7 @@
 #include "math/math.h"
 #include "renderer/Renderer.h"
 #include "renderer/TextureCompressor.h"
+#include "renderer/TextureBudget.h"
 #include "utils/BiffReader.h"
 #include "utils/lzwreader.h"
 
@@ -429,6 +430,50 @@ std::shared_ptr<BaseTexture> BaseTexture::CreateFromFreeImage(FIBITMAP* dib, con
    FreeImage_Unload(dib);
 
    return tex;
+}
+
+std::shared_ptr<BaseTexture> BaseTexture::CreateDownsized(const unsigned int maxDimension) const
+{
+   if (m_data == nullptr || maxDimension == 0 || std::max(m_width, m_height) <= maxDimension)
+      return nullptr;
+   // Plain 8 bit and 32 bit float channels only. sRGB data is averaged as stored, slightly darkening contrasted
+   // details, which is acceptable for an upload that is degraded anyway
+   unsigned int channels;
+   bool isFloat = false;
+   switch (m_format)
+   {
+   case BW: channels = 1; break;
+   case RGB:
+   case SRGB: channels = 3; break;
+   case RGBA:
+   case SRGBA: channels = 4; break;
+   case BW_FP32: channels = 1; isFloat = true; break;
+   case RGB_FP32: channels = 3; isFloat = true; break;
+   case RGBA_FP32: channels = 4; isFloat = true; break;
+   default: return nullptr; // SRGB565, RGB_FP16, RGBA_FP16
+   }
+   std::shared_ptr<const BaseTexture> src = m_selfPointer.lock();
+   std::shared_ptr<BaseTexture> dst;
+   unsigned int width = m_width, height = m_height;
+   while (std::max(width, height) > maxDimension && (width > 1 || height > 1))
+   {
+      dst = Create(std::max(1u, width / 2), std::max(1u, height / 2), m_format);
+      if (dst == nullptr)
+         return nullptr;
+      const void* const srcData = src ? src->datac() : m_data;
+      if (isFloat)
+         VPX::TextureBudget::Downsample2x(static_cast<const float*>(srcData), width, height, channels, static_cast<float*>(dst->data()));
+      else
+         VPX::TextureBudget::Downsample2x(static_cast<const uint8_t*>(srcData), width, height, channels, static_cast<uint8_t*>(dst->data()));
+      width = dst->width();
+      height = dst->height();
+      src = dst;
+   }
+   dst->m_realWidth = m_realWidth;
+   dst->m_realHeight = m_realHeight;
+   dst->SetName(m_name);
+   dst->SetIsOpaque(IsOpaque());
+   return dst;
 }
 
 void BaseTexture::Update(std::shared_ptr<BaseTexture>& tex, const unsigned int width, const unsigned int height, const Format texFormat, const void* image)
@@ -1131,10 +1176,19 @@ size_t Texture::GetEstimatedGPUSize() const
 
 std::shared_ptr<const BaseTexture> Texture::GetRawBitmap(bool resizeOnLowMem, unsigned int maxTexDimension) const
 {
+   std::shared_ptr<BaseTexture> cached;
    {
       const std::lock_guard<std::mutex> lock(m_imageBufferMutex);
-      if (auto buffer = m_imageBuffer.lock())
-         return buffer;
+      cached = m_imageBuffer.lock();
+   }
+   if (cached)
+   {
+      // A cached decode larger than requested is not returned as is: the caller asked for a smaller image
+      if (maxTexDimension == 0 || std::max(cached->width(), cached->height()) <= maxTexDimension)
+         return cached;
+      if (auto downsized = GetDownsizedBitmap(maxTexDimension))
+         return downsized;
+      return cached;
    }
    // Decode without holding m_imageBufferMutex, so that the other accessors do not wait for it
    const std::lock_guard<std::mutex> decodeLock(m_decodeMutex);
@@ -1166,6 +1220,29 @@ std::shared_ptr<const BaseTexture> Texture::GetRawBitmap(bool resizeOnLowMem, un
       m_isOpaque = opaque;
       m_isOpaqueDirty = false;
    }
+   return buffer;
+}
+
+std::shared_ptr<const BaseTexture> Texture::GetDownsizedBitmap(unsigned int maxDimension) const
+{
+   std::shared_ptr<BaseTexture> cached;
+   {
+      const std::lock_guard<std::mutex> lock(m_imageBufferMutex);
+      cached = m_imageBuffer.lock();
+   }
+   // Halving an already decoded bitmap is much cheaper than decoding the image again
+   if (cached)
+   {
+      if (std::max(cached->width(), cached->height()) <= maxDimension)
+         return nullptr;
+      if (auto downsized = cached->CreateDownsized(maxDimension))
+         return downsized;
+   }
+   // Otherwise decode at the requested size, keeping it out of m_imageBuffer
+   auto buffer = BaseTexture::CreateFromData(m_ppb->m_buffer.data(), m_ppb->m_buffer.size(), true, maxDimension, true);
+   if (buffer == nullptr || std::max(buffer->width(), buffer->height()) > maxDimension)
+      return nullptr;
+   buffer->SetName(GetName());
    return buffer;
 }
 

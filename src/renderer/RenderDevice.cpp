@@ -2483,6 +2483,11 @@ void RenderDevice::SubmitAndFlipFrame(bool present)
    const uint32_t frameIdx = bgfx::frame(present ? BGFX_FRAME_NONE : BGFX_FRAME_FLUSH);
    if (present)
       m_lastPresentFrameIdx = frameIdx;
+   if (const bgfx::Stats* const stats = bgfx::getStats(); stats != nullptr)
+   {
+      const std::lock_guard lock(m_gpuMemorySnapshotMutex);
+      m_gpuMemorySnapshot = { stats->gpuFrameNum, stats->gpuMemoryMax, stats->gpuMemoryUsed };
+   }
    ResetActiveView();
 }
 #endif

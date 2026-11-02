@@ -8,9 +8,15 @@
 
 #if defined(ENABLE_BGFX)
 #include "TextureCompressor.h" // CompressedTexture
+#include "TextureBudget.h"
+#include <format>
+#if defined(__linux__)
+#include <fstream>
+#include <sstream>
+#endif
 #endif
 
-std::shared_ptr<Sampler> TextureManager::LoadTexture(ITexManCacheable* const memtex, const bool force_linear_rgb)
+std::shared_ptr<Sampler> TextureManager::LoadTexture(ITexManCacheable* const memtex, const bool force_linear_rgb, const bool pinned)
 {
    const std::lock_guard lock(m_mapMutex);
    const uint64_t hash = memtex->GetLiveHash();
@@ -25,6 +31,7 @@ std::shared_ptr<Sampler> TextureManager::LoadTexture(ITexManCacheable* const mem
 
    MapEntry& entry = it->second;
    std::shared_ptr<Sampler>& sampler = entry.samplers[variant];
+   entry.pinned |= pinned;
 #if defined(ENABLE_BGFX)
    RefreshBudget();
    entry.lastUsedFrame = m_statsFrame;
@@ -53,28 +60,43 @@ std::shared_ptr<Sampler> TextureManager::LoadTexture(ITexManCacheable* const mem
    else if (entry.dirty[variant])
    {
       entry.dirty[variant] = false; // Only the variant actually refreshed below, the other keeps waiting its turn
-      std::shared_ptr<const BaseTexture> bitmap = m_rd.OrFallback(memtex->GetRawBitmap(false, 0));
-      sampler->UpdateTexture(bitmap, force_linear_rgb);
 #if defined(ENABLE_BGFX)
-      const size_t est = EstimateGpuBytes(bitmap.get());
-      m_managedBytes += static_cast<int64_t>(est) - static_cast<int64_t>(entry.gpuBytes[variant]);
-      entry.gpuBytes[variant] = est;
-      entry.fullBytes[variant] = 0; // Now holds the full size content
-   }
-   else if (entry.fullBytes[variant] > 0 && m_statsFrame >= entry.upgradeRetryFrame)
-   {
-      // Degraded (downsized or fallback) under memory pressure: re-upload at full size once it fits below the
-      // eviction target, not just the cap, so that it does not immediately evict other textures
-      entry.upgradeRetryFrame = m_statsFrame + kUpgradeRetryFrames;
-      if (m_gpuMemBudget > 0 && ProjectedUse(static_cast<int64_t>(entry.fullBytes[variant]) - static_cast<int64_t>(entry.gpuBytes[variant])) <= (m_gpuMemBudget * kEvictTargetPct) / 100)
+      if (entry.isPlaceHolder)
+         sampler->UpdateTexture(m_rd.OrFallback(memtex->GetRawBitmap(false, 0)), force_linear_rgb);
+      else if (std::shared_ptr<const BaseTexture> bitmap = memtex->GetRawBitmap(false, 0); bitmap != nullptr) // Nothing decodable keeps the previous content
       {
-         m_managedBytes -= static_cast<int64_t>(entry.gpuBytes[variant]);
-         m_pendingFree.emplace_back(m_statsFrame, static_cast<int64_t>(entry.gpuBytes[variant]));
-         entry.gpuBytes[variant] = 0;
-         sampler = CreateSampler(entry, variant, force_linear_rgb, memtex->GetRawBitmap(false, 0));
+         if (entry.fullBytes[variant] == 0 && bitmap->width() == static_cast<unsigned int>(sampler->GetWidth()) && bitmap->height() == static_cast<unsigned int>(sampler->GetHeight()))
+            // Same size update, written into the existing allocation: the accounted bytes are unchanged (Reconcile below
+            // catches a format change to an uncompressed upload)
+            sampler->UpdateTexture(bitmap, force_linear_rgb);
+         else
+         {
+            // A degraded (downsized or fallback) or resized sampler cannot be updated in place, as the allocation keeps
+            // its size: recreate it through admission instead
+            Retire(sampler, entry.gpuBytes[variant]);
+            sampler = CreateSampler(entry, variant, force_linear_rgb, std::move(bitmap));
+         }
       }
+#else
+      sampler->UpdateTexture(m_rd.OrFallback(memtex->GetRawBitmap(false, 0)), force_linear_rgb);
 #endif
    }
+#if defined(ENABLE_BGFX)
+   else if (entry.fullBytes[variant] > 0 && (entry.pinned || m_statsFrame >= entry.upgradeRetryFrame))
+   {
+      // Degraded (downsized or fallback) under memory pressure: re-upload at full size once it fits below the
+      // eviction target, not just the cap, so that it does not immediately evict other textures. A texture pinned
+      // after it was degraded is restored right away
+      entry.upgradeRetryFrame = m_statsFrame + kUpgradeRetryFrames;
+      if (entry.pinned || (m_gpuMemBudget > 0 && ProjectedUse(static_cast<int64_t>(entry.fullBytes[variant]) - static_cast<int64_t>(entry.gpuBytes[variant])) <= (m_gpuMemBudget * kEvictTargetPct) / 100))
+      {
+         Retire(sampler, entry.gpuBytes[variant]);
+         sampler = CreateSampler(entry, variant, force_linear_rgb, memtex->GetRawBitmap(false, 0));
+      }
+   }
+   if (sampler && !entry.isPlaceHolder)
+      Reconcile(entry, variant);
+#endif
    return sampler;
 }
 
@@ -138,16 +160,12 @@ void TextureManager::SetDirty(ITexManCacheable* memtex)
 void TextureManager::UnloadTexture(ITexManCacheable* memtex)
 {
    const std::lock_guard lock(m_mapMutex);
-   const CIter it = m_map.find(memtex->GetLiveHash());
+   const Iter it = m_map.find(memtex->GetLiveHash());
    if (it != m_map.end())
    {
 #if defined(ENABLE_BGFX)
-      for (const size_t bytes : it->second.gpuBytes)
-         if (bytes > 0)
-         {
-            m_managedBytes -= static_cast<int64_t>(bytes);
-            m_pendingFree.emplace_back(m_statsFrame, static_cast<int64_t>(bytes));
-         }
+      for (unsigned int v = 0; v < VARIANT_COUNT; ++v)
+         Retire(it->second.samplers[v], it->second.gpuBytes[v]);
 #endif
       m_map.erase(it);
    }
@@ -156,20 +174,55 @@ void TextureManager::UnloadTexture(ITexManCacheable* memtex)
 void TextureManager::UnloadAll()
 {
    const std::lock_guard lock(m_mapMutex);
-   m_map.clear();
 #if defined(ENABLE_BGFX)
-   m_managedBytes = 0; // m_pendingFree is kept as the deferred destroys still reach the driver
+   // Samplers still referenced elsewhere stay accounted until destroyed, the deferred destroys still reach the driver
+   for (auto& [hash, entry] : m_map)
+      for (unsigned int v = 0; v < VARIANT_COUNT; ++v)
+         Retire(entry.samplers[v], entry.gpuBytes[v]);
+#endif
+   m_map.clear();
+}
+
+void TextureManager::SetBudgetOverride([[maybe_unused]] const int64_t bytes)
+{
+#if defined(ENABLE_BGFX)
+   const std::lock_guard lock(m_mapMutex);
+   m_budgetOverride = std::max<int64_t>(bytes, 0);
+   m_gpuMemBudget = VPX::TextureBudget::EffectiveBudget(m_driverBudget, m_budgetOverride);
+   if (m_budgetOverride > 0)
+      PLOGI << "TexBudget: GPU memory budget override " << (m_budgetOverride >> 20) << " MB (replaces the driver's figure)";
 #endif
 }
 
 #if defined(ENABLE_BGFX)
 #pragma region GPU memory budget management (BGFX only)
 
-size_t TextureManager::EstimateGpuBytes(const BaseTexture* tex) const
+namespace
+{
+// System RAM still available, which bounds Turnip's VK_EXT_memory_budget figure on unified memory. -1 where unknown
+int64_t MemAvailableMB()
+{
+#if defined(__linux__)
+   std::ifstream meminfo("/proc/meminfo");
+   if (!meminfo)
+      return -1;
+   std::stringstream content;
+   content << meminfo.rdbuf();
+   const int64_t kb = VPX::TextureBudget::ParseMemAvailableKB(content.str());
+   return kb < 0 ? -1 : kb / 1024;
+#else
+   return -1;
+#endif
+}
+
+string FormatMB(const int64_t bytes) { return std::format("{:.1f}", static_cast<double>(bytes) / (1024. * 1024.)); }
+}
+
+size_t TextureManager::EstimateGpuBytes(const BaseTexture* tex, const bool allowCompressed) const
 {
    if (tex == nullptr)
       return 0;
-   if (tex->m_compressed && m_rd.m_compressTextures) // Same condition as Sampler's precompressed upload
+   if (allowCompressed && tex->m_compressed && m_rd.m_compressTextures) // Same condition as Sampler's precompressed upload
       return tex->m_compressed->data.size() + tex->m_compressed->GetMipSize(0); // Mip chain plus the no-mips alias
    // Bytes per texel of the GPU format (UncompressedBgfxFormat in Sampler.cpp), not of the bitmap: SRGB and SRGB565
    // upload as RGBA8, RGB float as RGBA float, and RGB8 is padded to 4 bytes by most drivers
@@ -183,50 +236,114 @@ size_t TextureManager::EstimateGpuBytes(const BaseTexture* tex) const
    case BaseTexture::RGBA_FP32: texelBytes = 16; break;
    default: texelBytes = 4; break; // BW_FP32, RGB, SRGB, RGBA, SRGBA, SRGB565
    }
-   return (texelBytes * tex->width() * tex->height() * 4) / 3; // Base level plus ~1/3 for the mip chain
+   // Mipmapped texture only: a sampler also sampled without mipmaps keeps the base level too, which Reconcile accounts
+   // once allocated, rather than reserving it for every texture
+   return VPX::TextureBudget::MippedBytes(texelBytes, tex->width(), tex->height());
 }
 
 void TextureManager::RefreshBudget()
 {
-   const bgfx::Stats* stats = bgfx::getStats();
-   if (stats == nullptr || stats->gpuFrameNum == m_statsFrame)
+   const RenderDevice::GpuMemorySnapshot stats = m_rd.GetGpuMemorySnapshot();
+   if (stats.gpuFrameNum == m_statsFrame)
       return;
-   m_statsFrame = stats->gpuFrameNum;
-   m_gpuMemBudget = stats->gpuMemoryMax;
-   m_gpuMemUsed = stats->gpuMemoryUsed;
-   // Destroyed samplers take a few frames before their memory is actually freed by the driver
+   m_statsFrame = stats.gpuFrameNum;
+   m_driverBudget = stats.gpuMemoryMax;
+   m_gpuMemBudget = VPX::TextureBudget::EffectiveBudget(m_driverBudget, m_budgetOverride);
+   m_gpuMemUsed = stats.gpuMemoryUsed;
+   // Retired samplers destroyed since the last sample now wait for their deferred destroy to reach the driver
+   for (size_t i = 0; i < m_retired.size();)
+   {
+      if (m_retired[i].sampler.expired())
+      {
+         m_retiredBytes -= m_retired[i].bytes;
+         m_pendingFree.emplace_back(m_statsFrame, m_retired[i].bytes);
+         m_pendingFreeBytes += m_retired[i].bytes;
+         m_retired[i] = m_retired.back();
+         m_retired.pop_back();
+      }
+      else
+         i++;
+   }
+   // Destroyed samplers take a few frames before their memory is actually freed by the driver (BGFX may then still keep
+   // the allocation in its own reuse cache, which shows up in m_otherBytes)
    while (!m_pendingFree.empty() && m_statsFrame - m_pendingFree.front().first >= kFreeLatencyFrames)
+   {
+      m_pendingFreeBytes -= m_pendingFree.front().second;
       m_pendingFree.pop_front();
-   int64_t pendingFree = 0;
-   for (const auto& freed : m_pendingFree)
-      pendingFree += freed.second;
+   }
    // gpuMemoryUsed covers the whole process: the share neither owned by this manager nor about to be freed
    // (render targets, buffers, staging, ...) acts as a baseline for projected usage between stats updates
-   m_otherBytes = std::max<int64_t>(0, m_gpuMemUsed - m_managedBytes - pendingFree);
+   m_otherBytes = std::max<int64_t>(0, m_gpuMemUsed - m_managedBytes - m_retiredBytes - m_pendingFreeBytes);
+   if (!m_loggedFirstSample && m_driverBudget > 0)
+   {
+      m_loggedFirstSample = true;
+      LogBudget("first sample", ""s, 0, true);
+   }
 }
 
 int64_t TextureManager::ProjectedUse(const int64_t added) const
 {
-   // Evicted bytes leave m_managedBytes right away, so that eviction actually makes room. They are still resident
-   // for a few frames (kFreeLatencyFrames), a transient overshoot covered by the headroom above BudgetCap()
-   return m_otherBytes + m_managedBytes + added;
+   // Bytes of destroyed samplers leave the projection right away, so that eviction actually makes room. They are still
+   // resident for a few frames (kFreeLatencyFrames), a transient overshoot covered by the headroom above BudgetCap()
+   return m_otherBytes + m_managedBytes + m_retiredBytes + added;
 }
 
-bool TextureManager::MakeRoom(const size_t needed)
+void TextureManager::Retire(std::shared_ptr<Sampler>& sampler, size_t& bytes)
+{
+   m_managedBytes -= static_cast<int64_t>(bytes);
+   const int64_t retired = static_cast<int64_t>(bytes);
+   bytes = 0;
+   if (sampler == nullptr)
+      return;
+   std::weak_ptr<Sampler> weak = sampler;
+   sampler.reset();
+   if (retired == 0)
+      return;
+   if (weak.expired())
+   {
+      // Destroyed right now: BGFX releases its textures with the next frames
+      m_pendingFree.emplace_back(m_statsFrame, retired);
+      m_pendingFreeBytes += retired;
+   }
+   else
+   {
+      m_retired.push_back({ std::move(weak), retired });
+      m_retiredBytes += retired;
+   }
+}
+
+void TextureManager::Reconcile(MapEntry& entry, const SamplerVariant variant)
+{
+   const size_t actual = entry.samplers[variant]->GetGpuBytes();
+   if (actual > entry.gpuBytes[variant])
+   {
+      m_managedBytes += static_cast<int64_t>(actual - entry.gpuBytes[variant]);
+      entry.gpuBytes[variant] = actual;
+   }
+}
+
+bool TextureManager::MakeRoom(const size_t needed, unsigned int* const evicted)
 {
    if (m_gpuMemBudget <= 0 || ProjectedUse(static_cast<int64_t>(needed)) <= BudgetCap())
       return true;
 
    NotifyPressure();
 
-   // Evict least recently used samplers, excluding placeholders (tiny shared fallback) and recently
-   // used ones which are likely referenced by in-flight draws
+   // Evict least recently used samplers, excluding placeholders (tiny shared fallback), pinned ones, recently used ones
+   // which are likely referenced by in-flight draws, and ones referenced outside of the manager (bound shader state,
+   // ImGui, queued uploads) since dropping them would not free anything
    vector<std::pair<uint32_t, Iter>> victims;
    for (Iter it = m_map.begin(); it != m_map.end(); ++it)
    {
       const MapEntry& entry = it->second;
-      if (!entry.isPlaceHolder && entry.lastUsedFrame + kEvictGraceFrames < m_statsFrame && (entry.samplers[VARIANT_SRGB] || entry.samplers[VARIANT_LINEAR]))
-         victims.emplace_back(entry.lastUsedFrame, it);
+      if (entry.isPlaceHolder || entry.pinned || entry.lastUsedFrame + kEvictGraceFrames >= m_statsFrame)
+         continue;
+      for (const auto& sampler : entry.samplers)
+         if (sampler && sampler.use_count() == 1)
+         {
+            victims.emplace_back(entry.lastUsedFrame, it);
+            break;
+         }
    }
    std::sort(victims.begin(), victims.end(), [](const auto& a, const auto& b) { return a.first < b.first; }); // Least recently used first
 
@@ -237,15 +354,14 @@ bool TextureManager::MakeRoom(const size_t needed)
          break;
       MapEntry& entry = victim.second->second;
       for (unsigned int v = 0; v < VARIANT_COUNT; ++v)
-         if (entry.samplers[v])
+         if (entry.samplers[v] && entry.samplers[v].use_count() == 1)
          {
             PLOGI << "GPU memory limit: evicting texture '" << entry.tex->GetName() << '\'';
-            entry.samplers[v].reset();
-            m_managedBytes -= static_cast<int64_t>(entry.gpuBytes[v]);
-            m_pendingFree.emplace_back(m_statsFrame, static_cast<int64_t>(entry.gpuBytes[v]));
-            entry.gpuBytes[v] = 0;
+            Retire(entry.samplers[v], entry.gpuBytes[v]);
             entry.fullBytes[v] = 0;
             entry.dirty[v] = false;
+            if (evicted)
+               (*evicted)++;
          }
       // The entry stays registered: the texture is transparently re-uploaded on next use
    }
@@ -259,39 +375,71 @@ std::shared_ptr<Sampler> TextureManager::CreateSampler(MapEntry& entry, const Sa
    size_t est = EstimateGpuBytes(bitmap.get());
    entry.fullBytes[variant] = 0;
 
-   if (!MakeRoom(est))
+   unsigned int evicted = 0;
+   if (!MakeRoom(est, &evicted))
    {
-      // Out of budget even after evicting: try a downsized decode before degrading to the fallback texture.
-      // Half of the loaded size, not of the declared size, which is larger when capped by the max texture dimension setting
-      entry.fullBytes[variant] = est;
-      entry.upgradeRetryFrame = m_statsFrame + kUpgradeRetryFrames;
-      const unsigned int halfDim = std::max(std::max(bitmap->width(), bitmap->height()), 2 * MIN_TEXTURE_SIZE) / 2;
-      if (std::shared_ptr<const BaseTexture> downsized = entry.tex->GetRawBitmap(true, halfDim);
-         downsized != nullptr && (downsized->width() < bitmap->width() || downsized->height() < bitmap->height()) && MakeRoom(EstimateGpuBytes(downsized.get())))
-      {
-         PLOGW << "GPU memory limit: image '" << entry.tex->GetName() << "' was downsized to " << downsized->width() << 'x' << downsized->height();
-         if (m_notify)
-            m_downsizeNotifId = m_notify("Image '" + entry.tex->GetName() + "' was downsized due to low GPU memory"s, 5000, m_downsizeNotifId);
-         bitmap = std::move(downsized);
-      }
+      if (entry.pinned)
+         // Never degraded: uploaded over the cap, the next uploads make room again (or degrade) against it
+         LogBudget("pinned, admitted over the cap", entry.tex->GetName(), est, true);
       else
       {
-         PLOGW << "GPU memory limit: image '" << entry.tex->GetName() << "' skipped (out of GPU memory)";
-         if (m_notify)
-            m_downsizeNotifId = m_notify("Image '" + entry.tex->GetName() + "' could not be uploaded, out of GPU memory"s, 5000, m_downsizeNotifId);
-         bitmap = m_rd.m_fallbackTexture;
+         // Out of budget even after evicting: try a downsized copy before degrading to the fallback texture. The size is
+         // chosen to fit the room left, from the loaded size (not the declared one, which is larger when capped by the
+         // max texture dimension setting). The copy is uncompressed, so it is sized from the uncompressed estimate
+         entry.fullBytes[variant] = est;
+         entry.upgradeRetryFrame = m_statsFrame + kUpgradeRetryFrames;
+         const unsigned int maxDim = std::max(bitmap->width(), bitmap->height());
+         const unsigned int dim = VPX::TextureBudget::PickDownsizeDim(maxDim, EstimateGpuBytes(bitmap.get(), false), BudgetCap() - ProjectedUse(0), MIN_TEXTURE_SIZE);
+         std::shared_ptr<const BaseTexture> downsized = (dim > 0 && bitmap != m_rd.m_fallbackTexture) ? entry.tex->GetDownsizedBitmap(dim) : nullptr;
+         if (downsized != nullptr && std::max(downsized->width(), downsized->height()) < maxDim && MakeRoom(EstimateGpuBytes(downsized.get())))
+         {
+            PLOGW << "GPU memory limit: image '" << entry.tex->GetName() << "' was downsized to " << downsized->width() << 'x' << downsized->height();
+            LogBudget(std::format("downsized to {}x{}", downsized->width(), downsized->height()).c_str(), entry.tex->GetName(), est);
+            if (m_notify)
+               m_downsizeNotifId = m_notify("Image '" + entry.tex->GetName() + "' was downsized due to low GPU memory"s, 5000, m_downsizeNotifId);
+            bitmap = std::move(downsized);
+         }
+         else
+         {
+            PLOGW << "GPU memory limit: image '" << entry.tex->GetName() << "' skipped (out of GPU memory)";
+            LogBudget("fallback texture", entry.tex->GetName(), est);
+            if (m_notify)
+               m_downsizeNotifId = m_notify("Image '" + entry.tex->GetName() + "' could not be uploaded, out of GPU memory"s, 5000, m_downsizeNotifId);
+            bitmap = m_rd.m_fallbackTexture;
+         }
+         est = EstimateGpuBytes(bitmap.get());
       }
-      est = EstimateGpuBytes(bitmap.get());
    }
+   else if (evicted > 0)
+      LogBudget(std::format("admitted after evicting {} textures", evicted).c_str(), entry.tex->GetName(), est);
 
    m_managedBytes += static_cast<int64_t>(est) - static_cast<int64_t>(entry.gpuBytes[variant]);
    entry.gpuBytes[variant] = est;
    return std::make_shared<Sampler>(&m_rd, entry.tex->GetName(), std::move(bitmap), force_linear_rgb);
 }
 
+void TextureManager::LogBudget(const char* const decision, const string& name, const size_t upload, const bool force)
+{
+   const uint32_t now = msec();
+   if (!force && now < m_logNextMs)
+   {
+      m_logSuppressed++;
+      return;
+   }
+   m_logNextMs = now + kLogIntervalMs;
+   const int64_t memAvailable = MemAvailableMB();
+   // Grep 'TexBudget:'. Byte figures are MB. 'used' and 'driver budget' are bgfx::Stats gpuMemoryUsed/gpuMemoryMax as
+   // sampled after the last frame, the others are this manager's estimates
+   PLOGW << std::format("TexBudget: {} '{}' upload={} | budget={} (driver {}, override {}) cap={} used={} managed={} retired={} pendingFree={} other={} "
+                        "projected={} | MemAvailable={} | gpuFrame={} suppressed={}",
+      decision, name, FormatMB(upload), FormatMB(m_gpuMemBudget), FormatMB(m_driverBudget), FormatMB(m_budgetOverride), FormatMB(BudgetCap()), FormatMB(m_gpuMemUsed), FormatMB(m_managedBytes),
+      FormatMB(m_retiredBytes), FormatMB(m_pendingFreeBytes), FormatMB(m_otherBytes), FormatMB(ProjectedUse(static_cast<int64_t>(upload))), memAvailable < 0 ? "n/a"s : std::to_string(memAvailable),
+      m_statsFrame, m_logSuppressed);
+   m_logSuppressed = 0;
+}
+
 void TextureManager::NotifyPressure()
 {
-   PLOGW << "GPU memory budget reached: " << (m_gpuMemUsed >> 20) << " / " << (m_gpuMemBudget >> 20) << " MB used, " << (m_managedBytes >> 20) << " MB of managed textures";
    const uint32_t now = msec();
    if (now < m_pressureNotifCooldown || !m_notify)
       return;

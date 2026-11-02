@@ -315,6 +315,16 @@ public:
 
    uint64_t m_lastGPUFrameLength = 0;
 
+   // bgfx::Stats memory figures, copied by the render thread right after each bgfx::frame() so that the texture manager
+   // (logic thread) reads a consistent set instead of fields the renderer is rewriting
+   struct GpuMemorySnapshot
+   {
+      uint32_t gpuFrameNum = 0;
+      int64_t gpuMemoryMax = -1;
+      int64_t gpuMemoryUsed = -1;
+   };
+   GpuMemorySnapshot GetGpuMemorySnapshot() const { const std::lock_guard lock(m_gpuMemorySnapshotMutex); return m_gpuMemorySnapshot; }
+
 #if BX_PLATFORM_WINDOWS
    void OnInputSampled();
    struct PresentMonProvider* m_presentMonProvider = nullptr;
@@ -340,6 +350,8 @@ private:
    // Pending uploads are written by the logic thread (e.g. during table load) and consumed by the render thread
    vector<std::shared_ptr<Sampler>> m_pendingTextureUploads;
    std::mutex m_pendingTextureUploadsMutex;
+   mutable std::mutex m_gpuMemorySnapshotMutex;
+   GpuMemorySnapshot m_gpuMemorySnapshot;
 
 
    class tBGFXCallback : public bgfx::CallbackI
