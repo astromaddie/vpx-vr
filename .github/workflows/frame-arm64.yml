@@ -49,7 +49,7 @@ jobs:
 
       - name: Calculate external cache key
         run: |
-          echo "EXT_HASH=$(cat platforms/config.sh platforms/linux-aarch64/external.sh | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+          echo "EXT_HASH=$(cat platforms/config.sh platforms/linux-aarch64/external.sh platforms/linux-aarch64/*.patch | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
 
       - name: Restore external dependency cache
         id: cache

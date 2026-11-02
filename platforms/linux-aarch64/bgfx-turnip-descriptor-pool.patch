@@ -1,0 +1,15 @@
+--- a/src/renderer_vk.cpp
++++ b/src/renderer_vk.cpp
+@@ -5404,7 +5404,11 @@
+ 			VkDescriptorPoolCreateInfo dpci;
+ 			dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+ 			dpci.pNext = NULL;
+-			dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
++			// Sets are never freed individually; pools are only reset or destroyed.
++			// Without FREE_DESCRIPTOR_SET_BIT, Mesa Turnip keeps a linear allocator.
++			// Its free-set heap is rebuilt 32 bytes larger than the pool on reset,
++			// so the first set after a reset overruns a page-aligned pool.
++			dpci.flags = 0;
+ 			dpci.maxSets       = kDescriptorPoolChunkSize;
+ 			dpci.poolSizeCount = BX_COUNTOF(dps);
+ 			dpci.pPoolSizes    = dps;

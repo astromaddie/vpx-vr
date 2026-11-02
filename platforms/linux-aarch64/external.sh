@@ -29,6 +29,7 @@ echo "  ZLIB_SHA: ${ZLIB_SHA}"
 echo ""
 
 NUM_PROCS=$(nproc)
+PATCH_DIR="$(pwd)/platforms/linux-aarch64"
 
 mkdir -p "external/linux-aarch64/${BUILD_TYPE}"
 cd "external/linux-aarch64/${BUILD_TYPE}"
@@ -136,7 +137,7 @@ fi
 # build bgfx
 #
 
-BGFX_EXPECTED_SHA="${BGFX_CMAKE_VERSION}-${BGFX_PATCH_SHA}-001"
+BGFX_EXPECTED_SHA="${BGFX_CMAKE_VERSION}-${BGFX_PATCH_SHA}-002"
 BGFX_FOUND_SHA="$([ -f bgfx/cache.txt ] && cat bgfx/cache.txt || echo "")"
 
 if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
@@ -153,6 +154,8 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    cd bgfx.cmake
    rm -rf bgfx
    mv ../bgfx-${BGFX_PATCH_SHA} bgfx
+   # Mesa Turnip overruns the first descriptor set after a free-set pool reset
+   patch -p1 -d bgfx < "${PATCH_DIR}/bgfx-turnip-descriptor-pool.patch"
    cmake -S. \
       -DBGFX_LIBRARY_TYPE=SHARED \
       -DBGFX_BUILD_TOOLS=OFF \

@@ -378,6 +378,8 @@ class DescriptorCase:
     bindings: tuple[tuple[int, int, int], ...]
     sampler_binding: int
     openxr_device_create_chain: bool = False
+    reset_pool_before_allocate: bool = False
+    pool_flags: int = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
 
 
 # These are the exact descriptor-set layout bindings from the first crashing
@@ -416,6 +418,31 @@ CASES = (
         19,
         openxr_device_create_chain=True,
     ),
+    # BGFX resets each frame's pool before allocating from it. Turnip's reset
+    # rebuilds a free-set pool's heap 32 bytes larger than its BO and allocates
+    # from the top, so the first set overruns the BO. The BGFX pool is exactly
+    # 5 MiB, so the overrun reaches an unmapped page.
+    DescriptorCase(
+        "reset_free_set_pool",
+        (
+            (0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_SHADER_STAGE_VERTEX_BIT),
+            (3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT),
+            (19, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT),
+        ),
+        19,
+        reset_pool_before_allocate=True,
+    ),
+    DescriptorCase(
+        "reset_linear_pool",
+        (
+            (0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_SHADER_STAGE_VERTEX_BIT),
+            (3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT),
+            (19, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT),
+        ),
+        19,
+        reset_pool_before_allocate=True,
+        pool_flags=0,
+    ),
 )
 CASES_BY_NAME = {case.name: case for case in CASES}
 
@@ -449,11 +476,11 @@ def make_bgfx_pool_sizes():
     return sizes
 
 
-def make_bgfx_pool_info(pool_sizes):
+def make_bgfx_pool_info(pool_sizes, flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT):
     return VkDescriptorPoolCreateInfo(
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         None,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        flags,
         BGFX_DESCRIPTOR_POOL_MAX_SETS,
         len(pool_sizes),
         pool_sizes,
@@ -885,6 +912,9 @@ def run_case(case: DescriptorCase):
             None,
             [C.c_void_p, C.c_uint32, C.POINTER(VkWriteDescriptorSet), C.c_uint32, C.c_void_p],
         )
+        reset_pool = _load_device_function(
+            get_device_proc_addr, device, "vkResetDescriptorPool", C.c_int32, [C.c_void_p, C.c_void_p, C.c_uint32]
+        )
         destroy_pool = _load_device_function(
             get_device_proc_addr, device, "vkDestroyDescriptorPool", None, [C.c_void_p, C.c_void_p, C.c_void_p]
         )
@@ -900,9 +930,12 @@ def run_case(case: DescriptorCase):
         )
 
         pool_sizes = make_bgfx_pool_sizes()
-        pool_info = make_bgfx_pool_info(pool_sizes)
-        print("CALL vkCreateDescriptorPool", flush=True)
+        pool_info = make_bgfx_pool_info(pool_sizes, case.pool_flags)
+        print(f"CALL vkCreateDescriptorPool(flags={case.pool_flags:#x})", flush=True)
         _check(create_pool(device, C.byref(pool_info), None, C.byref(descriptor_pool)), "vkCreateDescriptorPool")
+        if case.reset_pool_before_allocate:
+            print("CALL vkResetDescriptorPool", flush=True)
+            _check(reset_pool(device, descriptor_pool, 0), "vkResetDescriptorPool")
 
         bindings = make_layout_bindings(case)
         layout_info = VkDescriptorSetLayoutCreateInfo(
