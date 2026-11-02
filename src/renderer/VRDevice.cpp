@@ -148,6 +148,9 @@ VRDevice::VRDevice(const Settings& settings)
       m_lockbarWidth = appSettings.GetPlayer_LockbarWidth();
       m_lockbarHeight = appSettings.GetPlayer_LockbarHeight();
       m_seatedTilt = appSettings.GetPlayerVR_SeatedTilt();
+      m_foveaSharpSize = settings.GetPlayerVR_FoveationSharpSize();
+      m_foveaMiddleSize = settings.GetPlayerVR_FoveationMiddleSize();
+      m_foveaFeather = settings.GetPlayerVR_FoveationFeather();
       m_lockFeetToGround = appSettings.GetPlayerVR_LockFeetToGround() && m_seatedTilt == 0.f;
 
       // Fill out an XrApplicationInfo structure detailing the names and OpenXR version.
@@ -1435,6 +1438,24 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
 
             m_roomProj[eye] = vpuScale * m_nextProj[eye];
             m_sceneProj[eye] = sceneScale * m_roomProj[eye];
+
+            // Foveation windows: asymmetric crops of the eye frustum, centered on the optical axis, sharing the eye view
+            if (m_foveated && eye < VPX::Fovea::EyeCount)
+            {
+               const VPX::Fovea::TanBounds eyeTan = VPX::Fovea::EyeTanBounds(views[eye].fov.angleLeft, views[eye].fov.angleRight, views[eye].fov.angleDown, views[eye].fov.angleUp);
+               const float feather = m_foveaFeather * 0.01f;
+               for (int tier = VPX::Fovea::Middle; tier <= VPX::Fovea::Sharp; tier++)
+               {
+                  const float size = tier == VPX::Fovea::Sharp ? m_foveaSharpSize : m_foveaMiddleSize;
+                  const VPX::Fovea::Window window = VPX::Fovea::ComputeWindow(eyeTan, 0.f, 0.f, VPX::Fovea::WindowHalfTangent(size, feather), VPX::Fovea::PictureSize);
+                  const int view = VPX::Fovea::ViewIndex(eye, tier);
+                  m_foveaWindows[eye][tier - VPX::Fovea::Middle] = window;
+                  m_foveaSpanFraction[view] = VPX::Fovea::WindowSpanFraction(eyeTan, window);
+                  m_nextProj[view].SetPerspectiveFovRH(atanf(window.tan.left), atanf(window.tan.right), atanf(window.tan.down), atanf(window.tan.up), zNear, zFar);
+                  m_roomProj[view] = vpuScale * m_nextProj[view];
+                  m_sceneProj[view] = sceneScale * m_roomProj[view];
+               }
+            }
          }
 
          // Feed the head tracked pose to the spatial audio listener (in table space, VPU)
@@ -1665,10 +1686,12 @@ void VRDevice::UpdateVRPosition(PartGroupData::SpaceReference spaceRef, ModelVie
    case SR_ROOM: viewpoint = m_roomWorld.m_view; proj = m_roomProj; break;
    default: assert(false); return;
    }
-   for (unsigned int eye = 0; eye < 2; eye++)
+   // Foveated rendering has 3 views per eye: they all share the eye view, with the crop in their projection (see FoveaLayout.h)
+   assert(mvp.m_nEyes == 2 || (m_foveated && mvp.m_nEyes == VPX::Fovea::ViewCount));
+   for (unsigned int view = 0; view < mvp.m_nEyes; view++)
    {
-      mvp.SetView(eye, viewpoint[eye]);
-      mvp.SetProj(eye, proj[eye]);
+      mvp.SetView(view, viewpoint[VPX::Fovea::EyeOfView(view)]);
+      mvp.SetProj(view, proj[view]);
    }
 }
 

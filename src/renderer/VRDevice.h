@@ -131,6 +131,7 @@
 
 #include "math/matrix.h"
 #include "parts/PartGroup.h"
+#include "renderer/FoveaLayout.h"
 
 class MeshBuffer;
 
@@ -188,6 +189,21 @@ public:
 
    void UpdateVRPosition(PartGroupData::SpaceReference spaceRef, ModelViewProj& mvp);
 
+   // Foveation: when enabled, each eye is rendered as 3 views (coarse full eye, middle and sharp windows) and UpdateVRPosition
+   // provides 6 views (see FoveaLayout.h). Window sizes and feather may be changed live, they apply from the next located views.
+   void SetFoveated(bool foveated) { m_foveated = foveated; }
+   bool IsFoveated() const { return m_foveated; }
+   float GetFoveaSharpSize() const { return m_foveaSharpSize; }
+   void SetFoveaSharpSize(float deg) { m_foveaSharpSize = deg; }
+   float GetFoveaMiddleSize() const { return m_foveaMiddleSize; }
+   void SetFoveaMiddleSize(float deg) { m_foveaMiddleSize = deg; }
+   float GetFoveaFeather() const { return m_foveaFeather; } // In percent of the window radius
+   void SetFoveaFeather(float percent) { m_foveaFeather = percent; }
+   // Window placement in the eye image for the views located for the frame being prepared: (u0, v0, u1, v1) with v pointing up
+   const float* GetFoveaRect(int eye, int tier) const { return m_foveaWindows[eye][tier - VPX::Fovea::Middle].rect; }
+   // Fraction of the eye width covered by a view (1 for the coarse views)
+   float GetFoveaSpanFraction(int view) const { return m_foveaSpanFraction[view]; }
+
    float GetPredictedDisplayTimestamp() const { return m_predictedDisplayTimestamp; }
 
    void SetShowUILayer(bool show) { m_showUILayer = show; }
@@ -218,8 +234,15 @@ private:
    Viewpoint m_cabWorld;
    Viewpoint m_feetWorld;
    Viewpoint m_roomWorld;
-   Matrix3D m_roomProj[2];
-   Matrix3D m_sceneProj[2];
+   Matrix3D m_roomProj[VPX::Fovea::ViewCount];
+   Matrix3D m_sceneProj[VPX::Fovea::ViewCount];
+
+   bool m_foveated = false;
+   float m_foveaSharpSize = 16.f;
+   float m_foveaMiddleSize = 35.f;
+   float m_foveaFeather = 43.f;
+   VPX::Fovea::Window m_foveaWindows[VPX::Fovea::EyeCount][2] {};
+   float m_foveaSpanFraction[VPX::Fovea::ViewCount] { 1.f, 1.f, 1.f, 1.f, 1.f, 1.f };
 
    bool m_showUILayer = false;
 
@@ -337,7 +360,7 @@ private:
    int m_displayRefreshRateMode = 0;
    void ApplyDisplayRefreshRate();
 
-   Matrix3D m_nextProj[2];
+   Matrix3D m_nextProj[VPX::Fovea::ViewCount];
 
    bool m_debugUtilsExtensionSupported = false;
    XrDebugUtilsMessengerEXT m_debugUtilsMessenger = XR_NULL_HANDLE;

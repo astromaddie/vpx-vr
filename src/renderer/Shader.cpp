@@ -193,6 +193,7 @@ Shader::TechniqueDef Shader::shaderTechniqueNames[static_cast<unsigned int>(Shad
    SHADER_TECHNIQUE(SSReflection),
 #ifdef ENABLE_BGFX
    SHADER_TECHNIQUE(fb_resolve_depth_msaa),
+   SHADER_TECHNIQUE(fb_fovea_compose),
 #endif
 
    SHADER_TECHNIQUE(NFAA),
@@ -364,6 +365,8 @@ ShaderUniformDef ShaderUniformDef::coreUniforms[static_cast<unsigned int>(Shader
    SHADER_UNIFORM(ShaderUniformType::Float2, spline2, 1),
    SHADER_UNIFORM(ShaderUniformType::Float4, SSR_bumpHeight_fresnelRefl_scale_FS, 1),
    SHADER_UNIFORM(ShaderUniformType::Float2, AO_scale_timeblur, 1),
+   SHADER_UNIFORM(ShaderUniformType::Float4v, foveaRects, 4), // Foveation composer: window placement per eye and window
+   SHADER_UNIFORM(ShaderUniformType::Float4, foveaParams, 1), // Foveation composer: feather radii and dither
    SHADER_SAMPLER(tex_fb_unfiltered, 0, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_NONE), // Framebuffer (unfiltered)
    SHADER_SAMPLER(tex_fb_filtered, 0, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_BILINEAR), // Framebuffer (filtered)
    SHADER_SAMPLER(tex_bloom, 1, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_BILINEAR), // Bloom
@@ -446,8 +449,11 @@ Shader::Shader(RenderDevice* renderDevice, const ShaderId id, const bool isStere
    #else
       , m_isStereo(false)
    #endif
+   , m_nViews(m_isStereo ? std::max(2, renderDevice->m_nViews) : 1)
 {
-   const int nEyes = m_isStereo ? 2 : 1;
+   // The uniform table is shared by all shaders: when foveated, all stereo shaders use 6 views so that they agree on its
+   // array sizes (2 view shaders like the UI ones only read the first 2 entries of their larger state)
+   const int nEyes = m_nViews;
    auto updateCount = [](ShaderUniform uniform, int count)
    {
       ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniform)].count = count;
@@ -1312,7 +1318,7 @@ void Shader::loadProgram(const bgfx::EmbeddedShader* embeddedShaders, ShaderTech
 	    }
             continue;
          }
-         assert(info.num == ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformIndex)].count);
+         assert(info.num <= ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformIndex)].count); // Lower for 2 view arrays when foveated
          if (std::ranges::find(techniqueUniforms, uniformIndex) == techniqueUniforms.end())
             techniqueUniforms.push_back(uniformIndex);
       }
@@ -1369,42 +1375,44 @@ void Shader::Load()
    #define BGFX_EMBEDDED_SHADER_ST(a) BGFX_EMBEDDED_SHADER(a), BGFX_EMBEDDED_SHADER(a##_st)
    #define BGFX_EMBEDDED_SHADER_CLIP(a) BGFX_EMBEDDED_SHADER(a##_clip), BGFX_EMBEDDED_SHADER(a##_noclip)
    #define BGFX_EMBEDDED_SHADER_ST_CLIP(a) BGFX_EMBEDDED_SHADER_ST(a##_clip), BGFX_EMBEDDED_SHADER_ST(a##_noclip)
+   #define BGFX_EMBEDDED_SHADER_FV(a) BGFX_EMBEDDED_SHADER_ST(a), BGFX_EMBEDDED_SHADER(a##_fv)
+   #define BGFX_EMBEDDED_SHADER_FV_CLIP(a) BGFX_EMBEDDED_SHADER_FV(a##_clip), BGFX_EMBEDDED_SHADER_FV(a##_noclip)
    static const bgfx::EmbeddedShader embeddedShaders[] =
    {
       // ImGui shaders
       BGFX_EMBEDDED_SHADER_ST(vs_imgui),
       BGFX_EMBEDDED_SHADER(fs_imgui),
       // Basic material shaders
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_basic_tex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_basic_notex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_kicker),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_classic_light_tex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_classic_light_notex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_basic_tex_noat),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_basic_tex_at),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_basic_notex_noat),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_basic_refl),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_basic_tex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_basic_notex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_kicker),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_classic_light_tex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_classic_light_notex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_basic_tex_noat),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_basic_tex_at),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_basic_notex_noat),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_basic_refl),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_decal_tex),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_decal_notex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_classic_light_tex),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_classic_light_notex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_classic_light_tex),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_classic_light_notex),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_unshaded_notex),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_unshaded_notex_ballshadow),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_unshaded_tex),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_unshaded_tex_ballshadow),
       BGFX_EMBEDDED_SHADER(vs_vr_mask),
       // Ball shaders
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_ball),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_ball_trail),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_equirectangular_nodecal),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_equirectangular_decal),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_spherical_nodecal),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_spherical_decal),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_ball),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_ball_trail),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_ball_equirectangular_nodecal),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_ball_equirectangular_decal),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_ball_spherical_nodecal),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(fs_ball_spherical_decal),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_trail),
       BGFX_EMBEDDED_SHADER_ST_CLIP(fs_ball_debug),
       // DMD, Display & Sprite shaders
-      BGFX_EMBEDDED_SHADER_ST(vs_dmd_noworld),
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_dmd_world),
+      BGFX_EMBEDDED_SHADER_FV(vs_dmd_noworld),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_dmd_world),
       BGFX_EMBEDDED_SHADER_CLIP(fs_dmd),
       BGFX_EMBEDDED_SHADER_CLIP(fs_display_dmd),
       BGFX_EMBEDDED_SHADER_CLIP(fs_display_seg),
@@ -1413,11 +1421,11 @@ void Shader::Load()
       BGFX_EMBEDDED_SHADER_CLIP(fs_sprite_tex),
       BGFX_EMBEDDED_SHADER_CLIP(fs_sprite_notex),
       // Bulb light shaders
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_light),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_light),
       BGFX_EMBEDDED_SHADER_CLIP(fs_light_noshadow),
       BGFX_EMBEDDED_SHADER_CLIP(fs_light_ballshadow),
       // Flasher shaders
-      BGFX_EMBEDDED_SHADER_ST_CLIP(vs_flasher),
+      BGFX_EMBEDDED_SHADER_FV_CLIP(vs_flasher),
       BGFX_EMBEDDED_SHADER_CLIP(fs_flasher),
       // Stereo post-processes
       BGFX_EMBEDDED_SHADER_ST(vs_postprocess),
@@ -1463,6 +1471,7 @@ void Shader::Load()
       BGFX_EMBEDDED_SHADER_ST(fs_pp_irradiance),
       BGFX_EMBEDDED_SHADER_ST(fs_pp_msaa_depth),
       BGFX_EMBEDDED_SHADER(fs_pp_passthrough),
+      BGFX_EMBEDDED_SHADER(fs_pp_fovea_compose),
       // Motion Blur as post-processes
       BGFX_EMBEDDED_SHADER_ST(fs_pp_motionblur),
       // Anti-Aliasing as post-processes
@@ -1504,7 +1513,11 @@ void Shader::Load()
       BGFX_EMBEDDED_SHADER_END()
    };
    #undef BGFX_EMBEDDED_SHADER_ST
+   #undef BGFX_EMBEDDED_SHADER_FV
+   #undef BGFX_EMBEDDED_SHADER_FV_CLIP
    #define STEREO(n) m_isStereo ? n##_st.name : #n
+   // Programs holding per view uniform arrays have a dedicated 6 view build for foveated stereo
+   #define FOVEA(n) m_nViews > 2 ? n##_fv.name : STEREO(n)
    switch (m_shaderId)
    {
    case UI_SHADER:
@@ -1512,85 +1525,85 @@ void Shader::Load()
       loadProgram(embeddedShaders, ShaderTechnique::LiveUI_mono, "vs_imgui", "fs_imgui");
       break;
    case BASIC_SHADER:
-      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture,       STEREO(vs_basic_tex_noclip),           STEREO(fs_basic_tex_noat_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture_at,    STEREO(vs_basic_tex_noclip),           STEREO(fs_basic_tex_at_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::basic_without_texture,    STEREO(vs_basic_notex_noclip),         STEREO(fs_basic_notex_noat_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::basic_reflection_only,    STEREO(vs_basic_tex_noclip),           STEREO(fs_basic_refl_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::light_with_texture,       STEREO(vs_classic_light_tex_noclip),   STEREO(fs_classic_light_tex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::light_without_texture,    STEREO(vs_classic_light_notex_noclip), STEREO(fs_classic_light_notex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_without_texture, STEREO(vs_basic_notex_noclip),         STEREO(fs_decal_notex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_with_texture,    STEREO(vs_basic_tex_noclip),           STEREO(fs_decal_tex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::kickerBoolean,            STEREO(vs_kicker_noclip),              STEREO(fs_basic_notex_noat_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture, STEREO(vs_basic_notex_noclip),         STEREO(fs_unshaded_notex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture,    STEREO(vs_basic_tex_noclip),           STEREO(fs_unshaded_tex_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture_shadow, STEREO(vs_basic_notex_noclip),  STEREO(fs_unshaded_notex_ballshadow_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture_shadow, STEREO(vs_basic_tex_noclip),       STEREO(fs_unshaded_tex_ballshadow_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture,       FOVEA(vs_basic_tex_noclip),           FOVEA(fs_basic_tex_noat_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture_at,    FOVEA(vs_basic_tex_noclip),           FOVEA(fs_basic_tex_at_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::basic_without_texture,    FOVEA(vs_basic_notex_noclip),         FOVEA(fs_basic_notex_noat_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::basic_reflection_only,    FOVEA(vs_basic_tex_noclip),           FOVEA(fs_basic_refl_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::light_with_texture,       FOVEA(vs_classic_light_tex_noclip),   FOVEA(fs_classic_light_tex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::light_without_texture,    FOVEA(vs_classic_light_notex_noclip), FOVEA(fs_classic_light_notex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_without_texture, FOVEA(vs_basic_notex_noclip),         STEREO(fs_decal_notex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_with_texture,    FOVEA(vs_basic_tex_noclip),           STEREO(fs_decal_tex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::kickerBoolean,            FOVEA(vs_kicker_noclip),              FOVEA(fs_basic_notex_noat_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture, FOVEA(vs_basic_notex_noclip),         STEREO(fs_unshaded_notex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture,    FOVEA(vs_basic_tex_noclip),           STEREO(fs_unshaded_tex_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture_shadow, FOVEA(vs_basic_notex_noclip),  STEREO(fs_unshaded_notex_ballshadow_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture_shadow, FOVEA(vs_basic_tex_noclip),       STEREO(fs_unshaded_tex_ballshadow_noclip));
       // Variants with a clipping plane
-      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture,       STEREO(vs_basic_tex_clip),           STEREO(fs_basic_tex_noat_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture_at,    STEREO(vs_basic_tex_clip),           STEREO(fs_basic_tex_at_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::basic_without_texture,    STEREO(vs_basic_notex_clip),         STEREO(fs_basic_notex_noat_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::basic_reflection_only,    STEREO(vs_basic_tex_clip),           STEREO(fs_basic_refl_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::light_with_texture,       STEREO(vs_classic_light_tex_clip),   STEREO(fs_classic_light_tex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::light_without_texture,    STEREO(vs_classic_light_notex_clip), STEREO(fs_classic_light_notex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_without_texture, STEREO(vs_basic_notex_clip),         STEREO(fs_decal_notex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_with_texture,    STEREO(vs_basic_tex_clip),           STEREO(fs_decal_tex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::kickerBoolean,            STEREO(vs_kicker_clip),              STEREO(fs_basic_notex_noat_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture, STEREO(vs_basic_notex_clip),         STEREO(fs_unshaded_notex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture,    STEREO(vs_basic_tex_clip),           STEREO(fs_unshaded_tex_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture_shadow, STEREO(vs_basic_notex_clip),  STEREO(fs_unshaded_notex_ballshadow_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture_shadow, STEREO(vs_basic_tex_clip),       STEREO(fs_unshaded_tex_ballshadow_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture,       FOVEA(vs_basic_tex_clip),           FOVEA(fs_basic_tex_noat_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_with_texture_at,    FOVEA(vs_basic_tex_clip),           FOVEA(fs_basic_tex_at_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_without_texture,    FOVEA(vs_basic_notex_clip),         FOVEA(fs_basic_notex_noat_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_reflection_only,    FOVEA(vs_basic_tex_clip),           FOVEA(fs_basic_refl_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::light_with_texture,       FOVEA(vs_classic_light_tex_clip),   FOVEA(fs_classic_light_tex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::light_without_texture,    FOVEA(vs_classic_light_notex_clip), FOVEA(fs_classic_light_notex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_without_texture, FOVEA(vs_basic_notex_clip),         STEREO(fs_decal_notex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::bg_decal_with_texture,    FOVEA(vs_basic_tex_clip),           STEREO(fs_decal_tex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::kickerBoolean,            FOVEA(vs_kicker_clip),              FOVEA(fs_basic_notex_noat_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture, FOVEA(vs_basic_notex_clip),         STEREO(fs_unshaded_notex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture,    FOVEA(vs_basic_tex_clip),           STEREO(fs_unshaded_tex_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_without_texture_shadow, FOVEA(vs_basic_notex_clip),  STEREO(fs_unshaded_notex_ballshadow_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::unshaded_with_texture_shadow, FOVEA(vs_basic_tex_clip),       STEREO(fs_unshaded_tex_ballshadow_clip), true);
       // VR masking
       if (m_isStereo)
          loadProgram(embeddedShaders, ShaderTechnique::vr_mask, "vs_vr_mask", "fs_unshaded_notex_noclip");
       break;
    case BALL_SHADER:
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall,                        STEREO(vs_ball_noclip), STEREO(fs_ball_equirectangular_nodecal_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_DecalMode,              STEREO(vs_ball_noclip), STEREO(fs_ball_equirectangular_decal_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap,           STEREO(vs_ball_noclip), STEREO(fs_ball_spherical_nodecal_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap_DecalMode, STEREO(vs_ball_noclip), STEREO(fs_ball_spherical_decal_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_Debug,                  STEREO(vs_ball_noclip), STEREO(fs_ball_debug_noclip));
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBallTrail,                   STEREO(vs_ball_trail_noclip), STEREO(fs_ball_trail_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall,                        FOVEA(vs_ball_noclip), FOVEA(fs_ball_equirectangular_nodecal_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_DecalMode,              FOVEA(vs_ball_noclip), FOVEA(fs_ball_equirectangular_decal_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap,           FOVEA(vs_ball_noclip), FOVEA(fs_ball_spherical_nodecal_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap_DecalMode, FOVEA(vs_ball_noclip), FOVEA(fs_ball_spherical_decal_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_Debug,                  FOVEA(vs_ball_noclip), STEREO(fs_ball_debug_noclip));
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBallTrail,                   FOVEA(vs_ball_trail_noclip), STEREO(fs_ball_trail_noclip));
       // Variants with a clipping plane
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall,                        STEREO(vs_ball_clip), STEREO(fs_ball_equirectangular_nodecal_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_DecalMode,              STEREO(vs_ball_clip), STEREO(fs_ball_equirectangular_decal_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap,           STEREO(vs_ball_clip), STEREO(fs_ball_spherical_nodecal_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap_DecalMode, STEREO(vs_ball_clip), STEREO(fs_ball_spherical_decal_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_Debug,                  STEREO(vs_ball_clip), STEREO(fs_ball_debug_clip), true);
-      loadProgram(embeddedShaders, ShaderTechnique::RenderBallTrail,                   STEREO(vs_ball_trail_clip), STEREO(fs_ball_trail_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall,                        FOVEA(vs_ball_clip), FOVEA(fs_ball_equirectangular_nodecal_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_DecalMode,              FOVEA(vs_ball_clip), FOVEA(fs_ball_equirectangular_decal_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap,           FOVEA(vs_ball_clip), FOVEA(fs_ball_spherical_nodecal_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_SphericalMap_DecalMode, FOVEA(vs_ball_clip), FOVEA(fs_ball_spherical_decal_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBall_Debug,                  FOVEA(vs_ball_clip), STEREO(fs_ball_debug_clip), true);
+      loadProgram(embeddedShaders, ShaderTechnique::RenderBallTrail,                   FOVEA(vs_ball_trail_clip), STEREO(fs_ball_trail_clip), true);
       break;
    case DMD_SHADER:
-      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD,         STEREO(vs_dmd_noworld),      "fs_dmd_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD_world,   STEREO(vs_dmd_world_noclip), "fs_dmd_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD_world,   STEREO(vs_dmd_world_clip), "fs_dmd_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD,         FOVEA(vs_dmd_noworld),      "fs_dmd_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD_world,   FOVEA(vs_dmd_world_noclip), "fs_dmd_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_DMD_world,   FOVEA(vs_dmd_world_clip), "fs_dmd_clip", true);
 
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_world, STEREO(vs_dmd_world_clip), "fs_sprite_tex_clip", true);
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD,       STEREO(vs_dmd_noworld), "fs_sprite_tex_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_notex, STEREO(vs_dmd_noworld), "fs_sprite_notex_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_world, STEREO(vs_dmd_world_noclip), "fs_sprite_tex_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_world, FOVEA(vs_dmd_world_clip), "fs_sprite_tex_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD,       FOVEA(vs_dmd_noworld), "fs_sprite_tex_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_notex, FOVEA(vs_dmd_noworld), "fs_sprite_notex_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noDMD_world, FOVEA(vs_dmd_world_noclip), "fs_sprite_tex_noclip");
 
-      loadProgram(embeddedShaders, ShaderTechnique::display_DMD,             STEREO(vs_dmd_noworld), "fs_display_dmd_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_Seg,             STEREO(vs_dmd_noworld), "fs_display_seg_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_CRT,             STEREO(vs_dmd_noworld), "fs_display_crt_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_DMD_world,       STEREO(vs_dmd_world_noclip), "fs_display_dmd_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_Seg_world,       STEREO(vs_dmd_world_noclip), "fs_display_seg_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_CRT_world,       STEREO(vs_dmd_world_noclip), "fs_display_crt_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_CRTnuance_world, STEREO(vs_dmd_world_noclip), "fs_display_crtnuance_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::display_DMD_world,       STEREO(vs_dmd_world_clip), "fs_display_dmd_clip", true);
-      loadProgram(embeddedShaders, ShaderTechnique::display_Seg_world,       STEREO(vs_dmd_world_clip), "fs_display_seg_clip", true);
-      loadProgram(embeddedShaders, ShaderTechnique::display_CRT_world,       STEREO(vs_dmd_world_clip), "fs_display_crt_clip", true);
-      loadProgram(embeddedShaders, ShaderTechnique::display_CRTnuance_world, STEREO(vs_dmd_world_clip), "fs_display_crtnuance_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::display_DMD,             FOVEA(vs_dmd_noworld), "fs_display_dmd_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_Seg,             FOVEA(vs_dmd_noworld), "fs_display_seg_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_CRT,             FOVEA(vs_dmd_noworld), "fs_display_crt_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_DMD_world,       FOVEA(vs_dmd_world_noclip), "fs_display_dmd_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_Seg_world,       FOVEA(vs_dmd_world_noclip), "fs_display_seg_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_CRT_world,       FOVEA(vs_dmd_world_noclip), "fs_display_crt_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_CRTnuance_world, FOVEA(vs_dmd_world_noclip), "fs_display_crtnuance_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::display_DMD_world,       FOVEA(vs_dmd_world_clip), "fs_display_dmd_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::display_Seg_world,       FOVEA(vs_dmd_world_clip), "fs_display_seg_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::display_CRT_world,       FOVEA(vs_dmd_world_clip), "fs_display_crt_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::display_CRTnuance_world, FOVEA(vs_dmd_world_clip), "fs_display_crtnuance_clip", true);
       break;
    case FLASHER_SHADER:
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noLight, STEREO(vs_flasher_noclip), "fs_flasher_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noLight, FOVEA(vs_flasher_noclip), "fs_flasher_noclip");
       // Variants with a clipping plane
-      loadProgram(embeddedShaders, ShaderTechnique::basic_noLight, STEREO(vs_flasher_clip), "fs_flasher_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::basic_noLight, FOVEA(vs_flasher_clip), "fs_flasher_clip", true);
       break;
    case LIGHT_SHADER:
-      loadProgram(embeddedShaders, ShaderTechnique::bulb_light, STEREO(vs_light_noclip), "fs_light_noshadow_noclip");
-      loadProgram(embeddedShaders, ShaderTechnique::bulb_light_with_ball_shadows, STEREO(vs_light_noclip), "fs_light_ballshadow_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::bulb_light, FOVEA(vs_light_noclip), "fs_light_noshadow_noclip");
+      loadProgram(embeddedShaders, ShaderTechnique::bulb_light_with_ball_shadows, FOVEA(vs_light_noclip), "fs_light_ballshadow_noclip");
       // Variants with a clipping plane
-      loadProgram(embeddedShaders, ShaderTechnique::bulb_light, STEREO(vs_light_clip), "fs_light_noshadow_clip", true);
-      loadProgram(embeddedShaders, ShaderTechnique::bulb_light_with_ball_shadows, STEREO(vs_light_clip), "fs_light_ballshadow_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::bulb_light, FOVEA(vs_light_clip), "fs_light_noshadow_clip", true);
+      loadProgram(embeddedShaders, ShaderTechnique::bulb_light_with_ball_shadows, FOVEA(vs_light_clip), "fs_light_ballshadow_clip", true);
       break;
    case STEREO_SHADER:
       loadProgram(embeddedShaders, ShaderTechnique::stereo_SBS, "vs_postprocess", "fs_pp_stereo_sbs");
@@ -1645,6 +1658,10 @@ void Shader::Load()
       if (m_isStereo)
          loadProgram(embeddedShaders, ShaderTechnique::vr_passthrough, "vs_postprocess_st", "fs_pp_passthrough");
 
+      // Foveated rendering: composition of the 6 internal pictures into the 2 eyes
+      if (m_nViews > 2)
+         loadProgram(embeddedShaders, ShaderTechnique::fb_fovea_compose, "vs_postprocess_st", "fs_pp_fovea_compose");
+
       // Postprocessed antialiasing
       loadProgram(embeddedShaders, ShaderTechnique::NFAA, STEREO(vs_postprocess), STEREO(fs_pp_nfaa));
       loadProgram(embeddedShaders, ShaderTechnique::DLAA_edge, STEREO(vs_postprocess), STEREO(fs_pp_dlaa_edge));
@@ -1681,6 +1698,7 @@ void Shader::Load()
       loadProgram(embeddedShaders, ShaderTechnique::fb_blur_vert39x39, STEREO(vs_postprocess), STEREO(fs_blur_39_v));
       break;
    }
+   #undef FOVEA
    #undef STEREO
 }
 

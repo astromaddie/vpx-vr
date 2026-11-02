@@ -103,12 +103,13 @@ RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, bgfx:
 }
 #endif
 
-RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, const string& name, const int width, const int height, const colorFormat format, bool with_depth, int nMSAASamples, const char* failureMessage, RenderTarget* sharedDepth)
+RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, const string& name, const int width, const int height, const colorFormat format, bool with_depth, int nMSAASamples, const char* failureMessage, RenderTarget* sharedDepth, const int nLayers)
    : m_name(name)
    , m_type(type)
-   , m_nLayers(type == SurfaceType::RT_DEFAULT ? 1
-           : type == SurfaceType::RT_CUBEMAP   ? 6
-                                               : 2)
+   , m_nLayers(nLayers > 0                      ? nLayers
+           : type == SurfaceType::RT_DEFAULT ? 1
+           : type == SurfaceType::RT_CUBEMAP ? 6
+                                             : 2)
    , m_rd(rd)
    , m_is_back_buffer(false)
    , m_format(format)
@@ -120,6 +121,7 @@ RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, const
 {
    assert(nMSAASamples >= 1);
    assert(type != SurfaceType::RT_CUBEMAP || nMSAASamples == 1); // Cubemap render target do not support multisampling
+   assert(nLayers <= 0 || (type == SurfaceType::RT_STEREO && nLayers <= 6)); // Layer count override is only supported for (layered) stereo surfaces, up to the size of m_framebuffer_layers
 
    m_color_sampler = nullptr;
    m_depth_sampler = nullptr;
@@ -620,7 +622,7 @@ void RenderTarget::UpdateDepthSampler(bool insideBeginEnd)
 RenderTarget* RenderTarget::Duplicate(const string& name, const bool shareDepthSurface)
 {
    assert(!m_is_back_buffer);
-   return new RenderTarget(m_rd, m_type, name, m_width, m_height, m_format, m_has_depth, m_nMSAASamples, "Failed to duplicate render target", shareDepthSurface ? this : nullptr);
+   return new RenderTarget(m_rd, m_type, name, m_width, m_height, m_format, m_has_depth, m_nMSAASamples, "Failed to duplicate render target", shareDepthSurface ? this : nullptr, m_type == SurfaceType::RT_STEREO ? m_nLayers : -1);
 }
 
 void RenderTarget::CopyTo(RenderTarget* const dest, const bool copyColor, const bool copyDepth,

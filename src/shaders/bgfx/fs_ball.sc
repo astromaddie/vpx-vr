@@ -14,10 +14,10 @@ $input v_worldPos, v_normal, v_texcoord0
 #define NUM_BALL_LIGHTS 8
 
 #ifdef STEREO
-    uniform mat4 matView[2];
-    uniform mat4 matWorldView[2];
-    uniform mat4 matWorldViewInverse[2];
-    uniform mat4 matProj[2];
+    uniform mat4 matView[N_VIEWS];
+    uniform mat4 matWorldView[N_VIEWS];
+    uniform mat4 matWorldViewInverse[N_VIEWS];
+    uniform mat4 matProj[N_VIEWS];
     // FIXME v_eye needs to be flat interpolated, but if declared as such in varying.def.sc, DX11 will fail (OpenGL/Vulkan are good)
     #define mView             matView[int(round(v_eye))]
     #define mWorldView        matWorldView[int(round(v_eye))]
@@ -172,17 +172,37 @@ void main()
     #else
         const vec2 uvp = vec2(0.5, 0.5) + vec2(proj.x, -proj.y) * (0.5 / proj.w);
     #endif
+    #ifdef FOVEATED
+        // Foveated rendering: a reflected point outside of a window picture is looked up in the coarse picture of the same eye
+        // (all pictures of an eye share its view matrix, so only the projection differs)
+        float playfieldLayer = round(v_eye);
+        vec2 uvpf = uvp;
+        BRANCH if (playfieldLayer > 1.5 && (uvp.x < 0. || uvp.x > 1. || uvp.y < 0. || uvp.y > 1.))
+        {
+            playfieldLayer = mod(playfieldLayer, 2.0);
+            const vec4 projCoarse = mul(matProj[int(playfieldLayer)], vec4(playfield_hit, 1.0));
+            #if TEX_V_IS_UP
+                uvpf = vec2(0.5, 0.5) + projCoarse.xy                     * (0.5 / projCoarse.w);
+            #else
+                uvpf = vec2(0.5, 0.5) + vec2(projCoarse.x, -projCoarse.y) * (0.5 / projCoarse.w);
+            #endif
+        }
+        #define texPlayfield(pos) texture2DArray(tex_ball_playfield, vec3((pos).x, (pos).y, playfieldLayer))
+    #else
+        #define uvpf uvp
+        #define texPlayfield(pos) texStereo(tex_ball_playfield, pos)
+    #endif
     const vec3 playfieldColor = 0.25 * (
-          texStereo(tex_ball_playfield, uvp + vec2(w_h_disableLighting.x, 0.)).rgb
-        + texStereo(tex_ball_playfield, uvp - vec2(w_h_disableLighting.x, 0.)).rgb
-        + texStereo(tex_ball_playfield, uvp + vec2(0., w_h_disableLighting.y)).rgb
-        + texStereo(tex_ball_playfield, uvp - vec2(0., w_h_disableLighting.y)).rgb
+          texPlayfield(uvpf + vec2(w_h_disableLighting.x, 0.)).rgb
+        + texPlayfield(uvpf - vec2(w_h_disableLighting.x, 0.)).rgb
+        + texPlayfield(uvpf + vec2(0., w_h_disableLighting.y)).rgb
+        + texPlayfield(uvpf - vec2(0., w_h_disableLighting.y)).rgb
     ); // a bit of supersampling, not strictly needed, but a bit better and not that costly
 
     // we don't clamp sampling outside the playfield (costly and no real visual impact)
     // const vec2 uv = mul(mWorldViewInverse, vec4(playfield_hit, 1.0)).xy * invTableRes_reflection.xy;
     // && !(uv.x < 0.1 && uv.y < 0.1 && uv.x > 0.9 && uv.y > 0.9)
-    BRANCH if (!(uvp.x < 0. || uvp.x > 1. || uvp.y < 0. || uvp.y > 1.) // outside of previous render => discard (we could use sampling techniques to optimize a bit)
+    BRANCH if (!(uvpf.x < 0. || uvpf.x > 1. || uvpf.y < 0. || uvpf.y > 1.) // outside of previous render => discard (we could use sampling techniques to optimize a bit)
             && !(t <= 0.)) // t < 0.0 may happen in some situation where ball intersects the playfield and the reflected point is inside the ball (like in kicker)
     {
         // NdotR allows to fade between playfield (down) and environment (up)

@@ -80,6 +80,7 @@ public:
    void GetRenderSize(int& w, int& h) const { w = m_renderWidth; h = m_renderHeight; }
    void GetRenderSizeAA(int& w, int& h) const { w = m_pOffscreenBackBufferTexture1->GetWidth(); h = m_pOffscreenBackBufferTexture1->GetHeight(); }
    bool IsStereo() const { return m_pOffscreenBackBufferTexture1->m_type == SurfaceType::RT_STEREO; }
+   int GetRenderLayers() const { return m_pOffscreenBackBufferTexture1->m_nLayers; } // Scene render target layers: 1 (mono), 2 (stereo) or 6 (foveated stereo)
    colorFormat GetRenderFormat() const { return m_pOffscreenBackBufferTexture1->GetColorFormat(); }
 
    int GetDisplayWidth() const; // Playfield display width, taking in consideration stretching applied by some stereo modes
@@ -249,7 +250,8 @@ public:
    VRDesktopMode m_vrDesktop = VRDesktopMode::Disabled; // Content shown on the desktop display while playing in VR
    bool NeedsDesktopSceneRender() const
    {
-      return m_vrDesktop == VRDesktopMode::All || m_vrDesktop == VRDesktopMode::Playfield;
+      // Not supported with foveated rendering (the desktop display then mirrors the composed eyes)
+      return (m_vrDesktop == VRDesktopMode::All || m_vrDesktop == VRDesktopMode::Playfield) && m_pFoveaEyeTexture == nullptr;
    } // True when the desktop display shows a dedicated scene render instead of a mirrored eye
 
    enum RenderMask : unsigned int
@@ -284,6 +286,11 @@ public:
 
    RenderTarget* GetOffscreenVR(int eye) const { return eye == 0 ? m_pOffscreenVRLeft : m_pOffscreenVRRight; }
    RenderTarget* GetBackBufferTexture() const { return m_pOffscreenBackBufferTexture1; } // Main render target, with MSAA resolved if any, also may have stereo output (2 viewports)
+   // Full resolution eye(s) the postprocess chain starts from: the back buffer, or the composed eyes when using foveated rendering (where the back buffer holds the 6 internal pictures)
+   RenderTarget* GetEyeTexture() const { return (m_pFoveaEyeTexture && !m_desktopScenePass) ? m_pFoveaEyeTexture : m_pOffscreenBackBufferTexture1; }
+   bool IsFoveated() const { return m_pFoveaEyeTexture != nullptr; }
+   // Separable gaussian blur of a scene render target, with the kernel footprint (in texels of a full eye render) kept equal across the foveated pictures
+   void DrawSceneBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size);
 
    unsigned int GetPlayerModeVisibilityMask() const { return m_visibilityMask; }
 
@@ -311,6 +318,12 @@ private:
    RenderTarget* ApplySharpening(RenderTarget* renderedRT, RenderTarget* outputBackBuffer);
    RenderTarget* ApplyUpscaling(RenderTarget* renderedRT, RenderTarget* outputBackBuffer);
    RenderTarget* ApplyStereo(RenderTarget* renderedRT, RenderTarget* outputBackBuffer);
+
+   // Foveated rendering (see FoveaLayout.h): the scene targets hold the 6 internal pictures, composed into the 2 full resolution eyes
+   RenderTarget* ComposeFoveation(RenderTarget* sceneRT);
+   RenderTarget* m_pFoveaEyeTexture = nullptr; // Composed eyes (linear HDR, with selected depth)
+   RenderTarget* m_pFoveaTransmission = nullptr; // Transmitted light of the 6 pictures (separate from the eye bloom buffers)
+   RenderTarget* m_pFoveaTransmissionTmp = nullptr;
 
    // Ancillary window rendering
 
@@ -416,7 +429,7 @@ private:
    ModelViewProj m_mvp; // Active Model / View / Projection (includes visual nudge)
    PartGroupData::SpaceReference m_mvpSpaceReference = PartGroupData::SpaceReference::SR_PLAYFIELD;
    ModelViewProj m_initialMVP; // Base playfield MVP in desktop mode (unused in VR)
-   Matrix3D m_playfieldView[2]; // Base playfield view matrices of m_initialMVP from which all views are derived in desktop mode, or the cabinet view for the VR desktop display scene render
+   Matrix3D m_playfieldView[ModelViewProj::MaxViews]; // Base playfield view matrices of m_initialMVP from which all views are derived in desktop mode, or the cabinet view for the VR desktop display scene render
 
    bool m_isStaticPrepassDirty = true;
    bool m_wasUsingStaticPrepass = false; // Static prepass use on the previous frame (see RenderStatics)

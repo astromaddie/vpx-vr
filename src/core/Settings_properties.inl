@@ -261,6 +261,13 @@ PropFloatDyn(PlayerVR, ControllerCabYOffset, "Cabinet Y Offset"s, "Y offset to a
 PropFloatDyn(PlayerVR, ControllerLockbarScale, "Lockbar size ratio"s, "Lockbar size ratio to apply when using controller view centering"s, 0.5f, 2.0f, 1.f);
 PropFloatUnbounded(PlayerVR, ResFactor, "ResFactor"s, ""s, -1.f);
 PropBool(PlayerVR, LockFeetToGround, "Lock Feet to Ground"s, "Lock cabinet feet to ground. This usually feels more natural (avoid floating cabinet) but may be deactivated for example for playing mini flipper seated at a desk."s, true);
+// Foveation: 0 = Off, 1 = Fixed (sharp and middle areas on each eye's optical axis). 2 is reserved for eye tracked foveation
+PropEnum(PlayerVR, Foveation, "Foveation"s,
+   "Render the periphery of each eye at a lower resolution than its centre, then rebuild the full resolution eye. Takes effect when the table is started"s, int, 0, "Off"s,
+   "Fixed"s);
+PropFloat(PlayerVR, FoveationSharpSize, "Sharp Area Size"s, "Angle from the centre of each eye to the middle of the blend around its full resolution area"s, 5.f, 40.f, 16.f);
+PropFloat(PlayerVR, FoveationMiddleSize, "Middle Area Size"s, "Angle from the centre of each eye to the middle of the blend around its intermediate resolution area"s, 10.f, 60.f, 35.f);
+PropFloat(PlayerVR, FoveationFeather, "Foveation Feather"s, "Width of the blend between resolution levels, as a percentage of each area's radius"s, 10.f, 80.f, 43.f);
 
 // Physics override profiles
 PropFloatUnbounded(Player, FlipperPhysicsMass0, "FlipperPhysicsMass0"s, ""s, 1.f);

@@ -36,7 +36,7 @@ uniform vec4 lightCenter_maxRange;
 uniform vec4 lightingOff; // single float, passed as vec4 (BGFX does not support float/int/bool uniforms)
 
 #ifdef STEREO
-    uniform mat4 matView[2];
+    uniform mat4 matView[N_VIEWS];
     // FIXME v_eye needs to be flat interpolated, but if declared as such in varying.def.sc, DX11 will fail (OpenGL/Vulkan are good)
     #define mView                      matView[int(round(v_eye))]
 #else

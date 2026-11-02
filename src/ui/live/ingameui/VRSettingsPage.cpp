@@ -202,6 +202,35 @@ void VRSettingsPage::BuildPage()
          [this]() { return m_player->m_renderer->m_vrDesktopShrink; }, //
          [this](bool v) { m_player->m_renderer->m_vrDesktopShrink = v; }));
 
+#if defined(ENABLE_BGFX) && defined(ENABLE_XR)
+   AddItem(std::make_unique<InGameUIItem>(InGameUIItem::LabelType::Header, "Foveation"s));
+
+   // The mode selects the render targets and shader programs when the player starts, the area sizes and feather apply live
+   addGlobalOnlyItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayerVR_Foveation, //
+      [this]() { return g_settingsService.GetActiveSettings().GetPlayerVR_Foveation(); }, //
+      [this](int, int v)
+      {
+         g_settingsService.GetActiveSettings().SetPlayerVR_Foveation(v, false);
+         m_notifId = m_player->m_liveUI->PushNotification("This change will be applied after restarting the player."s, 3000, m_notifId);
+      }));
+
+   addGlobalOnlyItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayerVR_FoveationSharpSize, 1.f, "%4.1f deg"s, //
+      [this]() { return m_player->m_vrDevice->GetFoveaSharpSize(); }, //
+      [this](float, float v) { m_player->m_vrDevice->SetFoveaSharpSize(v); }));
+
+   addGlobalOnlyItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayerVR_FoveationMiddleSize, 1.f, "%4.1f deg"s, //
+      [this]() { return m_player->m_vrDevice->GetFoveaMiddleSize(); }, //
+      [this](float, float v) { m_player->m_vrDevice->SetFoveaMiddleSize(v); }));
+
+   addGlobalOnlyItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayerVR_FoveationFeather, 1.f, "%3.0f %%"s, //
+      [this]() { return m_player->m_vrDevice->GetFoveaFeather(); }, //
+      [this](float, float v) { m_player->m_vrDevice->SetFoveaFeather(v); }));
+#endif
+
 #ifdef ENABLE_XR
    AddItem(std::make_unique<InGameUIItem>(InGameUIItem::LabelType::Header, "Cabinet positioning using controllers"s));
 

@@ -14,10 +14,10 @@ $output v_worldPos, v_normal, v_texcoord0
 uniform mat4 orientation;
 #ifdef STEREO
     uniform vec4 layer;
-    uniform mat4 matWorldView[2];
-    uniform mat4 matWorldViewInverse[2];
-    uniform mat4 matRotViewProj[2];
-    uniform vec4 cameraPosWorld[2];
+    uniform mat4 matWorldView[N_VIEWS];
+    uniform mat4 matWorldViewInverse[N_VIEWS];
+    uniform mat4 matRotViewProj[N_VIEWS];
+    uniform vec4 cameraPosWorld[N_VIEWS];
     #define mWorldView        matWorldView[gl_InstanceID]
     #define mWorldViewInverse matWorldViewInverse[gl_InstanceID]
     #define mRotViewProj      matRotViewProj[gl_InstanceID]

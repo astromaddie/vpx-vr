@@ -131,7 +131,8 @@ public:
    void DrawTexturedQuad(Shader* shader, const Vertex3D_TexelOnly* vertices, const bool isTransparent = false, const float depth = 0.f);
    void DrawTexturedQuad(Shader* shader, const Vertex3D_NoTex2* vertices, const bool isTransparent = false, const float depth = 0.f);
    void DrawFullscreenTexturedQuad(Shader* shader);
-   void DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size, int singleLayer = -1);
+   // stepScale scales the kernel tap spacing (in source texels), to match a kernel footprint across pictures of different densities (foveated rendering)
+   void DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size, int singleLayer = -1, float stepScale = 1.f);
    void AddBeginOfFrameCmd(const std::function<void()>& cmd) { m_renderFrame->AddBeginOfFrameCmd(cmd); }
    void AddEndOfFrameCmd(const std::function<void()>& cmd) { m_renderFrame->AddEndOfFrameCmd(cmd); }
    void LogNextFrame() { m_logNextFrame = true; }
@@ -205,6 +206,10 @@ public:
    std::atomic<bool> m_frameRequested = true; // The render thread is waiting for a frame with a valid output target bound (XR swapchain acquire window)
 
    const int m_nEyes;
+   // Number of scene render views: 1 (mono), 2 (stereo) or 6 when VR foveation is enabled (2 eyes x 3 pictures, see FoveaLayout.h).
+   // Defined at creation as it selects the shader programs. Physical eye related operations (output, UI) keep using m_nEyes.
+   int m_nViews;
+   bool IsFoveated() const { return m_nViews > 2; }
    Shader* m_uiShader = nullptr;
    Shader* m_basicShader = nullptr;
    Shader *m_DMDShader = nullptr;
@@ -285,6 +290,19 @@ private:
    uint16_t m_vrScreenshotWidth = 0;
    uint16_t m_vrScreenshotHeight = 0;
    std::filesystem::path m_vrScreenshotFilename;
+   // Unattended capture of the final eyes and, with foveated rendering, of the composed eyes and internal pictures (VPX_VR_SCREENSHOT_ALL)
+   void RequestVRCapture(RenderTarget* vrRenderTarget, const string& prefix);
+   void RequestVRReadback(bgfx::TextureHandle source, bgfx::TextureFormat::Enum format, uint16_t width, uint16_t height, uint16_t layer, const string& filename);
+   struct VRReadback
+   {
+      bgfx::TextureHandle tex;
+      bgfx::TextureFormat::Enum format;
+      uint16_t width, height;
+      vector<uint8_t> data;
+      uint32_t readyFrame;
+      string filename;
+   };
+   vector<VRReadback> m_vrReadbacks;
    #endif
    #endif
 

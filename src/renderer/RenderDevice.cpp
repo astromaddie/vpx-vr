@@ -35,6 +35,9 @@
 #include "Shader.h"
 #include "VRDevice.h"
 #include "VRPerfLog.h"
+#include "FoveaLayout.h"
+#include "math/math.h"
+#include "utils/color.h"
 #include "renderer/AreaTex.h"
 #include "renderer/SearchTex.h"
 
@@ -680,6 +683,28 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
                }
             }
 
+            // VPX_VR_SCREENSHOT_ALL=<seconds>:<prefix> saves once, <seconds> after the first frame, both final eyes and, with foveated
+            // rendering, the composed eyes before postprocessing and the 6 internal pictures (unattended image checks)
+            {
+               static uint64_t vrCaptureAt = ~0ull;
+               static string vrCapturePrefix;
+               if (vrCaptureAt == ~0ull)
+               {
+                  vrCaptureAt = 0;
+                  if (const char* const request = std::getenv("VPX_VR_SCREENSHOT_ALL"); request != nullptr)
+                     if (const char* const colon = std::strchr(request, ':'); colon != nullptr && colon[1] != '\0')
+                     {
+                        vrCaptureAt = usec() + static_cast<uint64_t>(std::atof(request) * 1e6);
+                        vrCapturePrefix = colon + 1;
+                     }
+               }
+               if (vrCaptureAt != 0 && usec() >= vrCaptureAt)
+               {
+                  vrCaptureAt = 0;
+                  RequestVRCapture(vrRenderTarget, vrCapturePrefix);
+               }
+            }
+
             // Request BGFX to submit to GPU (calls bgfx::frame())
             BEGIN_SPAN(tagSpan, "BGFX->GPU")
             g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_FLIP);
@@ -724,6 +749,64 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
       bgfx::destroy(m_vrScreenshotTex);
       m_vrScreenshotTex = BGFX_INVALID_HANDLE;
    }
+   for (const VRReadback& readback : m_vrReadbacks)
+      bgfx::destroy(readback.tex);
+   m_vrReadbacks.clear();
+}
+
+void RenderDevice::RequestVRCapture(RenderTarget* vrRenderTarget, const string& prefix)
+{
+   const uint16_t width = static_cast<uint16_t>(vrRenderTarget->GetWidth());
+   const uint16_t height = static_cast<uint16_t>(vrRenderTarget->GetHeight());
+   for (uint16_t eye = 0; eye < 2; eye++)
+      RequestVRReadback(vrRenderTarget->GetColorSampler()->GetCoreTexture(false), bgfx::TextureFormat::RGBA8, width, height, eye, prefix + "-eye" + std::to_string(eye) + ".png");
+   const Renderer* const renderer = g_pplayer->m_renderer;
+   if (renderer->IsFoveated())
+   {
+      // Linear HDR content, saved clamped and sRGB encoded
+      const RenderTarget* const eyes = renderer->GetEyeTexture();
+      for (uint16_t eye = 0; eye < 2; eye++)
+         RequestVRReadback(eyes->GetColorSampler()->GetCoreTexture(false), eyes->GetCoreColorFormat(), static_cast<uint16_t>(eyes->GetWidth()), static_cast<uint16_t>(eyes->GetHeight()), eye,
+            prefix + "-fovea-eye" + std::to_string(eye) + ".png");
+      const RenderTarget* const pictures = renderer->GetBackBufferTexture();
+      if (pictures->IsMSAA())
+         PLOGW << "[vr] Foveation pictures are not captured when using MSAA";
+      else
+         for (uint16_t view = 0; view < static_cast<uint16_t>(pictures->m_nLayers); view++)
+            RequestVRReadback(pictures->GetColorSampler()->GetCoreTexture(false), pictures->GetCoreColorFormat(), static_cast<uint16_t>(pictures->GetWidth()),
+               static_cast<uint16_t>(pictures->GetHeight()), view, prefix + "-view" + std::to_string(view) + ".png");
+   }
+   PLOGI << "[vr] Capture of " << m_vrReadbacks.size() << " images requested with prefix " << prefix;
+}
+
+void RenderDevice::RequestVRReadback(bgfx::TextureHandle source, bgfx::TextureFormat::Enum format, uint16_t width, uint16_t height, uint16_t layer, const string& filename)
+{
+   if (format != bgfx::TextureFormat::RGBA8 && format != bgfx::TextureFormat::RGBA16F)
+   {
+      PLOGW << "[vr] Unsupported capture format for " << filename;
+      return;
+   }
+   VRReadback readback;
+   readback.format = format;
+   readback.width = width;
+   readback.height = height;
+   readback.filename = filename;
+   readback.tex = bgfx::createTexture2D(width, height, false, 1, format, BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+   readback.data.resize(static_cast<size_t>(width) * height * (format == bgfx::TextureFormat::RGBA16F ? 8 : 4));
+   NextView();
+   bgfx::TextureRegion src;
+   src.init(source, 0, 0, width, height);
+   src.mip = 0;
+   src.z = layer;
+   src.depth = 1;
+   bgfx::TextureRegion dst;
+   dst.init(readback.tex, 0, 0, width, height);
+   dst.mip = 0;
+   dst.z = 0;
+   dst.depth = 1;
+   bgfx::blit(m_activeViewId, dst, src);
+   readback.readyFrame = bgfx::read(dst, readback.data.data());
+   m_vrReadbacks.push_back(std::move(readback)); // Moving the vector keeps its data where the read was requested to
 }
 
 void RenderDevice::RequestVRScreenshot(RenderTarget* vrRenderTarget, const std::filesystem::path& filename)
@@ -760,6 +843,35 @@ void RenderDevice::RequestVRScreenshot(RenderTarget* vrRenderTarget, const std::
 
 void RenderDevice::ProcessVRScreenshot()
 {
+   for (auto it = m_vrReadbacks.begin(); it != m_vrReadbacks.end();)
+   {
+      if (m_lastPresentFrameIdx < it->readyFrame)
+      {
+         ++it;
+         continue;
+      }
+      bool saved = false;
+      if (auto tex = BaseTexture::Create(it->width, it->height, BaseTexture::SRGBA); tex)
+      {
+         uint8_t* const dst = static_cast<uint8_t*>(tex->data());
+         const size_t n = static_cast<size_t>(it->width) * it->height * 4;
+         if (it->format == bgfx::TextureFormat::RGBA8)
+            memcpy(dst, it->data.data(), n);
+         else
+         {
+            const uint16_t* const src = reinterpret_cast<const uint16_t*>(it->data.data());
+            for (size_t i = 0; i < n; i++)
+            {
+               const float v = clamp(half2float(src[i]), 0.f, 1.f);
+               dst[i] = static_cast<uint8_t>(((i & 3) == 3 ? 1.f : sRGB(v)) * 255.f + 0.5f);
+            }
+         }
+         saved = tex->Save(PathFromUTF8(it->filename));
+      }
+      PLOGI << "[vr] Capture " << (saved ? "saved to " : "failed for ") << it->filename;
+      bgfx::destroy(it->tex);
+      it = m_vrReadbacks.erase(it);
+   }
    if (m_vrScreenshotFilename.empty() || m_lastPresentFrameIdx < m_vrScreenshotReadyFrame)
       return;
    const std::filesystem::path filename = m_vrScreenshotFilename;
@@ -1368,6 +1480,7 @@ RenderDevice::RenderDevice(
    : m_texMan(*this)
    , m_compressTextures(compressTextures)
    , m_nEyes(isStereo ? 2 : 1)
+   , m_nViews(isStereo ? 2 : 1)
    , m_isAnaglyph(isAnaglyph)
    , m_isVR(isVR)
    #ifdef ENABLE_BGFX
@@ -1975,6 +2088,28 @@ RenderDevice::RenderDevice(
       SDL_GL_SetSwapInterval(-1);
       #endif
    }
+
+#if defined(ENABLE_BGFX) && defined(ENABLE_XR)
+   // VR foveation renders 6 views (2 eyes x 3 pictures) as the layers of the scene render targets. It needs layered rendering
+   // and enough texture layers. VPX_VR_FOVEATION=0|1 overrides the setting (for unattended A/B comparisons)
+   if (isVR)
+   {
+      int foveation = g_pplayer->m_ptable->GetSettings().GetPlayerVR_Foveation();
+      if (const char* const env = std::getenv("VPX_VR_FOVEATION"); env != nullptr && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+         foveation = env[0] - '0';
+      if (foveation != 0)
+      {
+         if (SupportLayeredRendering() && bgfx::getCaps()->limits.maxTextureLayers >= static_cast<uint32_t>(VPX::Fovea::ViewCount))
+            m_nViews = VPX::Fovea::ViewCount;
+         else
+            PLOGE << "[vr] Foveation disabled: layered rendering with " << VPX::Fovea::ViewCount << " texture layers is not supported";
+      }
+      if (m_nViews == VPX::Fovea::ViewCount)
+         PLOGI << "[vr] Foveation fixed: " << VPX::Fovea::ViewCount << " internal views of " << VPX::Fovea::PictureSize << 'x' << VPX::Fovea::PictureSize;
+      else
+         PLOGI << "[vr] Foveation off";
+   }
+#endif
 
    m_uiShader = new Shader(this, Shader::UI_SHADER, m_nEyes == 2);
    m_basicShader = new Shader(this, Shader::BASIC_SHADER, m_nEyes == 2);
@@ -2990,7 +3125,7 @@ void RenderDevice::DrawMesh(Shader* shader, const bool isTranparentPass, const V
    m_currentPass->Submit(cmd);
 }
 
-void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size, int singleLayer)
+void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size, int singleLayer, float stepScale)
 {
    ShaderTechnique tech_h, tech_v;
    if (kernel_size < 8)
@@ -3053,7 +3188,7 @@ void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, Ren
       m_currentPass->m_singleLayerRendering = max(singleLayer, m_singleLayerRendering); // We support blurring a single layer (for anaglyph defocusing)
       AddRenderTargetDependency(source);
       m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, source->GetColorSampler());
-      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / source->GetWidth()), (float)(1.0 / source->GetHeight()), 1.0f, 1.0f);
+      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)((double)stepScale / source->GetWidth()), (float)((double)stepScale / source->GetHeight()), 1.0f, 1.0f);
       m_FBShader->SetTechnique(tech_h);
       DrawFullscreenTexturedQuad(m_FBShader);
    }
@@ -3063,7 +3198,7 @@ void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, Ren
       m_currentPass->m_singleLayerRendering = max(singleLayer, m_singleLayerRendering); // We support blurring a single layer (for anaglyph defocusing)
       AddRenderTargetDependency(tmp);
       m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, tmp->GetColorSampler());
-      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / tmp->GetWidth()), (float)(1.0 / tmp->GetHeight()), 1.0f, 1.0f);
+      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)((double)stepScale / tmp->GetWidth()), (float)((double)stepScale / tmp->GetHeight()), 1.0f, 1.0f);
       m_FBShader->SetTechnique(tech_v);
       DrawFullscreenTexturedQuad(m_FBShader);
    }

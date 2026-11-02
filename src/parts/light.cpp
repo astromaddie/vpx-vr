@@ -490,7 +490,7 @@ void Light::Render(const unsigned int renderMask)
       // Compute projected bounds
       const float radius = m_d.m_falloff;
       float xMin = 1.f, yMin = 1.f, xMax = -1.f, yMax = -1.f;
-      for (int eye = 0; eye < m_renderer->m_renderDevice->m_nEyes; eye++)
+      for (int eye = 0; eye < static_cast<int>(m_renderer->GetMVP().m_nEyes); eye++) // All views, including foveated pictures
       {
          const Matrix3D &mvp = m_renderer->GetMVP().GetModelViewProj(eye);
          for (int i = 0; i < 4; i++)

@@ -32,6 +32,78 @@ flowchart LR
 - SteamVR owns headset presentation and frame pacing. The application submits both views
   through the same OpenXR projection layer used by the other supported VR runtimes.
 
+## Foveation
+
+`[PlayerVR] Foveation` selects how each eye is rendered (read when the table starts; the
+environment variable `VPX_VR_FOVEATION=0|1` overrides it for A/B runs):
+
+| Value | Mode |
+| --- | --- |
+| 0 `Off` (default) | Two full resolution views, exactly as without foveation |
+| 1 `Fixed` | Six internal views, sharp and middle areas centred on each eye's optical axis |
+
+Value 2 is reserved for eye tracked foveation, which is not implemented.
+
+With `Fixed`, the scene render targets are 6-layer texture arrays of 576×576 pictures
+(`VPX::Fovea::PictureSize`). Layer `picture * 2 + eye` holds the coarse picture (the whole eye
+frustum, the same projection as without foveation), then the middle and sharp windows. Windows
+are asymmetric crops of the eye frustum: same view matrix, near and far planes, only the
+projection differs. All six views are drawn with one instanced submission per pass, like the
+two eyes are without foveation. OpenXR still receives one projection layer with the two
+runtime eye poses and FOVs.
+
+`ComposeFoveation` (`fs_pp_fovea_compose.sc`) rebuilds the two eyes at full resolution in
+linear HDR, before bloom and tonemapping: round windows with a quintic feather, blended coarse,
+then middle, then sharp, with a 1/255 dither of the blend weight inside the feather bands. The
+coarse picture is upsampled with a slightly eased bilinear filter. A window never contributes
+at or beyond its support radius (0.98 of its half side), and near that edge the bilinear
+filter drops texels whose centre lies outside the support, so the square corners of a window
+cannot leak. Depth is selected, never blended, from the most detailed picture contributing at
+least half of the colour. Everything after the composition (SSR, bloom, tonemap, AA,
+sharpening, XR depth copy, desktop mirror) runs on the composed eyes unchanged.
+
+The window sizes and the feather apply live, from the VR settings page or the settings file:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `FoveationSharpSize` | 16° | Angle from the optical axis to the middle of the sharp area's feather |
+| `FoveationMiddleSize` | 35° | Same for the middle area |
+| `FoveationFeather` | 43 % | Feather width, as a percentage of each area's radius |
+
+With the defaults and the Frame's eye FOV, the pictures have about 0.27 (coarse), 0.42
+(middle) and 1.02 (sharp) of the linear density of a 2160×2160 eye. The layout maths are in
+`src/renderer/FoveaLayout.h`, tested by `tests/render/test-fovealayout.cpp`.
+
+| Effect | With foveation |
+| --- | --- |
+| Geometry, depth, lighting, ball shadows | Per picture |
+| Transmitted bulb light | Per picture, in dedicated 6-layer quarter resolution buffers; the blur tap spacing is scaled per picture so it covers the same part of the eye |
+| Playfield and plane reflection probes | Per picture; roughness blur scaled per picture as above |
+| Screen-space refraction probes | Per picture copy of colour and depth |
+| Ball playfield reflection (previous frame) | Same picture of the previous frame; reflected points outside a window use the coarse picture of the same eye |
+| SSR, bloom, tonemap, dither, post AA, sharpening | Composed eyes |
+| AO, ball motion blur, static prerender | Disabled in VR, as without foveation |
+| Hidden area mask | Not applied to the pictures |
+| Desktop display scene render | Not available; the desktop display mirrors the composed eyes |
+
+Diagnostics: `VPX_VR_SCREENSHOT_ALL=<seconds>:<prefix>` saves, once, `<prefix>-eye0.png` and
+`<prefix>-eye1.png` (final eyes), and with foveation `<prefix>-fovea-eye0/1.png` (composed
+eyes before postprocessing, clamped and sRGB encoded) and `<prefix>-view0.png` to `view5.png`
+(the internal pictures; not captured with MSAA). With `VPX_VR_PERF`, the composition appears
+as `Foveation Compose [RT=FoveaEye]` and the per picture blurs carry their layer
+(`... / Layer=n`).
+
+Known gaps:
+
+- Each pass draws three times as many instances; reflection probes multiply that again.
+  Per picture blurs are separate passes (two per picture).
+- Refraction lookups that leave a window's picture are clamped to its edge instead of
+  falling back to the coarse picture.
+- The hidden area mask is not applied, so the corners of the coarse pictures are shaded.
+- Derivative based filtering (DMD, CRT, segment displays) and the ball reflection's texel
+  offsets follow each picture's own density.
+- Eye tracked foveation is not implemented.
+
 ## Frame controls
 
 | Control | Default action |

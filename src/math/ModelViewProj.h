@@ -8,7 +8,9 @@ class ModelViewProj final
 {
 public:
    enum FlipMode { NONE, FLIPX, FLIPY };
-   ModelViewProj(const unsigned int nEyes = 1) : m_nEyes(nEyes) {}
+   static constexpr unsigned int MaxViews = 6; // Up to 6 views for foveated stereo rendering (2 eyes x 3 pictures, see FoveaLayout.h)
+   ModelViewProj(const unsigned int nEyes = 1) : m_nEyes(nEyes) { assert(nEyes <= MaxViews); }
+   void SetViewCount(const unsigned int nViews) { assert(nViews <= MaxViews); m_nEyes = nViews; m_dirty = true; } // Only before use, when the renderer selects foveated stereo
 
    void SetModel(const Matrix3D& model) { SetWithDirty(model, m_matModel); }
    void SetReflection(const Matrix3D& reflection) { SetWithDirty(reflection, m_matReflection); }
@@ -58,7 +60,7 @@ public:
    const Matrix3D& GetRotViewProj(const unsigned int eye) const { Update(); return m_matRotViewProj[eye]; }
    const vec4& GetCameraPos(const unsigned int eye) const { Update(); return m_cameraPos[eye]; }
 
-   const unsigned int m_nEyes;
+   unsigned int m_nEyes; // Number of views (eyes, or foveated stereo views), see SetViewCount
 
 private:
    void SetWithDirty(const Matrix3D& newMat, Matrix3D& localMat)
@@ -80,7 +82,8 @@ private:
          for (unsigned int eye = 0; eye < m_nEyes; eye++)
          {
             // Mirrored table: each eye shows the flipped view of the other eye, as flipping alone would invert the stereo depth
-            const unsigned int srcEye = (m_flip != NONE && m_nEyes == 2) ? 1 - eye : eye;
+            // (views are interleaved left/right, so the other eye of the same foveation picture is eye ^ 1)
+            const unsigned int srcEye = (m_flip != NONE && m_nEyes >= 2) ? eye ^ 1 : eye;
             m_matReflectedView[eye] = m_matReflection * m_matView[srcEye];
             m_matModelView[eye] = m_matModel * m_matReflectedView[eye];
             m_matModelViewProj[eye] = m_matModelView[eye] * m_matProj[srcEye];
@@ -133,18 +136,18 @@ private:
 
    Matrix3D m_matModel { Matrix3D::MatrixIdentity() };
    Matrix3D m_matReflection { Matrix3D::MatrixIdentity() };
-   Matrix3D m_matView[2];
-   Matrix3D m_matProj[2];
+   Matrix3D m_matView[MaxViews];
+   Matrix3D m_matProj[MaxViews];
 
    mutable bool m_dirty = true;
    FlipMode m_flip = NONE;
-   mutable Matrix3D m_matReflectedView[2];
-   mutable Matrix3D m_matModelView[2];
-   mutable Matrix3D m_matFlippedProj[2];
-   mutable Matrix3D m_matModelViewInverse[2];
-   mutable Matrix3D m_matModelViewInverseTranspose[2];
-   mutable Matrix3D m_matModelViewProj[2];
-   mutable Matrix3D m_matRotViewProj[2];
-   mutable vec4 m_cameraPos[2];
-   mutable Vertex3Ds m_viewVec[2];
+   mutable Matrix3D m_matReflectedView[MaxViews];
+   mutable Matrix3D m_matModelView[MaxViews];
+   mutable Matrix3D m_matFlippedProj[MaxViews];
+   mutable Matrix3D m_matModelViewInverse[MaxViews];
+   mutable Matrix3D m_matModelViewInverseTranspose[MaxViews];
+   mutable Matrix3D m_matModelViewProj[MaxViews];
+   mutable Matrix3D m_matRotViewProj[MaxViews];
+   mutable vec4 m_cameraPos[MaxViews];
+   mutable Vertex3Ds m_viewVec[MaxViews];
 };

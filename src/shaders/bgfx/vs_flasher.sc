@@ -9,8 +9,8 @@ $output v_tablePos, v_texcoord0
 #include "common.sh"
 
 #ifdef STEREO
-	uniform mat4 matRotViewProj[2];
-	uniform vec4 cameraPosWorld[2];
+	uniform mat4 matRotViewProj[N_VIEWS];
+	uniform vec4 cameraPosWorld[N_VIEWS];
 	#define mRotViewProj    matRotViewProj[gl_InstanceID]
 	#define cCameraPosWorld cameraPosWorld[gl_InstanceID].xyz
 #else

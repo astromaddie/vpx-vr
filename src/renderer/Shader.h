@@ -201,6 +201,7 @@ enum class ShaderTechnique : unsigned int
    SHADER_TECHNIQUE(SSReflection),
 #ifdef ENABLE_BGFX
    SHADER_TECHNIQUE(fb_resolve_depth_msaa),
+   SHADER_TECHNIQUE(fb_fovea_compose),
 #endif
 
    SHADER_TECHNIQUE(NFAA),
@@ -361,6 +362,8 @@ enum class ShaderUniform : unsigned int
    SHADER_UNIFORM(ShaderUniformType::Float2, spline2, 1),
    SHADER_UNIFORM(ShaderUniformType::Float4, SSR_bumpHeight_fresnelRefl_scale_FS, 1),
    SHADER_UNIFORM(ShaderUniformType::Float2, AO_scale_timeblur, 1),
+   SHADER_UNIFORM(ShaderUniformType::Float4v, foveaRects, 4), // Foveation composer: window placement per eye and window
+   SHADER_UNIFORM(ShaderUniformType::Float4, foveaParams, 1), // Foveation composer: feather radii and dither
    SHADER_SAMPLER(tex_fb_unfiltered, 0, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_NONE), // Framebuffer (unfiltered)
    SHADER_SAMPLER(tex_fb_filtered, 0, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_BILINEAR), // Framebuffer (filtered)
    SHADER_SAMPLER(tex_bloom, 1, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP, SamplerFilter::SF_BILINEAR), // Bloom
@@ -421,7 +424,7 @@ class Shader final
 {
 public:
    enum ShaderId { UI_SHADER, BALL_SHADER, BASIC_SHADER, DMD_SHADER, FLASHER_SHADER, POSTPROCESS_SHADER, LIGHT_SHADER, STEREO_SHADER };
-   Shader(RenderDevice* renderDevice, const ShaderId id, const bool isStereo);
+   Shader(RenderDevice* renderDevice, const ShaderId id, const bool isStereo); // Stereo shaders are built for the render device view count (2, or 6 for foveated stereo)
    ~Shader();
 
    void Begin();
@@ -475,6 +478,7 @@ private:
    RenderDevice* const m_renderDevice;
    const ShaderId m_shaderId;
    const bool m_isStereo;
+   const int m_nViews; // Size of the per view uniform arrays: 1 (mono), 2 (stereo) or 6 (foveated stereo, see FoveaLayout.h)
    string m_shaderCodeName;
 
    static Shader* current_shader;
@@ -691,7 +695,7 @@ public:
       assert(ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float2 || ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float3
          || ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float4
          || ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float4v);
-      assert(ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].count == count);
+      assert(count <= ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].count); // Callers may only fill the first views (UI and output passes use 2 views when foveated)
       const int n = ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float2 ? 2
          : ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float3          ? 3
                                                                                                            : 4;
@@ -765,7 +769,7 @@ public:
       assert(ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float3x4
          || ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float4x3
          || ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].type == ShaderUniformType::Float4x4);
-      assert(count == ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].count);
+      assert(count <= ShaderUniformDef::coreUniforms[static_cast<unsigned int>(uniformName)].count); // Callers may only fill the first views (UI and output passes use 2 views when foveated)
       if (m_useLowPrecision)
       {
          for (unsigned int i = 0; i < count * 16; i++)

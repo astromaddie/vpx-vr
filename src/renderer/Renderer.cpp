@@ -15,6 +15,7 @@
 #include "parts/pintable.h"
 #include "physics/cabinet/NudgeHandler.h"
 #include "renderer/Anaglyph.h"
+#include "renderer/FoveaLayout.h"
 #include "renderer/Shader.h"
 #include "renderer/RenderCommand.h"
 #include "renderer/RenderDevice.h"
@@ -76,6 +77,14 @@ Renderer::Renderer(PinTable* const table, VPX::Window* wnd, VideoSyncMode& syncM
    catch (...) {
       // TODO better error handling => just let the exception up ?
       throw(E_FAIL);
+   }
+
+   // Foveated VR rendering uses 6 scene views (2 eyes x 3 pictures, see FoveaLayout.h)
+   if (m_renderDevice->IsFoveated())
+   {
+      m_mvp.SetViewCount(m_renderDevice->m_nViews);
+      m_initialMVP.SetViewCount(m_renderDevice->m_nViews);
+      g_pplayer->m_vrDevice->SetFoveated(true);
    }
 
    if (const bool isHdr2020 = (g_pplayer->m_vrDevice == nullptr) && m_renderDevice->m_outputWnd[0]->IsWCGBackBuffer(); isHdr2020)
@@ -146,7 +155,20 @@ Renderer::Renderer(PinTable* const table, VPX::Window* wnd, VideoSyncMode& syncM
 
    #ifdef ENABLE_BGFX
    // BGFX handles MSAA internally and provides the resolved texture directly, so just create one render target for the back buffer
-   m_pOffscreenBackBufferTexture1 = new RenderTarget(m_renderDevice, rtType, "BackBuffer1"s, renderWidthAA, renderHeightAA, renderFormat, true, nMSAASamples, "Fatal Error: unable to create offscreen back buffer");
+   if (m_renderDevice->IsFoveated())
+   {
+      // Foveated rendering: the scene is rendered as 6 pictures of a common size (layer = picture * 2 + eye), then composed
+      // into the full resolution eyes, from which the postprocess chain starts (see ComposeFoveation)
+      m_pOffscreenBackBufferTexture1 = new RenderTarget(m_renderDevice, rtType, "BackBuffer1"s, VPX::Fovea::PictureSize, VPX::Fovea::PictureSize, renderFormat, true, nMSAASamples,
+         "Fatal Error: unable to create offscreen back buffer", nullptr, VPX::Fovea::ViewCount);
+      m_pFoveaEyeTexture = new RenderTarget(m_renderDevice, rtType, "FoveaEye"s, renderWidthAA, renderHeightAA, renderFormat, true, 1, "Fatal Error: unable to create foveation eye buffer");
+      // Transmitted light is rendered per picture, at the same quarter resolution as the bloom buffer it replaces
+      m_pFoveaTransmission = new RenderTarget(m_renderDevice, rtType, "FoveaTransmission1"s, VPX::Fovea::PictureSize / 4, VPX::Fovea::PictureSize / 4, renderFormat, false, 1,
+         "Fatal Error: unable to create foveation transmission buffer", nullptr, VPX::Fovea::ViewCount);
+      m_pFoveaTransmissionTmp = m_pFoveaTransmission->Duplicate("FoveaTransmission2"s);
+   }
+   else
+      m_pOffscreenBackBufferTexture1 = new RenderTarget(m_renderDevice, rtType, "BackBuffer1"s, renderWidthAA, renderHeightAA, renderFormat, true, nMSAASamples, "Fatal Error: unable to create offscreen back buffer");
    #else
    // MSAA render target which is resolved to the non MSAA render target
    if (nMSAASamples > 1) 
@@ -393,6 +415,9 @@ Renderer::~Renderer()
    delete m_staticPrepassRT;
    delete m_pOffscreenBackBufferTexture1;
    delete m_pOffscreenBackBufferTexture2;
+   delete m_pFoveaEyeTexture;
+   delete m_pFoveaTransmission;
+   delete m_pFoveaTransmissionTmp;
    delete m_pBloomBufferTexture;
    delete m_pBloomTmpBufferTexture;
    delete m_pPostProcessRenderTarget1;
@@ -591,10 +616,10 @@ RenderTarget* Renderer::GetPostProcessRenderTarget1()
       // Buffers for post-processing. Postprocess is done at scene resolution, on a LDR render target without MSAA nor full scene supersampling
       // excepted when using downsampled render buffer where upscaling is done after postprocessing.
       m_pPostProcessRenderTarget1 = new RenderTarget(m_renderDevice,
-         GetBackBufferTexture()->m_type, "PostProcess1"s, 
-         min(GetBackBufferTexture()->GetWidth(), m_renderWidth),
-         min(GetBackBufferTexture()->GetHeight(), m_renderHeight),
-         GetBackBufferTexture()->GetColorFormat() == RGBA10 ? colorFormat::RGBA10 : colorFormat::RGBA8, false, 1, 
+         GetEyeTexture()->m_type, "PostProcess1"s, 
+         min(GetEyeTexture()->GetWidth(), m_renderWidth),
+         min(GetEyeTexture()->GetHeight(), m_renderHeight),
+         GetEyeTexture()->GetColorFormat() == RGBA10 ? colorFormat::RGBA10 : colorFormat::RGBA8, false, 1, 
          "Fatal Error: unable to create stereo3D/post-processing AA/sharpen buffer!");
    }
    return m_pPostProcessRenderTarget1;
@@ -633,10 +658,10 @@ RenderTarget* Renderer::GetReflectionBufferTexture()
    if (m_pReflectionBufferTexture == nullptr)
    {
       m_pReflectionBufferTexture = new RenderTarget(m_renderDevice, 
-         GetBackBufferTexture()->m_type, "ReflectionBuffer"s, 
-         GetBackBufferTexture()->GetWidth(),
-         GetBackBufferTexture()->GetHeight(),
-         GetBackBufferTexture()->GetColorFormat(),
+         GetEyeTexture()->m_type, "ReflectionBuffer"s, 
+         GetEyeTexture()->GetWidth(),
+         GetEyeTexture()->GetHeight(),
+         GetEyeTexture()->GetColorFormat(),
          false, 1, "Fatal Error: unable to create Reflection buffer!");
    }
    return m_pReflectionBufferTexture;
@@ -647,10 +672,10 @@ RenderTarget* Renderer::GetMotionBlurBufferTexture()
    if (m_pMotionBlurBufferTexture == nullptr)
    {
       m_pMotionBlurBufferTexture = new RenderTarget(m_renderDevice, 
-         GetBackBufferTexture()->m_type, "MotionBlurBuffer"s, 
-         GetBackBufferTexture()->GetWidth(),
-         GetBackBufferTexture()->GetHeight(),
-         GetBackBufferTexture()->GetColorFormat(),
+         GetEyeTexture()->m_type, "MotionBlurBuffer"s, 
+         GetEyeTexture()->GetWidth(),
+         GetEyeTexture()->GetHeight(),
+         GetEyeTexture()->GetColorFormat(),
          false, 1, "Fatal Error: unable to create MotionBlur buffer!");
    }
    return m_pMotionBlurBufferTexture;
@@ -661,8 +686,8 @@ RenderTarget* Renderer::GetAORenderTarget(int idx)
    // Lazily creates AO render target since this can be enabled during play from script (at render buffer resolution)
    if (m_pAORenderTarget1 == nullptr)
    {
-      m_pAORenderTarget1 = new RenderTarget(m_renderDevice, GetBackBufferTexture()->m_type, "AO1"s, 
-         GetBackBufferTexture()->GetWidth(), GetBackBufferTexture()->GetHeight(), colorFormat::GREY8, false, 1, 
+      m_pAORenderTarget1 = new RenderTarget(m_renderDevice, GetEyeTexture()->m_type, "AO1"s, 
+         GetEyeTexture()->GetWidth(), GetEyeTexture()->GetHeight(), colorFormat::GREY8, false, 1, 
          "Unable to create AO buffers!\r\nPlease disable Ambient Occlusion.\r\nOr try to (un)set \"Alternative Depth Buffer processing\" in the video options!");
       m_pAORenderTarget2 = m_pAORenderTarget1->Duplicate("AO2"s);
    }
@@ -1076,7 +1101,8 @@ void Renderer::DrawBackground()
    {
       m_renderDevice->Clear(clearType::TARGET | clearType::ZBUFFER, 0x00000000);
 #ifdef ENABLE_XR
-      if (std::shared_ptr<MeshBuffer> mask = g_pplayer->m_vrDevice->GetVisibilityMask(); mask)
+      // The runtime's hidden area mask is defined for the physical eyes: it is not applied to the foveated pictures
+      if (std::shared_ptr<MeshBuffer> mask = g_pplayer->m_vrDevice->GetVisibilityMask(); mask && !IsFoveated())
       {
          static constexpr Vertex3Ds pos { 0.f, 0.f, 200000.0f }; // Very high depth bias to ensure being rendered before other opaque parts (which are sorted front to back)
          m_renderDevice->ResetRenderState();
@@ -1121,12 +1147,12 @@ void Renderer::DrawBackground()
 
 int Renderer::GetDisplayWidth() const
 {
-   return m_stereo3D == STEREO_SBS ? (GetBackBufferTexture()->GetWidth() * 2) : GetBackBufferTexture()->GetWidth();
+   return m_stereo3D == STEREO_SBS ? (GetEyeTexture()->GetWidth() * 2) : GetEyeTexture()->GetWidth();
 }
 
 int Renderer::GetDisplayHeight() const
 {
-   return (m_stereo3D == STEREO_TB || m_stereo3D == STEREO_INT || m_stereo3D == STEREO_FLIPPED_INT) ? (GetBackBufferTexture()->GetHeight() * 2) : GetBackBufferTexture()->GetHeight();
+   return (m_stereo3D == STEREO_TB || m_stereo3D == STEREO_INT || m_stereo3D == STEREO_FLIPPED_INT) ? (GetEyeTexture()->GetHeight() * 2) : GetEyeTexture()->GetHeight();
 }
 
 float Renderer::GetDisplayAspectRatio() const
@@ -1483,7 +1509,7 @@ static void SetBasicShaderScreenSpaceMatrices(RenderDevice* const rd, const Matr
 
 void Renderer::UpdateDesktopBackdropShaderMatrix(bool basic, bool light, bool flasherDMD)
 {
-   Matrix3D matWorldViewProj[2]; // MVP to move from back buffer space (0..w, 0..h) to clip space (-1..1, -1..1)
+   Matrix3D matWorldViewProj[ModelViewProj::MaxViews]; // MVP to move from back buffer space (0..w, 0..h) to clip space (-1..1, -1..1)
    matWorldViewProj[0].SetIdentity();
    if (g_pplayer->m_liveUI->IsEditorBackdropViewMode())
    {
@@ -1499,12 +1525,12 @@ void Renderer::UpdateDesktopBackdropShaderMatrix(bool basic, bool light, bool fl
       matWorldViewProj[0]._22 = -2.0f / (float)m_renderDevice->GetCurrentRenderTarget()->GetHeight();
       matWorldViewProj[0]._42 = 1.0f;
    }
-   const int eyes = m_renderDevice->GetCurrentRenderTarget()->m_nLayers;
-   if (eyes > 1)
-      matWorldViewProj[1] = matWorldViewProj[0];
+   const int eyes = min(m_renderDevice->GetCurrentRenderTarget()->m_nLayers, static_cast<int>(ModelViewProj::MaxViews));
+   for (int eye = 1; eye < eyes; eye++)
+      matWorldViewProj[eye] = matWorldViewProj[0];
 
 #if defined(ENABLE_BGFX)
-   const vec4 cameraPosWorld[2] = { { 0.f, 0.f, 0.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
+   const vec4 cameraPosWorld[ModelViewProj::MaxViews] = {};
    if (basic)
    {
       m_renderDevice->m_basicShader->SetMatrix(ShaderUniform::matRotViewProj, &matWorldViewProj[0], eyes);
@@ -1822,14 +1848,18 @@ void Renderer::DrawBulbLightBuffer()
    RenderPass* const initial_rt = m_renderDevice->GetCurrentPass();
    static int id = 0; id++;
 
+   // Foveated rendering renders the transmitted light of each picture to dedicated buffers, matching the scene pictures
+   RenderTarget* const lightRT = IsFoveated() ? m_pFoveaTransmission : GetBloomBufferTexture();
+   RenderTarget* const lightTmpRT = IsFoveated() ? m_pFoveaTransmissionTmp : GetBloomTmpBufferTexture();
+
    // switch to 'bloom' output buffer to collect all bulb lights
-   m_renderDevice->SetRenderTarget("Transmitted Light " + std::to_string(id) + " Clear", GetBloomBufferTexture(), false);
+   m_renderDevice->SetRenderTarget("Transmitted Light " + std::to_string(id) + " Clear", lightRT, false);
    m_renderDevice->ResetRenderState();
    m_renderDevice->Clear(clearType::TARGET, 0x00000000);
 
    // Draw bulb lights
    m_render_mask |= Renderer::LIGHT_BUFFER;
-   m_renderDevice->SetRenderTarget("Transmitted Light " + std::to_string(id), GetBloomBufferTexture(), true, true);
+   m_renderDevice->SetRenderTarget("Transmitted Light " + std::to_string(id), lightRT, true, true);
    m_renderDevice->SetRenderState(RenderState::ZENABLE, RenderState::RS_FALSE); // disable all z-tests as zbuffer is in different resolution
    for (auto renderable : g_pplayer->m_ptable->GetParts())
       if (renderable->GetItemType() == eItemLight)
@@ -1837,7 +1867,11 @@ void Renderer::DrawBulbLightBuffer()
    m_render_mask &= ~Renderer::LIGHT_BUFFER;
 
    bool hasLight = m_renderDevice->GetCurrentPass()->GetCommandCount() > 0;
-   if (hasLight)
+   if (hasLight && IsFoveated())
+   { // Per picture blur, with the same footprint in each eye (the area of interest only fits the last blurred picture, so it is not applied)
+      DrawSceneBlur(lightRT, lightTmpRT, lightRT, 19.f);
+   }
+   else if (hasLight)
    { // Only apply blur if we have actually rendered some lights
       RenderPass* renderPass = m_renderDevice->GetCurrentPass();
       m_renderDevice->DrawGaussianBlur(
@@ -1865,8 +1899,8 @@ void Renderer::DrawBulbLightBuffer()
    if (hasLight)
    {
       // Declare dependency on Bulb Light buffer (actually rendered to the bloom buffer texture)
-      m_renderDevice->AddRenderTargetDependency(GetBloomBufferTexture());
-      m_renderDevice->m_basicShader->SetTexture(ShaderUniform::tex_base_transmission, GetBloomBufferTexture()->GetColorSampler());
+      m_renderDevice->AddRenderTargetDependency(lightRT);
+      m_renderDevice->m_basicShader->SetTexture(ShaderUniform::tex_base_transmission, lightRT->GetColorSampler());
    } 
    else
    {
@@ -2321,12 +2355,12 @@ void Renderer::RenderDynamics()
 
    // Setup the projection matrices used for refraction and ball reflection
    SetSpaceReference(PartGroupData::SpaceReference::SR_PLAYFIELD, false);
-   Matrix3D matProj[2];
-   const int nEyes = m_renderDevice->m_nEyes;
-   for (int eye = 0; eye < nEyes; eye++)
-      matProj[eye] = GetMVP().GetFlippedProj(eye);
-   m_renderDevice->m_basicShader->SetMatrix(ShaderUniform::matProj, &matProj[0], nEyes);
-   m_renderDevice->m_ballShader->SetMatrix(ShaderUniform::matProj, &matProj[0], nEyes);
+   Matrix3D matProj[ModelViewProj::MaxViews];
+   const int nViews = GetMVP().m_nEyes;
+   for (int view = 0; view < nViews; view++)
+      matProj[view] = GetMVP().GetFlippedProj(view);
+   m_renderDevice->m_basicShader->SetMatrix(ShaderUniform::matProj, &matProj[0], nViews);
+   m_renderDevice->m_ballShader->SetMatrix(ShaderUniform::matProj, &matProj[0], nViews);
 
    // Update ball pos uniforms
    vec4 balls[MAX_BALL_SHADOW];
@@ -2487,8 +2521,8 @@ RenderTarget* Renderer::ApplyAdditiveScreenSpaceReflection(RenderTarget* rendere
 
    RenderTarget* outputRT = GetReflectionBufferTexture();
    m_renderDevice->SetRenderTarget("ScreenSpace Reflection"s, outputRT, true);
-   m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true);
-   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetBackBufferTexture()->GetDepthSampler());
+   m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true);
+   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetEyeTexture()->GetDepthSampler());
    m_renderDevice->AddRenderTargetDependency(renderedRT);
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, renderedRT->GetColorSampler());
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
@@ -2708,8 +2742,8 @@ void Renderer::SetupTonemapping(RenderTarget* renderedRT, RenderTarget* tonemapR
    m_renderDevice->AddRenderTargetDependency(renderedRT);
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, renderedRT->GetColorSampler());
-   m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true);
-   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetBackBufferTexture()->GetDepthSampler());
+   m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true);
+   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetEyeTexture()->GetDepthSampler());
 
    if (m_table->m_bloom_strength > 0.0f && !m_bloomOff)
    {
@@ -2903,8 +2937,8 @@ RenderTarget* Renderer::ApplyBallMotionBlur(RenderTarget* beforeTonemapRT, Rende
    // Draw motion blur to a temporary render target
    RenderTarget* tempRT = GetMotionBlurBufferTexture(); // Use a dedicated buffer since we need HDR (RGB16F) and we can't use the existing ones (Backbuffer 1 & 2 and SSR)
    m_renderDevice->SetRenderTarget("Ball Motion Blur - Compute"s, tempRT, false);
-   m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true);
-   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetBackBufferTexture()->GetDepthSampler());
+   m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true);
+   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetEyeTexture()->GetDepthSampler());
    m_renderDevice->AddRenderTargetDependency(GetPreviousBackBufferTexture());
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_bloom, GetPreviousBackBufferTexture()->GetColorSampler());
    m_renderDevice->AddRenderTargetDependency(beforeTonemapRT);
@@ -3067,7 +3101,7 @@ RenderTarget* Renderer::ApplyPostProcessedAntialiasing(RenderTarget* renderedRT,
       m_renderDevice->AddRenderTargetDependency(renderedRT);
       m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, renderedRT->GetColorSampler());
       m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
-      m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true); // Depth is always taken from the MSAA resolved render buffer
+      m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true); // Depth is always taken from the MSAA resolved render buffer
       // Depth cannot be used as an early-out for VR since the hidden area mesh writes depth 0 in the render buffer
       m_renderDevice->m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / renderedRT->GetWidth()), (float)(1.0 / renderedRT->GetHeight()), (float)renderedRT->GetWidth(),
          m_stereo3D == STEREO_VR ? 0.f : 1.f);
@@ -3085,7 +3119,7 @@ RenderTarget* Renderer::ApplyPostProcessedAntialiasing(RenderTarget* renderedRT,
       m_renderDevice->AddRenderTargetDependency(renderedRT);
       m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, renderedRT->GetColorSampler());
       m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
-      m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true); // Depth is always taken from the MSAA resolved render buffer
+      m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true); // Depth is always taken from the MSAA resolved render buffer
       // Depth cannot be used as an early-out for VR since the hidden area mesh writes depth 0 in the render buffer
       m_renderDevice->m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / renderedRT->GetWidth()), (float)(1.0 / renderedRT->GetHeight()), (float)renderedRT->GetWidth(),
          m_stereo3D == STEREO_VR ? 0.f : 1.f);
@@ -3168,7 +3202,7 @@ RenderTarget* Renderer::ApplySharpening(RenderTarget* renderedRT, RenderTarget* 
    assert(outputRT != renderedRT);
    m_renderDevice->SetRenderTarget("Sharpen"s, outputRT, false);
    m_renderDevice->AddRenderTargetDependency(renderedRT);
-   m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true); // Depth is always taken from the MSAA resolved render buffer
+   m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true); // Depth is always taken from the MSAA resolved render buffer
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, renderedRT->GetColorSampler());
    m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
    // Depth cannot be used as an early-out for VR since the hidden area mesh writes depth 0 in the render buffer
@@ -3182,7 +3216,7 @@ RenderTarget* Renderer::ApplySharpening(RenderTarget* renderedRT, RenderTarget* 
 RenderTarget* Renderer::ApplyUpscaling(RenderTarget* renderedRT, RenderTarget* outputBackBuffer)
 {
    // Only for an undersampled render (AA factor below 100%), a supersampled one is resolved by the tonemapping
-   if (GetBackBufferTexture()->GetWidth() >= m_renderWidth)
+   if (GetEyeTexture()->GetWidth() >= m_renderWidth)
       return renderedRT;
 
    // TODO add AMD FidelityFX Super Resolution (FSR) support
@@ -3203,6 +3237,61 @@ RenderTarget* Renderer::ApplyUpscaling(RenderTarget* renderedRT, RenderTarget* o
    m_renderDevice->m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / renderedRT->GetWidth()), (float)(1.0 / renderedRT->GetHeight()), 1.0f, 1.0f);
    m_renderDevice->DrawFullscreenTexturedQuad(m_renderDevice->m_FBShader);
    return outputRT;
+}
+
+void Renderer::DrawSceneBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size)
+{
+   if (!IsFoveated() || source->m_nLayers != VPX::Fovea::ViewCount)
+   {
+      m_renderDevice->DrawGaussianBlur(source, tmp, dest, kernel_size);
+      return;
+   }
+   // Kernels are defined in texels of a render of the full eye at full resolution. The foveated pictures share the same raster
+   // but cover different parts of the eye: blur each picture separately, scaling the tap spacing so that the blur covers the
+   // same part of the eye in each of them
+   const int eyeWidth = m_pFoveaEyeTexture->GetWidth();
+   for (int view = 0; view < VPX::Fovea::ViewCount; view++)
+   {
+      const float stepScale = VPX::Fovea::KernelStepScale(VPX::Fovea::PictureSize, eyeWidth, g_pplayer->m_vrDevice->GetFoveaSpanFraction(view));
+      m_renderDevice->DrawGaussianBlur(source, tmp, dest, kernel_size, view, stepScale);
+   }
+}
+
+RenderTarget* Renderer::ComposeFoveation(RenderTarget* sceneRT)
+{
+#ifndef ENABLE_BGFX
+   return sceneRT; // Foveated rendering is only implemented for BGFX
+#else
+   // Rebuild each eye at full resolution from its coarse, middle and sharp pictures, in linear HDR. Depth is selected from
+   // the most detailed picture contributing to the pixel, so that depth based postprocesses and XR depth submission work as without foveation.
+   m_renderDevice->ResetRenderState();
+   m_renderDevice->SetRenderState(RenderState::ALPHABLENDENABLE, RenderState::RS_FALSE);
+   m_renderDevice->SetRenderState(RenderState::CULLMODE, RenderState::CULL_NONE);
+   m_renderDevice->SetRenderState(RenderState::ZWRITEENABLE, RenderState::RS_TRUE);
+   m_renderDevice->SetRenderState(RenderState::ZENABLE, RenderState::RS_TRUE);
+   m_renderDevice->SetRenderState(RenderState::ZFUNC, RenderState::Z_ALWAYS);
+   m_renderDevice->SetRenderTarget("Foveation Compose"s, m_pFoveaEyeTexture, false);
+   m_renderDevice->AddRenderTargetDependency(sceneRT, true);
+   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, sceneRT->GetColorSampler());
+   m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, sceneRT->GetDepthSampler());
+   m_renderDevice->m_FBShader->SetVector(ShaderUniform::w_h_height,
+      1.f / static_cast<float>(sceneRT->GetWidth()), 1.f / static_cast<float>(sceneRT->GetHeight()), static_cast<float>(sceneRT->GetWidth()), static_cast<float>(sceneRT->GetHeight()));
+   vec4 rects[2 * VPX::Fovea::EyeCount];
+   for (int eye = 0; eye < VPX::Fovea::EyeCount; eye++)
+      for (int tier = VPX::Fovea::Middle; tier <= VPX::Fovea::Sharp; tier++)
+      {
+         const float* const r = g_pplayer->m_vrDevice->GetFoveaRect(eye, tier);
+         // Windows are defined once the views have been located: until then, place them outside of the eye
+         rects[eye * 2 + tier - VPX::Fovea::Middle] = (r[2] > r[0] && r[3] > r[1]) ? vec4(r[0], r[1], r[2], r[3]) : vec4(2.f, 2.f, 3.f, 3.f);
+      }
+   m_renderDevice->m_FBShader->SetFloat4v(ShaderUniform::foveaRects, rects, 2 * VPX::Fovea::EyeCount);
+   const float feather = VPX::Fovea::ClampFeather(g_pplayer->m_vrDevice->GetFoveaFeather() * 0.01f);
+   m_renderDevice->m_FBShader->SetVector(ShaderUniform::foveaParams, VPX::Fovea::SupportRadius - feather, VPX::Fovea::SupportRadius, 1.f / 255.f, 0.f);
+   m_renderDevice->m_FBShader->SetTechnique(ShaderTechnique::fb_fovea_compose);
+   m_renderDevice->DrawFullscreenTexturedQuad(m_renderDevice->m_FBShader);
+   m_renderDevice->m_FBShader->SetTextureNull(ShaderUniform::tex_depth);
+   return m_pFoveaEyeTexture;
+#endif
 }
 
 RenderTarget* Renderer::ApplyStereo(RenderTarget* renderedRT, RenderTarget* outputBackBuffer)
@@ -3238,8 +3327,8 @@ RenderTarget* Renderer::ApplyStereo(RenderTarget* renderedRT, RenderTarget* outp
       {
          // Copy depth buffer to OpenXR swapchain's current depth target
          m_renderDevice->SetRenderTarget("OpenXR-Depth"s, outputBackBuffer, true, true);
-         m_renderDevice->AddRenderTargetDependency(GetBackBufferTexture(), true);
-         m_renderDevice->BlitRenderTarget(GetBackBufferTexture(), outputBackBuffer, false, true);
+         m_renderDevice->AddRenderTargetDependency(GetEyeTexture(), true);
+         m_renderDevice->BlitRenderTarget(GetEyeTexture(), outputBackBuffer, false, true);
       }
 
       // Mirror the rendered eye(s) to the desktop display (unless it shows a dedicated render of the scene, see RenderDesktopScene)
@@ -3348,7 +3437,7 @@ RenderTarget* Renderer::ApplyStereo(RenderTarget* renderedRT, RenderTarget* outp
          m_renderDevice->AddRenderTargetDependency(renderedRT);
          m_renderDevice->SetRenderState(RenderState::ZENABLE, RenderState::RS_TRUE);
          m_renderDevice->SetRenderState(RenderState::ZFUNC, RenderState::Z_LESSEQUAL);
-         m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetBackBufferTexture()->GetDepthSampler());
+         m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_depth, GetEyeTexture()->GetDepthSampler());
          m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_fb_unfiltered, renderedRT->GetColorSampler());
          m_renderDevice->m_FBShader->SetTechnique(ShaderTechnique::vr_passthrough);
          m_renderDevice->DrawFullscreenTexturedQuad(m_renderDevice->m_FBShader);
@@ -3523,6 +3612,10 @@ void Renderer::Render3DScene()
    // Starts from the output of the render passes
    RenderTarget* renderedRT = GetBackBufferTexture();
 
+   // Foveated rendering: compose the 6 pictures into the full resolution eyes, from which all postprocesses are applied
+   if (IsFoveated())
+      renderedRT = ComposeFoveation(renderedRT);
+
    // Add screen space reflections
    renderedRT = ApplyAdditiveScreenSpaceReflection(renderedRT);
 
@@ -3533,7 +3626,7 @@ void Renderer::Render3DScene()
 
    // Compute AO contribution (to be applied later, with tonemapping)
    if (GetAOMode() == 2) // Only process for dynamic AO
-      UpdateAmbientOcclusion(GetBackBufferTexture(), g_pplayer->m_overall_frames % 2048);
+      UpdateAmbientOcclusion(GetEyeTexture(), g_pplayer->m_overall_frames % 2048);
 
    // Compute bloom (to be applied later, with tonemapping)
    UpdateBloom(renderedRT);
@@ -3549,7 +3642,7 @@ void Renderer::Render3DScene()
 
    const bool hasAntialiasPass = m_FXAA != Disabled;
    const bool hasSharpenPass = m_sharpen != 0;
-   const bool hasUpscalerPass = GetBackBufferTexture()->GetWidth() < m_renderWidth;
+   const bool hasUpscalerPass = GetEyeTexture()->GetWidth() < m_renderWidth;
    // OpenXR directly renders to the XR render target view without any postprocess needs
    #ifdef ENABLE_XR
    const bool hasStereoPass = (m_stereo3Denabled && (m_stereo3D != STEREO_OFF) && (m_stereo3D != STEREO_VR)) || ((m_stereo3D == STEREO_VR) && m_vrApplyColorKey);

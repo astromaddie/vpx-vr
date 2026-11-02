@@ -232,12 +232,12 @@ void RenderProbe::ApplyRoughness(RenderTarget* probe, const int roughness)
       {
          // FIXME adjust the kernels to have as many as there are roughness levels
          static constexpr float kernel[] = { 0.f, 7.f, 9.f, 11.f, 13.f, 15.f, 19.f, 23.f, 27.f, 39.f, 39.f, 39.f, 39.f };
-         m_renderer->m_renderDevice->DrawGaussianBlur(probe, m_blurRT, probe, kernel[roughness]);
+         m_renderer->DrawSceneBlur(probe, m_blurRT, probe, kernel[roughness]);
       }
       else
       {
          static constexpr float kernel[] = { 0.f, 7.f, 9.f, 13.f, 15.f, 19.f, 23.f, 13.f, 15.f, 19.f, 23.f, 27.f, 39.f };
-         m_renderer->m_renderDevice->DrawGaussianBlur(probe, m_blurRT, probe, kernel[roughness]);
+         m_renderer->DrawSceneBlur(probe, m_blurRT, probe, kernel[roughness]);
       }
    }
 }
@@ -258,8 +258,8 @@ void RenderProbe::RenderScreenSpaceTransparency()
    {
       const int downscale = GetRoughnessDownscale(m_roughness);
       const int w = renderedPass->m_rt->GetWidth() / downscale, h = renderedPass->m_rt->GetHeight() / downscale;
-      m_dynamicRT = new RenderTarget(
-         m_renderer->m_renderDevice, renderedPass->m_rt->m_type, m_name, w, h, renderedPass->m_rt->GetColorFormat(), true, 1, "Failed to create refraction render target", nullptr);
+      m_dynamicRT = new RenderTarget(m_renderer->m_renderDevice, renderedPass->m_rt->m_type, m_name, w, h, renderedPass->m_rt->GetColorFormat(), true, 1,
+         "Failed to create refraction render target", nullptr, renderedPass->m_rt->m_type == SurfaceType::RT_STEREO ? renderedPass->m_rt->m_nLayers : -1);
    }
    m_renderer->m_renderDevice->m_basicShader->SetTextureNull(ShaderUniform::tex_refraction);
    m_renderer->m_renderDevice->SetRenderTarget(m_name, m_dynamicRT, false);
@@ -316,9 +316,10 @@ RenderTarget* RenderProbe::GetRenderTarget(bool isStaticRT)
       int w, h;
       m_renderer->GetRenderSizeAA(w, h);
       const int downscale = GetRoughnessDownscale(m_roughness);
+      // Same layers as the scene render: with foveated rendering, each picture has its matching reflection
       rt = new RenderTarget(m_renderer->m_renderDevice, m_renderer->IsStereo() ? SurfaceType::RT_STEREO : SurfaceType::RT_DEFAULT,
          m_name + (isStaticRT ? ".Stat" : ".Dyn"), w / downscale, h / downscale, m_renderer->GetRenderFormat(), true, 1,
-         "Failed to create plane reflection render target", nullptr);
+         "Failed to create plane reflection render target", nullptr, m_renderer->IsStereo() ? m_renderer->GetRenderLayers() : -1);
    }
    return rt;
 }

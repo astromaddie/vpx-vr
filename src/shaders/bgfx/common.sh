@@ -33,6 +33,12 @@
 	#define texStereo(tex, pos) texture2DArray(tex, vec3((pos).x, (pos).y, v_eye))
 	#define texStereoLod(tex, pos, lod) texture2DArrayLod(tex, vec3((pos).x, (pos).y, v_eye), lod)
 	#define N_EYES 2
+	// Size of the per view uniform arrays: foveated stereo renders 6 views (2 eyes x 3 pictures, see FoveaLayout.h)
+	#ifdef FOVEATED
+		#define N_VIEWS 6
+	#else
+		#define N_VIEWS 2
+	#endif
 #else
 	#define SAMPLER2DSTEREO(_name, _reg) SAMPLER2D(_name, _reg)
 	#define texStereo(tex, pos) texture2D(tex, pos)

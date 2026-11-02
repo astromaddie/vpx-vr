@@ -19,7 +19,8 @@ public:
    RenderTarget(RenderDevice* const rd, const SurfaceType type, bgfx::FrameBufferHandle fbh, bgfx::TextureHandle colorTex, bgfx::TextureFormat::Enum colFormat,
       bgfx::TextureHandle depthTex, bgfx::TextureFormat::Enum depthFormat, const string& name, const int width, const int height, const colorFormat format);
    #endif
-   RenderTarget(RenderDevice* const rd, const SurfaceType type, const string& name, const int width, const int height, const colorFormat format, bool with_depth, int nMSAASamples, const char* failureMessage, RenderTarget* sharedDepth = nullptr);
+   // nLayers overrides the layer count implied by the surface type, for stereo surfaces holding more than 2 views (foveated rendering, see FoveaLayout.h)
+   RenderTarget(RenderDevice* const rd, const SurfaceType type, const string& name, const int width, const int height, const colorFormat format, bool with_depth, int nMSAASamples, const char* failureMessage, RenderTarget* sharedDepth = nullptr, const int nLayers = -1);
    ~RenderTarget();
 
    void Activate(const int layer = -1);

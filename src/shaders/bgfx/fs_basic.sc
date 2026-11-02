@@ -25,10 +25,10 @@ SAMPLER2DSTEREO(tex_refraction, 6); // refractions
 SAMPLER2DSTEREO(tex_probe_depth, 7); // refractions depth probe
 
 #ifdef STEREO
-    uniform mat4 matView[2];
-    uniform mat4 matWorldView[2];
-    uniform mat4 matWorldViewInverseTranspose[2];
-    uniform mat4 matProj[2];
+    uniform mat4 matView[N_VIEWS];
+    uniform mat4 matWorldView[N_VIEWS];
+    uniform mat4 matWorldViewInverseTranspose[N_VIEWS];
+    uniform mat4 matProj[N_VIEWS];
     // FIXME v_eye needs to be flat interpolated, but if declared as such in varying.def.sc, DX11 will fail (OpenGL/Vulkan are good)
     #define mView                      matView[int(round(v_eye))]
     #define mWorldView                 matWorldView[int(round(v_eye))]
