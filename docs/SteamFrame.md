@@ -79,7 +79,10 @@ bundle, and no custom launcher UI is added.
 Registration also sets SteamVR's per-app refresh rate and eye size for the entry to the Frame
 target of 72 Hz at 1760x1760 per eye (`set-vr-display.sh <appid> [Hz] [px]` changes them later;
 SteamVR applies them at the entry's next launch). On the Frame build the desktop mirror and the
-OpenXR depth layer default off and reflections default to balls only; all three remain settings.
+OpenXR depth layer default off, reflections default to balls only, the Turnip driver renders
+without tiling (`[PlayerVR] GPUTiling` off, which sets `TU_DEBUG=sysmem`) and textures get a
+3072 MB budget (`[Player] GPUMemoryBudget`); all of these remain settings. With these defaults
+4 Queens holds 72 fps at 1728x1728 per eye, at about 8.3 ms of GPU time per frame.
 
 Use the existing in-game Menu button to open VR settings. A new Frame configuration applies the
 usable default layout automatically. If saved Frame action or sensor mappings differ, VPX keeps

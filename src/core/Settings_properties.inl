@@ -166,7 +166,7 @@ PropEnum(Player, PFReflection, "Reflection Quality"s,
    int, VPX_STANDALONE_XR_DEFAULTS ? 1 : 5, "Disable Reflections"s, "Balls Only"s, "Static Only"s, "Static & Balls"s, "Static & Unsynced Dynamic"s, "Dynamic"s);
 PropInt(Player, GPUMemoryBudget, "GPU Memory Budget"s,
    "Total GPU memory budget in MB that textures are kept within, replacing the figure reported by the driver (0 uses the driver's figure). Overridden by the VPX_GPU_MEMORY_BUDGET environment variable"s,
-   0, 65536, 0);
+   0, 65536, VPX_STANDALONE_XR_DEFAULTS ? 3072 : 0);
 PropInt(Player, MaxTexDimension, "Maximum texture dimension"s, "Images sized above this limit will be automatically scaled down on load"s, 512, 16384, g_isMobile ? 3072 : 16384);
 PropInt(Player, AlphaRampAccuracy, "Detail Level"s, "Level of detail for balls and ramps"s, 1, 10, 10);
 PropEnum(Player, BGSet, "View Mode"s, "Select between desktop, cabinet or 'full single screen' viewing mode configurations (if a table has set them up correctly)"s, int, 0, "Desktop / Full Single Screen"s, "Cabinet"s, "Full Single Screen"s);
@@ -263,6 +263,9 @@ PropBool(
    PlayerVR, UsePassthroughColor, "Color Keyed Passthrough"s, "Replace VR background by full black to allow color keyed passthrough (for example using Virtual Desktop, setting passthrough to sharp full black)"s, false);
 PropEnum(PlayerVR, DesktopDisplay, "Desktop Display"s, "Select the content to show on the desktop display while playing in VR"s, int, VPX_STANDALONE_XR_DEFAULTS ? 0 : 1, "Disabled"s,
    "Playfield and other displays"s, "Playfield only"s, "Left eye"s, "Right eye"s, "Both eyes"s);
+PropBool(PlayerVR, GPUTiling, "GPU Tiling"s,
+   "Let the Mesa Turnip driver render in tiles (GMEM). Off renders directly to memory (TU_DEBUG=sysmem), which is faster for geometry-heavy tables on the Adreno GPU of standalone headsets. Applies at launch; a TU_DEBUG set in the environment takes precedence"s,
+   !VPX_STANDALONE_XR_DEFAULTS);
 PropBool(PlayerVR, SubmitDepth, "Submit Depth"s,
    "Send the depth buffer to the VR compositor along with the eye images. It can steady reprojection when frames are missed, but copying it costs GPU time every frame"s,
    !VPX_STANDALONE_XR_DEFAULTS);

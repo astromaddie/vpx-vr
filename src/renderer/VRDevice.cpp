@@ -123,6 +123,14 @@ inline static void XrPosef_ToMatrix3D(Matrix3D* result, const XrPosef* pose)
 VRDevice::VRDevice(const Settings& settings)
 {
 #if defined(ENABLE_XR)
+   #if defined(__linux__) && !defined(__ANDROID__)
+   // Must be set before the OpenXR runtime loads the Vulkan driver in this process
+   if (!g_settingsService.GetAppSettings().GetPlayerVR_GPUTiling() && std::getenv("TU_DEBUG") == nullptr)
+   {
+      setenv("TU_DEBUG", "sysmem", 0);
+      PLOGI << "[vr] GPU tiling disabled (TU_DEBUG=sysmem)";
+   }
+   #endif
    if (const char* const forceRenderFrames = std::getenv("VPX_VR_FORCE_RENDER_FRAMES"); forceRenderFrames != nullptr && forceRenderFrames[0] != '\0')
    {
       m_forceRenderFrameLimit = VPX::VRDiagnostics::ParseForcedRenderFrameLimit(forceRenderFrames);
