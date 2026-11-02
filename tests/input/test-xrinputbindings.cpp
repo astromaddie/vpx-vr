@@ -186,7 +186,8 @@ TEST_CASE("standby active-render diagnostics are opt-in and bounded")
    CHECK(ParseForcedRenderFrameLimit("120x") == 0);
    CHECK(ParseForcedRenderFrameLimit("-1") == 0);
    CHECK(ParseForcedRenderFrameLimit("120") == 120);
-   CHECK(ParseForcedRenderFrameLimit("999") == VPX::VRDiagnostics::MaxForcedRenderFrames);
+   CHECK(ParseForcedRenderFrameLimit("999") == 999);
+   CHECK(ParseForcedRenderFrameLimit("99999") == VPX::VRDiagnostics::MaxForcedRenderFrames);
 
    CHECK_FALSE(ShouldForceStandbyRender(false, false, 0, 120)); // only a synchronized session
    CHECK_FALSE(ShouldForceStandbyRender(true, true, 0, 120)); // normal runtime-rendered frames are unchanged

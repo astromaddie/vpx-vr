@@ -87,12 +87,17 @@ Preferences and saves are isolated from other VPX builds and persist in
 To render while the headset is off-head, add `VPX_VR_FORCE_RENDER_FRAMES=240 %command%` to
 the Steam entry's launch options. This opt-in diagnostic only forces frames while OpenXR is
 in the synchronized state and reports `shouldRender=false`; it uses a synthetic 1.60 m stereo
-pose and stops forcing after at most 240 attempts. Normal launches are unchanged when the
+pose and stops forcing after the requested number of attempts, at most 3600 (30 s at 120 Hz). Normal launches are unchanged when the
 variable is unset. Logs identify when the diagnostic starts, its first successful BGFX
 submission, and when its attempt limit is reached. If `VK_LAYER_LUNARG_api_dump` is
 installed, prefix the same launch with `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump
 VK_APIDUMP_FILE=true VK_APIDUMP_LOG_FILENAME=/tmp/vpx-vulkan-api.log VK_APIDUMP_DETAILED=true`
 to capture detailed Vulkan call arguments.
+
+For timing runs, add `VPX_VR_PERF=5` as well. Every 5 seconds the log then shows the frame rate,
+BGFX's average and peak GPU time per frame, the logic and render thread sections (script,
+physics, frame preparation, render waits, submission) and the GPU time of each named pass.
+The profiler adds GPU timer queries, so compare runs that both have it on.
 
 ## Descriptor pool probe
 

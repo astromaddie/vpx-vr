@@ -11,7 +11,7 @@
 namespace VPX::VRDiagnostics
 {
 
-inline constexpr uint32_t MaxForcedRenderFrames = 240;
+inline constexpr uint32_t MaxForcedRenderFrames = 3600; // 30 s at 120 Hz, enough for an off-head timing run
 
 inline uint32_t ParseForcedRenderFrameLimit(const std::string_view value)
 {
