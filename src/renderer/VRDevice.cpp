@@ -1164,7 +1164,11 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
    {
       ++m_forceRenderFrameAttempts;
       if (m_forceRenderFrameAttempts == 1)
+      {
          PLOGI << "[vr] Forcing standby render attempt 1/" << m_forceRenderFrameLimit << " with a synthetic stereo head pose at 1.60 m";
+         // Place the table in front of the synthetic player, as a recenter would, so the forced frames show the playfield
+         m_headsetViewCentering = true;
+      }
    }
    if (!sessionActive || (!frameState.shouldRender && !forceStandbyRender))
       rendered = false;
@@ -1192,10 +1196,15 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
          {
             constexpr float eyeSeparation = 0.064f;
             constexpr float headHeight = 1.6f;
+            // Look down at the playfield like a standing player (VPX_VR_FORCE_PITCH degrees, 35 by default)
+            static const float pitch = [] {
+               const char* const env = std::getenv("VPX_VR_FORCE_PITCH");
+               return ANGTORAD(env != nullptr ? static_cast<float>(std::atof(env)) : 35.f);
+            }();
             const float eyeCenter = (static_cast<float>(viewCount) - 1.f) * 0.5f;
             for (uint32_t eye = 0; eye < viewCount; ++eye)
             {
-               views[eye].pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+               views[eye].pose.orientation = { -sinf(pitch * 0.5f), 0.f, 0.f, cosf(pitch * 0.5f) };
                views[eye].pose.position = { (static_cast<float>(eye) - eyeCenter) * eyeSeparation, headHeight, 0.f };
             }
          }
