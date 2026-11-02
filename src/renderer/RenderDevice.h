@@ -195,6 +195,7 @@ public:
    const bool m_compressTextures;
 
    bool UseLowPrecision() const { return m_useLowPrecision; }
+   bool UsePackedHDR() const { return m_packedHDR; }
 
    unsigned int m_vsyncCount = 0;
 
@@ -250,6 +251,7 @@ private:
    const bool m_isVR;
 
    bool m_useLowPrecision = false; // OpenGL ES use low precision float and needs some clamping to avoid artifacts, but the clamping causes artefacts if applied with VR scene scaling on other backends.
+   bool m_packedHDR = false; // Store RGB16F render targets as 32 bit RG11B10F instead of 64 bit RGBA16F (BGFX only, decided once at startup, see SelectPackedHDR)
 
    std::unique_ptr<RenderFrame> m_renderFrame = nullptr;
    RenderPass* m_currentPass = nullptr;

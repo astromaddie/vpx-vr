@@ -20,6 +20,9 @@ public:
 
    virtual void CreateImageViews(VRDevice::SwapchainInfo& swapchain) = 0;
 
+   // Whether the device can render, blend into and sample a render target of the given format: 1 if it can, 0 if not, -1 if the backend can not tell
+   virtual int IsBlendableRenderTargetFormat(bgfx::TextureFormat::Enum format) const { return -1; }
+
    virtual const std::vector<int64_t> GetSupportedColorSwapchainFormats() = 0;
    virtual const std::vector<int64_t> GetSupportedDepthSwapchainFormats() = 0;
 

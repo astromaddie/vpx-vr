@@ -379,6 +379,29 @@ public:
 
    void* GetSwapchainImage(XrSwapchain swapchain, uint32_t index) override { return (void*)(uintptr_t)m_swapchainImages[swapchain][index].image; }
 
+   int IsBlendableRenderTargetFormat(bgfx::TextureFormat::Enum format) const override
+   {
+      // BGFX only reports that a format can be attached, not that it can be blended into, so ask the physical device that BGFX renders with
+      VkFormat vkFormat;
+      switch (format)
+      {
+      case bgfx::TextureFormat::RG11B10F: vkFormat = VK_FORMAT_B10G11R11_UFLOAT_PACK32; break;
+      case bgfx::TextureFormat::RGBA16F: vkFormat = VK_FORMAT_R16G16B16A16_SFLOAT; break;
+      default: return -1;
+      }
+      if (m_instance == VK_NULL_HANDLE || m_physicalDevice == VK_NULL_HANDLE)
+         return -1;
+      const PFN_vkGetPhysicalDeviceFormatProperties getFormatProperties
+         = (PFN_vkGetPhysicalDeviceFormatProperties)m_vulkan._vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceFormatProperties");
+      if (getFormatProperties == nullptr)
+         return -1;
+      VkFormatProperties props {};
+      getFormatProperties(m_physicalDevice, vkFormat, &props);
+      constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+         | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+      return (props.optimalTilingFeatures & required) == required ? 1 : 0;
+   }
+
    const std::vector<int64_t> GetSupportedColorSwapchainFormats() override { return { VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM }; }
 
    const std::vector<int64_t> GetSupportedDepthSwapchainFormats() override { return { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM }; }

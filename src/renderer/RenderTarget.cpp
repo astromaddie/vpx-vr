@@ -139,7 +139,7 @@ RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, const
    {
    case colorFormat::RED16F: m_colorFormat = bgfx::TextureFormat::R16F; break;
    case colorFormat::RG16F: m_colorFormat = bgfx::TextureFormat::RG16F; break;
-   case colorFormat::RGB16F: m_colorFormat = bgfx::TextureFormat::RGBA16F; break;
+   case colorFormat::RGB16F: m_colorFormat = m_rd->UsePackedHDR() ? bgfx::TextureFormat::RG11B10F : bgfx::TextureFormat::RGBA16F; break; // RGB16F targets never use alpha (see SelectPackedHDR)
    case colorFormat::RGBA16F: m_colorFormat = bgfx::TextureFormat::RGBA16F; break;
    case colorFormat::RGB32F: m_colorFormat = bgfx::TextureFormat::RGBA32F; break;
    case colorFormat::RGBA32F: m_colorFormat = bgfx::TextureFormat::RGBA32F; break;
