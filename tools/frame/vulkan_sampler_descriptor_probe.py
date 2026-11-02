@@ -4,8 +4,9 @@
 Run ``python3 tools/frame/vulkan_sampler_descriptor_probe.py --suite`` on the
 Frame inside the same Steam Linux Runtime used by VPX. The suite compares the
 sparse sampler binding, a layout with only that binding changed to 1, and a
-sampler-only layout. Each Vulkan case runs in its own timed child process, so a
-driver SIGSEGV is reported and the remaining binding-layout cases still run.
+sampler-only layout. It also tests the exact captured OpenXR instance/device
+creation payload through direct Vulkan calls. Each case runs in its own timed
+child process, so a driver SIGSEGV is reported and remaining cases still run.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 
 
 VK_SUCCESS = 0
+VK_API_VERSION_1_1 = (1 << 22) | (1 << 12)
 VK_API_VERSION_1_2 = (1 << 22) | (2 << 12)
 VK_VENDOR_ID_QUALCOMM = 0x5143
 VK_DEVICE_ID_ADRENO_750 = 0x43051401
@@ -38,8 +40,12 @@ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO = 34
 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET = 35
 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001
 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES = 1000196000
+VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 = 1000059000
+VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES = 1000207000
+VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT = 1000275000
 
 VK_QUEUE_GRAPHICS_BIT = 0x1
+VK_QUEUE_COMPUTE_BIT = 0x2
 VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT = 0x1
 BGFX_DESCRIPTOR_POOL_MAX_SETS = 1024
 CASE_TIMEOUT_SECONDS = 30
@@ -57,6 +63,50 @@ VK_SAMPLER_ADDRESS_MODE_REPEAT = 0
 VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2
 VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK = 2
 VK_IMAGE_LAYOUT_UNDEFINED = 0
+
+# Captured from the vkCreateInstance call made through xrCreateVulkanInstanceKHR.
+# The duplicate names are intentional: the runtime forwarded these exact lists.
+OPENXR_INSTANCE_EXTENSIONS = (
+    "VK_KHR_external_memory_capabilities",
+    "VK_KHR_get_physical_device_properties2",
+    "VK_KHR_external_fence_capabilities",
+    "VK_KHR_surface",
+    "VK_KHR_external_semaphore_capabilities",
+    "VK_EXT_debug_utils",
+    "VK_EXT_debug_report",
+    "VK_KHR_get_physical_device_properties2",
+    "VK_KHR_surface",
+    "VK_KHR_xlib_surface",
+    "VK_KHR_xcb_surface",
+    "VK_KHR_wayland_surface",
+)
+
+# Captured from the vkCreateDevice call made through xrCreateVulkanDeviceKHR.
+OPENXR_DEVICE_EXTENSIONS = (
+    "VK_KHR_external_memory",
+    "VK_KHR_external_semaphore",
+    "VK_KHR_timeline_semaphore",
+    "VK_KHR_dedicated_allocation",
+    "VK_KHR_get_memory_requirements2",
+    "VK_KHR_external_memory_fd",
+    "VK_KHR_external_semaphore_fd",
+    "VK_KHR_image_format_list",
+    "VK_KHR_maintenance1",
+    "VK_EXT_shader_viewport_index_layer",
+    "VK_KHR_swapchain",
+    "VK_EXT_memory_budget",
+    "VK_EXT_swapchain_maintenance1",
+)
+
+OPENXR_ENABLED_CORE_FEATURES = (
+    "independentBlend",
+    "depthClamp",
+    "depthBiasClamp",
+    "fillModeNonSolid",
+    "samplerAnisotropy",
+    "textureCompressionETC2",
+    "textureCompressionASTC_LDR",
+)
 
 
 class VkApplicationInfo(C.Structure):
@@ -107,6 +157,93 @@ class VkDeviceCreateInfo(C.Structure):
         ("enabledExtensionCount", C.c_uint32),
         ("ppEnabledExtensionNames", C.POINTER(C.c_char_p)),
         ("pEnabledFeatures", C.c_void_p),
+    ]
+
+
+class VkPhysicalDeviceFeatures(C.Structure):
+    _fields_ = [
+        (name, C.c_uint32)
+        for name in (
+            "robustBufferAccess",
+            "fullDrawIndexUint32",
+            "imageCubeArray",
+            "independentBlend",
+            "geometryShader",
+            "tessellationShader",
+            "sampleRateShading",
+            "dualSrcBlend",
+            "logicOp",
+            "multiDrawIndirect",
+            "drawIndirectFirstInstance",
+            "depthClamp",
+            "depthBiasClamp",
+            "fillModeNonSolid",
+            "depthBounds",
+            "wideLines",
+            "largePoints",
+            "alphaToOne",
+            "multiViewport",
+            "samplerAnisotropy",
+            "textureCompressionETC2",
+            "textureCompressionASTC_LDR",
+            "textureCompressionBC",
+            "occlusionQueryPrecise",
+            "pipelineStatisticsQuery",
+            "vertexPipelineStoresAndAtomics",
+            "fragmentStoresAndAtomics",
+            "shaderTessellationAndGeometryPointSize",
+            "shaderImageGatherExtended",
+            "shaderStorageImageExtendedFormats",
+            "shaderStorageImageMultisample",
+            "shaderStorageImageReadWithoutFormat",
+            "shaderStorageImageWriteWithoutFormat",
+            "shaderUniformBufferArrayDynamicIndexing",
+            "shaderSampledImageArrayDynamicIndexing",
+            "shaderStorageBufferArrayDynamicIndexing",
+            "shaderStorageImageArrayDynamicIndexing",
+            "shaderClipDistance",
+            "shaderCullDistance",
+            "shaderFloat64",
+            "shaderInt64",
+            "shaderInt16",
+            "shaderResourceResidency",
+            "shaderResourceMinLod",
+            "sparseBinding",
+            "sparseResidencyBuffer",
+            "sparseResidencyImage2D",
+            "sparseResidencyImage3D",
+            "sparseResidency2Samples",
+            "sparseResidency4Samples",
+            "sparseResidency8Samples",
+            "sparseResidency16Samples",
+            "sparseResidencyAliased",
+            "variableMultisampleRate",
+            "inheritedQueries",
+        )
+    ]
+
+
+class VkPhysicalDeviceFeatures2(C.Structure):
+    _fields_ = [
+        ("sType", C.c_uint32),
+        ("pNext", C.c_void_p),
+        ("features", VkPhysicalDeviceFeatures),
+    ]
+
+
+class VkPhysicalDeviceTimelineSemaphoreFeatures(C.Structure):
+    _fields_ = [
+        ("sType", C.c_uint32),
+        ("pNext", C.c_void_p),
+        ("timelineSemaphore", C.c_uint32),
+    ]
+
+
+class VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT(C.Structure):
+    _fields_ = [
+        ("sType", C.c_uint32),
+        ("pNext", C.c_void_p),
+        ("swapchainMaintenance1", C.c_uint32),
     ]
 
 
@@ -240,6 +377,7 @@ class DescriptorCase:
     name: str
     bindings: tuple[tuple[int, int, int], ...]
     sampler_binding: int
+    openxr_device_create_chain: bool = False
 
 
 # These are the exact descriptor-set layout bindings from the first crashing
@@ -267,6 +405,16 @@ CASES = (
         "single_sampler_19",
         ((19, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT),),
         19,
+    ),
+    DescriptorCase(
+        "xr_device_create_chain",
+        (
+            (0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_SHADER_STAGE_VERTEX_BIT),
+            (3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT),
+            (19, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT),
+        ),
+        19,
+        openxr_device_create_chain=True,
     ),
 )
 CASES_BY_NAME = {case.name: case for case in CASES}
@@ -310,6 +458,71 @@ def make_bgfx_pool_info(pool_sizes):
         len(pool_sizes),
         pool_sizes,
     )
+
+
+def make_openxr_instance_create_info(app_info):
+    """Build the captured XrVulkanInstanceCreateInfoKHR Vulkan payload."""
+    extension_names = (C.c_char_p * len(OPENXR_INSTANCE_EXTENSIONS))(
+        *(name.encode("ascii") for name in OPENXR_INSTANCE_EXTENSIONS)
+    )
+    app_info.apiVersion = VK_API_VERSION_1_1
+    info = VkInstanceCreateInfo(
+        VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        None,
+        0,
+        C.pointer(app_info),
+        0,
+        None,
+        len(extension_names),
+        extension_names,
+    )
+    return info, extension_names
+
+
+def make_openxr_device_create_info(queue_info):
+    """Mirror the intercepted Vulkan payload forwarded by xrCreateVulkanDeviceKHR.
+
+    The returned call is direct vkCreateDevice, not xrCreateVulkanDeviceKHR. It
+    tests whether the captured extensions/features are sufficient to reproduce
+    the sampler update in isolation; a passing result cannot rule out runtime
+    dispatch or allocation-lifetime behavior.
+    """
+    extension_names = (C.c_char_p * len(OPENXR_DEVICE_EXTENSIONS))(
+        *(name.encode("ascii") for name in OPENXR_DEVICE_EXTENSIONS)
+    )
+    features = VkPhysicalDeviceFeatures()
+    for name in OPENXR_ENABLED_CORE_FEATURES:
+        setattr(features, name, 1)
+
+    timeline = VkPhysicalDeviceTimelineSemaphoreFeatures(
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+        None,
+        1,
+    )
+    features2 = VkPhysicalDeviceFeatures2(
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        C.cast(C.pointer(timeline), C.c_void_p),
+        features,
+    )
+    swapchain_maintenance = VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT(
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+        C.cast(C.pointer(features2), C.c_void_p),
+        1,
+    )
+    info = VkDeviceCreateInfo(
+        VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        C.cast(C.pointer(swapchain_maintenance), C.c_void_p),
+        0,
+        1,
+        C.pointer(queue_info),
+        0,
+        None,
+        len(extension_names),
+        extension_names,
+        None,
+    )
+    keepalive = (extension_names, features, timeline, features2, swapchain_maintenance)
+    return info, keepalive
 
 
 def make_sampler_create_info():
@@ -404,7 +617,7 @@ def _device_info(physical_device, get_properties2):
     )
 
 
-def _select_graphics_queue(physical_device, get_queue_properties):
+def _select_graphics_queue(physical_device, get_queue_properties, required_queue_flags=VK_QUEUE_GRAPHICS_BIT):
     count = C.c_uint32()
     print("CALL vkGetPhysicalDeviceQueueFamilyProperties(count)", flush=True)
     get_queue_properties(physical_device, C.byref(count), None)
@@ -414,7 +627,7 @@ def _select_graphics_queue(physical_device, get_queue_properties):
     print("CALL vkGetPhysicalDeviceQueueFamilyProperties(list)", flush=True)
     get_queue_properties(physical_device, C.byref(count), properties)
     for index, item in enumerate(properties):
-        if item.queueCount and item.queueFlags & VK_QUEUE_GRAPHICS_BIT:
+        if item.queueCount and item.queueFlags & required_queue_flags == required_queue_flags:
             return index
     return None
 
@@ -449,26 +662,36 @@ def run_case(case: DescriptorCase):
         C.c_int32,
         [C.POINTER(VkInstanceCreateInfo), C.c_void_p, C.POINTER(C.c_void_p)],
     )
-    app_name = b"VPX Frame sampler descriptor probe"
+    app_name = (
+        b"VPinball" if case.openxr_device_create_chain else b"VPX Frame sampler descriptor probe"
+    )
     app_info = VkApplicationInfo(
         VK_STRUCTURE_TYPE_APPLICATION_INFO,
         None,
         app_name,
-        1,
-        app_name,
-        1,
+        4194304 if case.openxr_device_create_chain else 1,
+        b"bgfx" if case.openxr_device_create_chain else app_name,
+        4194304 if case.openxr_device_create_chain else 1,
         VK_API_VERSION_1_2,
     )
-    instance_info = VkInstanceCreateInfo(
-        VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        None,
-        0,
-        C.pointer(app_info),
-        0,
-        None,
-        0,
-        None,
-    )
+    instance_extension_names = None
+    if case.openxr_device_create_chain:
+        instance_info, instance_extension_names = make_openxr_instance_create_info(app_info)
+        print(
+            "INSTANCE_PROFILE captured xrCreateVulkanInstanceKHR extension payload",
+            flush=True,
+        )
+    else:
+        instance_info = VkInstanceCreateInfo(
+            VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            None,
+            0,
+            C.pointer(app_info),
+            0,
+            None,
+            0,
+            None,
+        )
     instance = C.c_void_p()
     print("CALL vkCreateInstance", flush=True)
     _check(create_instance(C.byref(instance_info), None, C.byref(instance)), "vkCreateInstance")
@@ -556,7 +779,12 @@ def run_case(case: DescriptorCase):
             )
             if not is_expected_turnip_device(vendor_id, device_id, driver_id, driver_name, api_version):
                 continue
-            queue_family = _select_graphics_queue(physical_device, get_queue_properties)
+            required_queue_flags = VK_QUEUE_GRAPHICS_BIT
+            if case.openxr_device_create_chain:
+                required_queue_flags |= VK_QUEUE_COMPUTE_BIT
+            queue_family = _select_graphics_queue(
+                physical_device, get_queue_properties, required_queue_flags
+            )
             if queue_family is not None:
                 selected = physical_device
                 selected_queue_family = queue_family
@@ -567,7 +795,7 @@ def run_case(case: DescriptorCase):
                 "Mesa Turnip driverID 18, Vulkan 1.2+) with a graphics queue"
             )
 
-        queue_priority = C.c_float(1.0)
+        queue_priority = C.c_float(0.0 if case.openxr_device_create_chain else 1.0)
         queue_info = VkDeviceQueueCreateInfo(
             VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             None,
@@ -576,18 +804,26 @@ def run_case(case: DescriptorCase):
             1,
             C.pointer(queue_priority),
         )
-        device_info = VkDeviceCreateInfo(
-            VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            None,
-            0,
-            1,
-            C.pointer(queue_info),
-            0,
-            None,
-            0,
-            None,
-            None,
-        )
+        device_keepalive = None
+        if case.openxr_device_create_chain:
+            device_info, device_keepalive = make_openxr_device_create_info(queue_info)
+            print(
+                "DEVICE_PROFILE captured xrCreateVulkanDeviceKHR payload; direct vkCreateDevice control",
+                flush=True,
+            )
+        else:
+            device_info = VkDeviceCreateInfo(
+                VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                None,
+                0,
+                1,
+                C.pointer(queue_info),
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
         create_device = _load_instance_function(
             get_instance_proc_addr,
             instance,

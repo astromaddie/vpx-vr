@@ -106,7 +106,9 @@ inside the installed Steam Linux Runtime:
 This uses the system Vulkan loader and checks for the Frame's Adreno 750 / Mesa Turnip
 device. Each case has a 30-second subprocess limit and disables core dumps. It compares
 the captured BGFX descriptor pool and layout with a lower sampler binding and a sampler-only
-layout. It creates no shaders, swapchain or XR session; passing does not establish VPX rendering.
+layout, then repeats the sparse layout with the captured OpenXR Vulkan creation payload.
+That last case uses direct Vulkan calls; it does not exercise `xrCreateVulkanDeviceKHR`.
+The probe creates no shaders, swapchain or XR session; passing does not establish VPX rendering.
 
 ## Table acceptance list
 

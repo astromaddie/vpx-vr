@@ -132,6 +132,20 @@ extensions/features. VPX's failing resources belong to the OpenXR-created Vulkan
 The probe result does not identify a generic driver sampler or sparse-binding defect;
 device creation, dispatch and VPX/BGFX resource state remain under investigation.
 
+The direct-create control with the intercepted OpenXR instance/device extension lists,
+feature chain and queue settings also returned successfully. Disabling Vulkan FDM injection
+for a normal Steam launch did not remove the crash. A temporary Khronos validation layer
+(1.3.275) emitted runtime/swapchain/layout messages but no descriptor-write validation error
+before the process failed; this older layer is not a clean validation result for the current
+1.4 driver/runtime stack. It also changed how far initialization progressed, so it is not a
+substitute for an uninstrumented comparison.
+
+The matching detached driver symbols (BuildID `81c47ab542579a291182ebf3e336b1bceea63276`)
+identify the fault inside `tu_update_descriptor_sets<chip7>`. They contain a symbol table,
+but no Mesa DWARF types. The saved set bytes appear to record a 128-byte allocation with
+only 96 bytes remaining in the mapped BO; exact allocator disassembly is needed before
+treating that private-field interpretation as established.
+
 The bounded-render diagnostic package from source `9f695609263782197070f20aeba282db8f2fe506`
 also passed [ARM64 CI run 41371818188](https://github.com/astromaddie/vpx-vr/actions/runs/41371818188),
 including all 3,562 package file hashes. Its executable SHA-256 is

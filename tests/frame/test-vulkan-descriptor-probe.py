@@ -21,6 +21,10 @@ class VulkanSamplerDescriptorProbeTests(unittest.TestCase):
             probe.VkInstanceCreateInfo: 64,
             probe.VkDeviceQueueCreateInfo: 40,
             probe.VkDeviceCreateInfo: 72,
+            probe.VkPhysicalDeviceFeatures: 220,
+            probe.VkPhysicalDeviceFeatures2: 240,
+            probe.VkPhysicalDeviceTimelineSemaphoreFeatures: 24,
+            probe.VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT: 24,
             probe.VkPhysicalDeviceDriverProperties: 536,
             probe.VkPhysicalDeviceProperties2: 4112,
             probe.VkDescriptorPoolSize: 8,
@@ -63,6 +67,71 @@ class VulkanSamplerDescriptorProbeTests(unittest.TestCase):
         self.assertEqual(dense_rows[1], sparse_rows[1])
         self.assertEqual(dense_rows[2], (1, *sparse_rows[2][1:]))
         self.assertEqual(rows(single), [(19, probe.VK_DESCRIPTOR_TYPE_SAMPLER, 1, probe.VK_SHADER_STAGE_FRAGMENT_BIT)])
+
+    def test_captured_openxr_instance_and_device_creation_payload(self):
+        app = probe.VkApplicationInfo()
+        instance_info, instance_extension_names = probe.make_openxr_instance_create_info(app)
+        self.assertEqual(app.apiVersion, probe.VK_API_VERSION_1_1)
+        self.assertEqual(
+            tuple(name.decode("ascii") for name in instance_extension_names),
+            probe.OPENXR_INSTANCE_EXTENSIONS,
+        )
+        self.assertEqual(instance_info.enabledExtensionCount, 12)
+
+        priority = probe.C.c_float(0.0)
+        queue_info = probe.VkDeviceQueueCreateInfo(
+            probe.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            None,
+            0,
+            0,
+            1,
+            probe.C.pointer(priority),
+        )
+        device_info, keepalive = probe.make_openxr_device_create_info(queue_info)
+        self.assertEqual(device_info.enabledExtensionCount, 13)
+        self.assertEqual(
+            tuple(name.decode("ascii") for name in keepalive[0]),
+            probe.OPENXR_DEVICE_EXTENSIONS,
+        )
+        self.assertIsNone(device_info.pEnabledFeatures)
+
+        swapchain = probe.C.cast(
+            device_info.pNext,
+            probe.C.POINTER(probe.VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT),
+        ).contents
+        self.assertEqual(
+            swapchain.sType,
+            probe.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+        )
+        self.assertEqual(swapchain.swapchainMaintenance1, 1)
+        features2 = probe.C.cast(
+            swapchain.pNext,
+            probe.C.POINTER(probe.VkPhysicalDeviceFeatures2),
+        ).contents
+        self.assertEqual(features2.sType, probe.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)
+        enabled = {
+            name
+            for name, _field_type in probe.VkPhysicalDeviceFeatures._fields_
+            if getattr(features2.features, name)
+        }
+        self.assertEqual(enabled, set(probe.OPENXR_ENABLED_CORE_FEATURES))
+        timeline = probe.C.cast(
+            features2.pNext,
+            probe.C.POINTER(probe.VkPhysicalDeviceTimelineSemaphoreFeatures),
+        ).contents
+        self.assertEqual(
+            timeline.sType,
+            probe.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+        )
+        self.assertEqual(timeline.timelineSemaphore, 1)
+        self.assertEqual(keepalive[-1].sType, swapchain.sType)
+
+    def test_xr_chain_case_reuses_exact_crashing_layout_and_sample(self):
+        xr_case = probe.CASES_BY_NAME["xr_device_create_chain"]
+        sparse_case = probe.CASES_BY_NAME["sparse_sampler_19"]
+        self.assertTrue(xr_case.openxr_device_create_chain)
+        self.assertEqual(xr_case.bindings, sparse_case.bindings)
+        self.assertEqual(xr_case.sampler_binding, sparse_case.sampler_binding)
 
     def test_probe_rejects_unexpected_gpu_or_driver(self):
         api_1_2 = probe.VK_API_VERSION_1_2
