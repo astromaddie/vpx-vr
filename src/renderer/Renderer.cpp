@@ -19,6 +19,9 @@
 #include "renderer/RenderCommand.h"
 #include "renderer/RenderDevice.h"
 #include "renderer/VRDevice.h"
+#if defined(ENABLE_BGFX)
+#include "renderer/VRPerfLog.h"
+#endif
 #include "renderer/trace.h"
 #include "ui/live/LiveUI.h"
 #include "utils/color.h"
@@ -311,6 +314,17 @@ void Renderer::ApplyTableSettings()
    }
    m_vrApplyColorKey = m_stereo3D == STEREO_VR && m_table->GetSettings().GetPlayerVR_UsePassthroughColor();
    m_visualNudgeStrength = m_table->GetSettings().GetPlayer_NudgeStrength();
+   if (m_stereo3D == STEREO_VR)
+   {
+      const char* const cullingEnv = std::getenv("VPX_VR_CULLING");
+      const bool frustumCulling = VPX::Culling::ResolveEnabled(cullingEnv, m_table->GetSettings().GetPlayerVR_FrustumCulling());
+      const bool fromEnv = VPX::Culling::ResolveEnabled(cullingEnv, false) == VPX::Culling::ResolveEnabled(cullingEnv, true);
+      PLOGI << "[vr] Frustum culling " << (frustumCulling ? "on" : "off") << (fromEnv ? " (VPX_VR_CULLING)" : " ([PlayerVR] FrustumCulling)");
+      m_frustumCulling = frustumCulling;
+      #if defined(ENABLE_BGFX)
+      VRPerfLog::SetCullingEnabled(frustumCulling);
+      #endif
+   }
 
    // HDR2020 output disables bloom and boosts exposure
    if (m_renderDevice && (g_pplayer->m_vrDevice == nullptr) && m_renderDevice->m_outputWnd[0]->IsWCGBackBuffer())
@@ -2105,6 +2119,12 @@ void Renderer::RenderItem(IEditable* const editable, bool isNoBackdrop)
    const PartGroupData::SpaceReference spaceReference = editable->GetPartGroup() ? editable->GetPartGroup()->GetReferenceSpace() : PartGroupData::SpaceReference::SR_PLAYFIELD;
    SetSpaceReference(spaceReference, false);
 
+   // Skip parts entirely outside of the active camera, before Render() requests probes or records any draw. UI wireframes, the
+   // transmitted light buffer and the desktop display scene are never culled.
+   if (m_frustumCulling && !isWireframe && !m_desktopScenePass && (m_render_mask & (UI_FILL | UI_EDGES | LIGHT_BUFFER)) == 0
+      && IsOutsideFrustum(editable->GetIRenderable()))
+      return;
+
    // Parts flagged as "Show in Editor" are rendered shaded, even when the part group visibility mask would hide them
    if (!isWireframe || editable->IsShownInEditor())
    {
@@ -2116,6 +2136,42 @@ void Renderer::RenderItem(IEditable* const editable, bool isNoBackdrop)
       constexpr vec4 edgeColor{0.f, 0.f, 0.f, 1.f};
       DrawWireframe(editable, fillColor, edgeColor, m_shadeMode != ShadeMode::NoDepthWireframe);
    }
+}
+
+bool Renderer::IsOutsideFrustum(IRenderable* const renderable)
+{
+   RenderBounds bounds;
+   if (!renderable->GetRenderBounds(m_render_mask, bounds))
+      return false;
+   const VPX::Culling::Aabb world = VPX::Culling::TransformAabb(bounds.local, bounds.toWorld.m);
+   if (!world.IsValid())
+      return false;
+
+   // The camera is the current (possibly mirrored or flipped) view and projection of every eye, in the part's reference space
+   const unsigned int nEyes = std::min(m_mvp.m_nEyes, 2u);
+   for (unsigned int eye = 0; eye < nEyes; eye++)
+   {
+      const Matrix3D& view = m_mvp.GetView(eye);
+      const Matrix3D& proj = m_mvp.GetFlippedProj(eye);
+      if (!m_cullCached[eye] || memcmp(view.m, m_cullView[eye].m, sizeof(view.m)) != 0 || memcmp(proj.m, m_cullProj[eye].m, sizeof(proj.m)) != 0)
+      {
+         m_cullCached[eye] = true;
+         m_cullView[eye] = view;
+         m_cullProj[eye] = proj;
+         const Matrix3D viewProj = view * proj;
+         m_cullFrustum[eye] = VPX::Culling::FrustumFromClipMatrix(viewProj.m);
+      }
+   }
+
+   FrustumCullStats& stats = m_cullStats[IsRenderPass(REFLECTION_PASS) ? 1 : 0];
+   stats.tested++;
+   // Keep parts that any eye may see. The margin (VP units, about 3 mm) absorbs rounding differences with the GPU transform.
+   constexpr float margin = 5.f;
+   if (VPX::Culling::IntersectsAny(m_cullFrustum, static_cast<int>(nEyes), world, margin))
+      return false;
+   stats.culled++;
+   stats.culledTriangles += bounds.triangles;
+   return true;
 }
 
 void Renderer::DisableStaticPrePass(const bool disable) { bool wasUsingStaticPrepass = IsUsingStaticPrepass(); m_disableStaticPrepass += disable ? 1 : -1; m_isStaticPrepassDirty |= wasUsingStaticPrepass != IsUsingStaticPrepass(); }
@@ -2365,6 +2421,17 @@ void Renderer::RenderDynamics()
 
    for (size_t i = 0; i < m_table->m_vrenderprobe.size(); ++i)
       m_table->m_vrenderprobe[i]->ApplyAreaOfInterest();
+
+   // Probes are rendered on demand from the part loop above, so this frame's scene and reflection culling counts are complete
+   if (m_frustumCulling && !m_desktopScenePass)
+   {
+      #if defined(ENABLE_BGFX)
+      if (VRPerfLog::IsEnabled())
+         VRPerfLog::AddCulling(m_cullStats[0].tested, m_cullStats[0].culled, m_cullStats[0].culledTriangles,
+            m_cullStats[1].tested, m_cullStats[1].culled, m_cullStats[1].culledTriangles);
+      #endif
+      m_cullStats[0] = m_cullStats[1] = {};
+   }
 }
 
 

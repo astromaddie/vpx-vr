@@ -497,6 +497,9 @@ void HitTarget::RenderSetup(Renderer *renderer)
    std::shared_ptr<VertexBuffer> vertexBuffer = std::make_shared<VertexBuffer>(m_renderer->m_renderDevice, m_numVertices, (float *)m_vertices);
    std::shared_ptr<IndexBuffer> indexBuffer = std::make_shared<IndexBuffer>(m_renderer->m_renderDevice, m_numIndices, m_indices);
    m_meshBuffer = std::make_shared<MeshBuffer>(GetName(), vertexBuffer, indexBuffer, true);
+   m_renderBounds = {};
+   for (unsigned int i = 0; i < m_numVertices; i++)
+      m_renderBounds.Extend(m_vertices[i].x, m_vertices[i].y, m_vertices[i].z);
 
    m_moveAnimationOffset = 0.0f;
    if (m_d.m_targetType == DropTargetBeveled || m_d.m_targetType == DropTargetSimple || m_d.m_targetType == DropTargetFlatSimple)
@@ -606,6 +609,27 @@ void HitTarget::UpdateAnimation(const float diff_time_msec)
     }
 }
 
+Matrix3D HitTarget::GetRenderMatrix() const
+{
+   // Drop/raise animation offset is applied through the object transform
+   const bool isDropTarget = m_d.m_targetType == DropTargetBeveled || m_d.m_targetType == DropTargetSimple || m_d.m_targetType == DropTargetFlatSimple;
+   return isDropTarget
+      ? Matrix3D::MatrixScale(m_d.m_vSize.x, m_d.m_vSize.y, m_d.m_vSize.z) * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotZ))
+         * Matrix3D::MatrixTranslate(m_d.m_vPosition.x, m_d.m_vPosition.y, m_d.m_vPosition.z + m_moveAnimationOffset)
+      : (Matrix3D::MatrixScale(m_d.m_vSize.x, m_d.m_vSize.y, m_d.m_vSize.z) * Matrix3D::MatrixRotateX(ANGTORAD(m_moveAnimationOffset)) * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotZ)))
+         * Matrix3D::MatrixTranslate(m_d.m_vPosition.x, m_d.m_vPosition.y, m_d.m_vPosition.z);
+}
+
+bool HitTarget::GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds)
+{
+   if (!m_d.m_visible || m_meshBuffer == nullptr || !m_renderBounds.IsValid())
+      return false;
+   bounds.local = m_renderBounds;
+   bounds.toWorld = GetRenderMatrix();
+   bounds.triangles = m_numIndices / 3;
+   return true;
+}
+
 void HitTarget::Render(const unsigned int renderMask)
 {
    assert(m_renderer != nullptr);
@@ -619,13 +643,7 @@ void HitTarget::Render(const unsigned int renderMask)
    if (isStaticOnly || !m_d.m_visible || (isReflectionPass && !m_d.m_reflectionEnabled))
       return;
 
-   // Drop/raise animation offset is applied through the object transform
-   const bool isDropTarget = m_d.m_targetType == DropTargetBeveled || m_d.m_targetType == DropTargetSimple || m_d.m_targetType == DropTargetFlatSimple;
-   const Matrix3D targetMatrix = isDropTarget
-      ? Matrix3D::MatrixScale(m_d.m_vSize.x, m_d.m_vSize.y, m_d.m_vSize.z) * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotZ))
-         * Matrix3D::MatrixTranslate(m_d.m_vPosition.x, m_d.m_vPosition.y, m_d.m_vPosition.z + m_moveAnimationOffset)
-      : (Matrix3D::MatrixScale(m_d.m_vSize.x, m_d.m_vSize.y, m_d.m_vSize.z) * Matrix3D::MatrixRotateX(ANGTORAD(m_moveAnimationOffset)) * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotZ)))
-         * Matrix3D::MatrixTranslate(m_d.m_vPosition.x, m_d.m_vPosition.y, m_d.m_vPosition.z);
+   const Matrix3D targetMatrix = GetRenderMatrix();
 
    RenderMeshDesc body;
    body.mesh = m_meshBuffer;

@@ -278,6 +278,7 @@ public:
 
 public:
    float GetDepth(const Vertex3Ds &viewDir) const final;
+   bool GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds) final;
    
    bool IsConstCollidable() const final { return false; }
    bool IsCollidable() const final { return m_d.m_collidable; }
@@ -319,6 +320,7 @@ private:
    bool m_groupdRendering = false;
    int m_numGroupVertices = 0;
    int m_numGroupIndices = 0;
+   VPX::Culling::Aabb m_renderBounds; // Local bounds of the rendered vertices (all animation frames, or the baked group), set by RenderSetup
    float m_currentFrame = -1.f;
    float m_speed = 0.f;
    bool m_doAnimation = false;

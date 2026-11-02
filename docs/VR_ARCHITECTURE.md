@@ -170,3 +170,51 @@ Diagnostics and overrides:
   `BGFX VK descriptor cache: mode ...` once. Writing a set also records the image layout
   transitions of its textures, so a fault that goes away under `0` points at either the
   cache identity or a layout transition skipped on reuse; `verify` tells the first apart.
+
+## Frustum culling
+
+In VR, `Renderer::RenderItem` skips a part when its render bounds are outside the active
+camera, after the part's reference space (playfield, cabinet, feet or room) is selected and
+before `Render()` runs, so a culled part records no draw and requests no probe. The camera is
+`GetView(eye) * GetFlippedProj(eye)` of the current `ModelViewProj` for both eyes, which
+already includes the plane reflection while the playfield reflection probe is recorded, so
+the main scene is tested against the two eye views and the probe against the two mirrored
+views. A part is kept when any eye may see it. The test (`src/math/Frustum.h`) transforms the
+part's local box by its object matrix into an enclosing box, then checks it against the left,
+right, bottom and top planes and a near plane loose enough for either depth convention
+(`z >= -w`). The far plane is not tested. Planes are widened by 5 VP units (about 3 mm).
+Frustums are cached per eye and rebuilt whenever the view or projection matrix changes.
+
+Parts opt in through `IRenderable::GetRenderBounds`, which must enclose every vertex that
+`Render()` can draw for that mask. Anything else is always drawn:
+
+- Primitives: the union of the mesh and all of its animation frames, taken in `RenderSetup`,
+  under the primitive's current object matrix (so script moves and resizes apply). A grouped
+  collection owner uses the box of its baked group vertices. The playfield primitive is never
+  culled.
+- Rubbers, ramps and walls: the box of the vertices last uploaded to their mesh buffer, in
+  table space. Rubbers and ramps report no bounds while a regeneration is pending. Ramp wires
+  include the wire raise. Walls with slingshots are never culled, because their `Render()`
+  also runs the slingshot hit timing.
+- Hit and drop targets: the box of their mesh under the object matrix they render with, which
+  carries the drop and hit animation.
+- Balls, kickers, lights, flashers, bumpers, flippers, gates, spinners, triggers, plungers,
+  decals and backdrop parts have no bounds yet and are always drawn.
+
+UI wireframe passes, the transmitted light buffer, the desktop display scene and non-VR
+rendering never cull. Opaque draw order is unchanged: sorting opaque draws by view distance
+would make the winner between coplanar surfaces depend on the head pose, which shows as
+flicker, and the fragment work it saves largely overlaps with Adreno's LRZ early depth test.
+
+`[PlayerVR] FrustumCulling` (default on) controls it, and `VPX_VR_CULLING=0` or `1` in the
+environment overrides the setting. Startup logs `[vr] Frustum culling on` or `off` with the
+source. With `VPX_VR_PERF=<seconds>`, each log period adds one line with per frame averages
+for the main scene and the reflection probes: parts tested (those with bounds), parts culled,
+and the triangles the culled parts would have drawn per eye (main draw only):
+`[vr-perf] culling per frame: scene tested <n> culled <n> tris skipped <n>k | reflection
+tested <n> culled <n> tris skipped <n>k`, or `[vr-perf] culling off`.
+
+`tests/render/test-frustum.cpp` covers the maths (each plane, touching boxes, boxes behind
+the eye and around the frustum, asymmetric stereo eyes, mirrored cameras, affine box
+transforms, invalid input and a randomized check against sampled clip-space points) and runs
+in the first step of the Frame CI workflow.

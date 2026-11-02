@@ -270,6 +270,8 @@ PropBool(PlayerVR, SubmitDepth, "Submit Depth"s,
    "Send the depth buffer to the VR compositor along with the eye images. It can steady reprojection when frames are missed, but copying it costs GPU time every frame"s,
    !VPX_STANDALONE_XR_DEFAULTS);
 PropBool(PlayerVR, ShrinkDesktopDisplay, "Shrink desktop display"s, "Shrink the mirrored eye view to fit inside the desktop display"s, false);
+PropBool(PlayerVR, FrustumCulling, "Frustum Culling"s,
+   "Skip drawing parts that are entirely outside of both eyes' views (and of the mirrored views for playfield reflections). Only saves work, the image is unchanged"s, true);
 PropBool(PlayerVR, AddBackglass, "Add Backglass"s, "Add a default backglass display to the scene"s, false);
 PropBool(PlayerVR, SpatialAudioBackglass, "Backglass Spatial Audio"s,
    "Render backglass sounds as spatially positioned sources, binauralized for the VR headset"s, true);

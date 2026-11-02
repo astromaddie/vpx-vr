@@ -613,6 +613,17 @@ void Rubber::Render(const unsigned int renderMask)
    m_renderer->RenderMesh(renderMask, body, material);
 }
 
+bool Rubber::GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds)
+{
+   // Bounds follow the uploaded vertices: unknown while Render() still has to regenerate them
+   if (!m_d.m_visible || m_meshBuffer == nullptr || (m_dynamicVertexBufferRegenerate && !m_d.m_staticRendering) || !m_renderBounds.IsValid())
+      return false;
+   bounds.local = m_renderBounds;
+   bounds.toWorld.SetIdentity();
+   bounds.triangles = m_numIndices / 3;
+   return true;
+}
+
 #pragma endregion
 
 
@@ -1195,7 +1206,10 @@ void Rubber::UpdateRubber(const bool updateVB, const float height)
 
    Vertex3D_NoTex2 *buf;
    if (updateVB)
+   {
       m_meshBuffer->m_vb->Lock(buf);
+      m_renderBounds = {};
+   }
    else
       buf = m_vertices.data();
 
@@ -1205,6 +1219,8 @@ void Rubber::UpdateRubber(const bool updateVB, const float height)
       buf[i].x = vert.x;
       buf[i].y = vert.y;
       buf[i].z = vert.z;
+      if (updateVB)
+         m_renderBounds.Extend(vert.x, vert.y, vert.z);
 
       vert = Vertex3Ds(m_vertices[i].nx, m_vertices[i].ny, m_vertices[i].nz);
       vert = fullMatrix.MultiplyVectorNoTranslate(vert);

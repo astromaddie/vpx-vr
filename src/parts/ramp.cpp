@@ -845,6 +845,17 @@ void Ramp::Render(const unsigned int renderMask)
    }
 }
 
+bool Ramp::GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds)
+{
+   // Bounds follow the mesh buffer: unknown while Render() still has to (re)generate it
+   if (!m_d.m_visible || m_meshBuffer == nullptr || m_dynamicVertexBufferRegenerate || !m_renderBounds.IsValid())
+      return false;
+   bounds.local = m_renderBounds;
+   bounds.toWorld.SetIdentity();
+   bounds.triangles = m_numIndices / 3;
+   return true;
+}
+
 float Ramp::GetDepth(const Vertex3Ds& viewDir) const
 {
    // TODO: improve
@@ -1062,6 +1073,21 @@ void Ramp::PrepareHabitrail()
       delete[] tmpBuf1;
       delete[] tmpBuf2;
       return;
+   }
+
+   // Culling bounds: every wire below is a copy of one of the two generated wires, raised by 3 or by half the wire distance
+   m_renderBounds = {};
+   for (int i = 0; i < m_numVertices; i++)
+   {
+      m_renderBounds.Extend(tmpBuf1[i].x, tmpBuf1[i].y, tmpBuf1[i].z);
+      if (tmpBuf2)
+         m_renderBounds.Extend(tmpBuf2[i].x, tmpBuf2[i].y, tmpBuf2[i].z);
+   }
+   if (m_renderBounds.IsValid())
+   {
+      const float wireRaise = m_d.m_wireDistanceY * 0.5f;
+      m_renderBounds.min[2] += min(0.f, wireRaise);
+      m_renderBounds.max[2] += max(3.f, wireRaise);
    }
 
    switch (m_d.m_type)
@@ -2149,6 +2175,9 @@ void Ramp::GenerateVertexBuffer()
       m_meshEdgeBuffer = nullptr;
       return;
    }
+   m_renderBounds = {};
+   for (int i = 0; i < m_numVertices * 3; i++)
+      m_renderBounds.Extend(tmpBuffer[i].x, tmpBuffer[i].y, tmpBuffer[i].z);
    std::shared_ptr<VertexBuffer> dynamicVertexBuffer
       = std::make_shared<VertexBuffer>(m_renderer->m_renderDevice, m_numVertices * 3, (float *)tmpBuffer); //!! use USAGE_DYNAMIC if it would actually be "really" dynamic
    delete[] tmpBuffer;
