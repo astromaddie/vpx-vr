@@ -137,7 +137,7 @@ fi
 # build bgfx
 #
 
-BGFX_EXPECTED_SHA="${BGFX_CMAKE_VERSION}-${BGFX_PATCH_SHA}-002"
+BGFX_EXPECTED_SHA="${BGFX_CMAKE_VERSION}-${BGFX_PATCH_SHA}-003"
 BGFX_FOUND_SHA="$([ -f bgfx/cache.txt ] && cat bgfx/cache.txt || echo "")"
 
 if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
@@ -156,6 +156,8 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    mv ../bgfx-${BGFX_PATCH_SHA} bgfx
    # Mesa Turnip overruns the first descriptor set after a free-set pool reset
    patch -p1 -d bgfx < "${PATCH_DIR}/bgfx-turnip-descriptor-pool.patch"
+   # BGFX_VK_DESCRIPTOR_CACHE=0|verify switch to bypass or check the hash-only descriptor-set cache (diagnostic)
+   patch -p1 -d bgfx < "${PATCH_DIR}/bgfx-vk-descriptor-cache-diagnostic.patch"
    cmake -S. \
       -DBGFX_LIBRARY_TYPE=SHARED \
       -DBGFX_BUILD_TOOLS=OFF \

@@ -1,0 +1,292 @@
+--- a/src/renderer_vk.cpp
++++ b/src/renderer_vk.cpp
+@@ -9,6 +9,7 @@
+ #	include <bx/pixelformat.h>
+ #	include "renderer_vk.h"
+ #	include "video_vk.h"
++#	include <stdlib.h>
+ 
+ #if BX_PLATFORM_OSX
+ #	import <Cocoa/Cocoa.h>
+@@ -2810,6 +2811,8 @@
+ 					m_descriptorPool[ii][0] = createDescriptorPool();
+ 					m_numDescriptorPools[ii] = 1;
+ 				}
++
++				initDescriptorCacheMode();
+ 
+ 				VkPipelineCacheCreateInfo pcci;
+ 				pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+@@ -5388,6 +5391,7 @@
+ 
+ 			m_descriptorPoolIdx = 0;
+ 			m_descriptorSetMap.clear();
++			m_descriptorSetKeyMap.clear();
+ 		}
+ 
+ 		VkDescriptorPool createDescriptorPool()
+@@ -5451,8 +5455,148 @@
+ 				, "vkAllocateDescriptorSets: VK error %d: %s"
+ 				, result
+ 				, getName(result)
++				);
++
++			return descriptorSet;
++		}
++
++		// Diagnostic switch for the per-frame descriptor-set cache, which reuses a set by a 32-bit hash
++		// of DescriptorSetKey without comparing the key itself, and whose key omits the program's own
++		// texture metadata (view type, MSAA) that getDescriptorSet() writes into the set.
++		// BGFX_VK_DESCRIPTOR_CACHE: unset or 1 = cache (default), 0 = bypass (allocate and write a set
++		// for every draw and dispatch), verify = cache, but compare full keys on every hit and warn once
++		// on a hash collision or on a set reused across programs with different texture metadata.
++		enum DescriptorCacheMode { DescriptorCacheDefault, DescriptorCacheBypass, DescriptorCacheVerify };
++
++		struct DescriptorSetKey
++		{
++			VkDescriptorSetLayout layout;
++			uint32_t msaaMask;
++			uint32_t bindIdx;
++			VkBuffer uniformBuffer;
++			uint32_t vsSize;
++			uint32_t fsSize;
++			VkImageLayout readOnlyDepthLayout;
++			uint16_t program; // Not hashed, only compared in verify mode
++		};
++
++		void initDescriptorCacheMode()
++		{
++			m_descriptorCacheMode = DescriptorCacheDefault;
++			m_descriptorCacheCollisionWarned = false;
++			m_descriptorCacheProgramWarned = false;
++			const char* mode = ::getenv("BGFX_VK_DESCRIPTOR_CACHE");
++			if (NULL == mode)
++			{
++				return;
++			}
++			if (0 == bx::strCmp(mode, "0") )
++			{
++				m_descriptorCacheMode = DescriptorCacheBypass;
++			}
++			else if (0 == bx::strCmp(mode, "verify") )
++			{
++				m_descriptorCacheMode = DescriptorCacheVerify;
++			}
++			bgfx::trace(__FILE__, uint16_t(__LINE__), "BGFX VK descriptor cache: mode %s (BGFX_VK_DESCRIPTOR_CACHE=%s)\n"
++				, DescriptorCacheBypass == m_descriptorCacheMode ? "bypass" : DescriptorCacheVerify == m_descriptorCacheMode ? "verify" : "default"
++				, mode
+ 				);
++		}
++
++		bool sameTextureMetadata(const ProgramVK& _a, const ProgramVK& _b) const
++		{
++			for (uint32_t stage = 0; stage < BGFX_CONFIG_MAX_TEXTURE_SAMPLERS; ++stage)
++			{
++				const BindInfo& a = _a.m_bindInfo[stage];
++				const BindInfo& b = _b.m_bindInfo[stage];
++				if (isValid(a.uniformHandle) != isValid(b.uniformHandle) )
++				{
++					return false;
++				}
++				if (!isValid(a.uniformHandle) )
++				{
++					continue;
++				}
++				if (a.type != b.type
++				||  a.binding != b.binding
++				||  a.samplerBinding != b.samplerBinding
++				||  (UINT32_MAX == a.index) != (UINT32_MAX == b.index) )
++				{
++					return false;
++				}
++				if (UINT32_MAX != a.index
++				&& (_a.m_textures[a.index].type != _b.m_textures[b.index].type
++				||  _a.m_textures[a.index].msaa != _b.m_textures[b.index].msaa) )
++				{
++					return false;
++				}
++			}
++			return true;
++		}
++
++		void verifyDescriptorSetKey(uint32_t _bindHash, const DescriptorSetKey& _key)
++		{
++			DescriptorSetKeyMap::const_iterator it = m_descriptorSetKeyMap.find(_bindHash);
++			if (it == m_descriptorSetKeyMap.end() )
++			{
++				return;
++			}
++			const DescriptorSetKey& cached = it->second;
++			if (cached.layout != _key.layout
++			||  cached.msaaMask != _key.msaaMask
++			||  cached.bindIdx != _key.bindIdx
++			||  cached.uniformBuffer != _key.uniformBuffer
++			||  cached.vsSize != _key.vsSize
++			||  cached.fsSize != _key.fsSize
++			||  cached.readOnlyDepthLayout != _key.readOnlyDepthLayout)
++			{
++				if (!m_descriptorCacheCollisionWarned)
++				{
++					m_descriptorCacheCollisionWarned = true;
++					bgfx::trace(__FILE__, uint16_t(__LINE__), "BGFX VK descriptor cache: WARNING hash 0x%08x collision, set of bind %u (program %u) reused for bind %u (program %u)\n"
++						, _bindHash, cached.bindIdx, cached.program, _key.bindIdx, _key.program
++						);
++				}
++			}
++			else if (cached.program != _key.program
++			&&  !sameTextureMetadata(m_program[cached.program], m_program[_key.program]) )
++			{
++				if (!m_descriptorCacheProgramWarned)
++				{
++					m_descriptorCacheProgramWarned = true;
++					bgfx::trace(__FILE__, uint16_t(__LINE__), "BGFX VK descriptor cache: WARNING set of program %u reused for program %u with different texture metadata (bind %u)\n"
++						, cached.program, _key.program, _key.bindIdx
++						);
++				}
++			}
++		}
+ 
++		VkDescriptorSet getCachedDescriptorSet(uint32_t _bindHash, const DescriptorSetKey& _key, const ProgramVK& _program, const RenderBind& _renderBind, VkBuffer _uniformBuffer, const float _palette[][4], uint32_t& _descriptorSetCount)
++		{
++			if (DescriptorCacheBypass == m_descriptorCacheMode)
++			{
++				++_descriptorSetCount;
++				return getDescriptorSet(_program, _renderBind, _uniformBuffer, _palette);
++			}
++
++			DescriptorSetMap::const_iterator it = m_descriptorSetMap.find(_bindHash);
++			if (it != m_descriptorSetMap.end() )
++			{
++				if (DescriptorCacheVerify == m_descriptorCacheMode)
++				{
++					verifyDescriptorSetKey(_bindHash, _key);
++				}
++				return it->second;
++			}
++
++			VkDescriptorSet descriptorSet = getDescriptorSet(_program, _renderBind, _uniformBuffer, _palette);
++			m_descriptorSetMap.insert(stl::make_pair(_bindHash, descriptorSet) );
++			if (DescriptorCacheVerify == m_descriptorCacheMode)
++			{
++				m_descriptorSetKeyMap.insert(stl::make_pair(_bindHash, _key) );
++			}
++			++_descriptorSetCount;
+ 			return descriptorSet;
+ 		}
+ 
+@@ -6228,6 +6372,12 @@
+ 		typedef stl::unordered_map<uint32_t, VkDescriptorSet> DescriptorSetMap;
+ 		DescriptorSetMap m_descriptorSetMap;
+ 
++		typedef stl::unordered_map<uint32_t, DescriptorSetKey> DescriptorSetKeyMap;
++		DescriptorSetKeyMap m_descriptorSetKeyMap; // Only filled in verify mode
++		DescriptorCacheMode m_descriptorCacheMode;
++		bool m_descriptorCacheCollisionWarned;
++		bool m_descriptorCacheProgramWarned;
++
+ 		VkPipelineCache  m_pipelineCache;
+ 
+ 		TimerQueryVK m_gpuTimer;
+@@ -12309,29 +12459,32 @@
+ 
+ 						const uint32_t bindHash = hash.end();
+ 
+-						if (currentBindHash != bindHash)
++						// Outside the default mode, every dispatch goes through the cache lookup (bypass or verify)
++						if (currentBindHash != bindHash
++						||  DescriptorCacheDefault != m_descriptorCacheMode)
+ 						{
+ 							currentBindHash = bindHash;
+ 
+-							DescriptorSetMap::const_iterator it = m_descriptorSetMap.find(bindHash);
+-							if (it == m_descriptorSetMap.end() )
++							const DescriptorSetKey key =
+ 							{
+-								VkDescriptorSet descriptorSet = getDescriptorSet(
+-									  program
+-									, renderBind
+-									, currentSbo.buffer
+-									, _render->m_colorPalette
++								program.m_descriptorSetLayout,
++								program.m_msaaMask,
++								bindIdx,
++								currentSbo.buffer,
++								vsSize,
++								0,
++								m_readOnlyDepthLayout,
++								currentProgram.idx,
++							};
++							currentDescriptorSet = getCachedDescriptorSet(
++								  bindHash
++								, key
++								, program
++								, renderBind
++								, currentSbo.buffer
++								, _render->m_colorPalette
++								, descriptorSetCount
+ 								);
+-
+-								m_descriptorSetMap.insert(stl::make_pair(bindHash, descriptorSet) );
+-								currentDescriptorSet = descriptorSet;
+-
+-								descriptorSetCount++;
+-							}
+-							else
+-							{
+-								currentDescriptorSet = it->second;
+-							}
+ 						}
+ 
+ 						vkCmdBindDescriptorSets(
+@@ -12672,29 +12825,32 @@
+ 
+ 						const uint32_t bindHash = hash.end();
+ 
+-						if (currentBindHash != bindHash)
++						// Outside the default mode, every draw goes through the cache lookup (bypass or verify)
++						if (currentBindHash != bindHash
++						||  DescriptorCacheDefault != m_descriptorCacheMode)
+ 						{
+ 							currentBindHash = bindHash;
+ 
+-							DescriptorSetMap::const_iterator it = m_descriptorSetMap.find(bindHash);
+-							if (it == m_descriptorSetMap.end() )
++							const DescriptorSetKey key =
+ 							{
+-								VkDescriptorSet descriptorSet = getDescriptorSet(
+-									  program
+-									, renderBind
+-									, currentSbo.buffer
+-									, _render->m_colorPalette
+-									);
+-
+-								m_descriptorSetMap.insert(stl::make_pair(bindHash, descriptorSet) );
+-								currentDescriptorSet = descriptorSet;
+-
+-								descriptorSetCount++;
+-							}
+-							else
+-							{
+-								currentDescriptorSet = it->second;
+-							}
++								program.m_descriptorSetLayout,
++								program.m_msaaMask,
++								bindIdx,
++								currentSbo.buffer,
++								vsSize,
++								fsSize,
++								m_readOnlyDepthLayout,
++								currentProgram.idx,
++							};
++							currentDescriptorSet = getCachedDescriptorSet(
++								  bindHash
++								, key
++								, program
++								, renderBind
++								, currentSbo.buffer
++								, _render->m_colorPalette
++								, descriptorSetCount
++								);
+ 						}
+ 
+ 						vkCmdBindDescriptorSets(
