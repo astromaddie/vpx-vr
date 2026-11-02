@@ -103,6 +103,18 @@ entry that is `13227685663173771264`, rather than the 32-bit shortcut AppID `307
 
 Startup logged an SDL desktop-backbuffer-format error, then selected RGBA8 and initialized
 the Vulkan backend and OpenXR session. Session creation establishes initialization, not
-rendered stereo, frame pacing, physical controls, or comfort. Check those during use before
-performance tuning. Eye-image readback is not implemented; use runtime capture or direct
-headset inspection for visual evidence.
+rendered stereo, frame pacing, physical controls, or comfort.
+
+Active rendering currently fails: normal Steam launches on 2026-11-02 at 09:21:50 and
+09:22:12 JST loaded 4 Queens, then received SIGSEGV at 09:21:54 and 09:22:16. The example
+table launch at 09:22:37 failed at 09:22:41 with the same stack. The crashing thread enters
+`vkUpdateDescriptorSets` from BGFX `RendererContextVK::getDescriptorSet`, then faults in
+`libvulkan_freedreno.so+0xb2bd98`. Installed BGFX disassembly places its call at
+`libbgfx.so+0x125edc`; the saved return address is `+0x125ee0`. This is a shared render-path
+failure, with no table-script error found in these logs. The exact invalid state remains
+under investigation. The earlier synchronized, off-head sessions skipped active rendering.
+
+Reproduce through the normal Steam entry using the opt-in bounded standby rendering
+diagnostic described in [SteamFrame.md](SteamFrame.md#off-head-vulkan-crash-diagnostic).
+Use the installed API-dump layer to inspect descriptor writes and their corresponding
+layouts. Diagnostic frames do not establish headset appearance or physical control behavior.

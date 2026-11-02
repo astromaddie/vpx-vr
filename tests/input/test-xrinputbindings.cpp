@@ -2,6 +2,7 @@
 
 #include "input/XRInputBindings.h"
 #include "input/InputLayoutPolicy.h"
+#include "renderer/VRRenderDiagnostic.h"
 
 #include "doctest.h"
 
@@ -172,6 +173,27 @@ TEST_CASE("VR default layout policy preserves configured Frame mappings for an e
       // call ApplyDefaultDeviceMapping directly when the player accepts the default layout.
       CHECK_FALSE(VPX::Input::ShouldAutoApplyVRControllerLayout(true, true));
    }
+}
+
+TEST_CASE("standby active-render diagnostics are opt-in and bounded")
+{
+   using VPX::VRDiagnostics::ParseForcedRenderFrameLimit;
+   using VPX::VRDiagnostics::ShouldForceStandbyRender;
+
+   CHECK(ParseForcedRenderFrameLimit("") == 0);
+   CHECK(ParseForcedRenderFrameLimit("0") == 0);
+   CHECK(ParseForcedRenderFrameLimit("abc") == 0);
+   CHECK(ParseForcedRenderFrameLimit("120x") == 0);
+   CHECK(ParseForcedRenderFrameLimit("-1") == 0);
+   CHECK(ParseForcedRenderFrameLimit("120") == 120);
+   CHECK(ParseForcedRenderFrameLimit("999") == VPX::VRDiagnostics::MaxForcedRenderFrames);
+
+   CHECK_FALSE(ShouldForceStandbyRender(false, false, 0, 120)); // only a synchronized session
+   CHECK_FALSE(ShouldForceStandbyRender(true, true, 0, 120)); // normal runtime-rendered frames are unchanged
+   CHECK_FALSE(ShouldForceStandbyRender(true, false, 0, 0)); // disabled unless explicitly configured
+   CHECK(ShouldForceStandbyRender(true, false, 0, 120));
+   CHECK(ShouldForceStandbyRender(true, false, 119, 120));
+   CHECK_FALSE(ShouldForceStandbyRender(true, false, 120, 120));
 }
 
 TEST_CASE("Steam Frame View press selects back or recenter by hold duration")

@@ -82,6 +82,19 @@ them and presents its existing layout proposal so defaults are applied only if c
 Preferences and saves are isolated from other VPX builds and persist in
 `$XDG_DATA_HOME/VPXFrame/10.8`.
 
+## Off-head Vulkan crash diagnostic
+
+To reproduce an active-render failure while the headset is off-head, add
+`VPX_VR_FORCE_RENDER_FRAMES=240 %command%` to the Steam entry's launch options. This opt-in
+diagnostic only forces frames while OpenXR is in the synchronized state and reports
+`shouldRender=false`; it uses a synthetic 1.60 m stereo pose and stops forcing after at most
+240 attempts. Normal launches are unchanged when the variable is unset. Logs identify when
+the diagnostic starts, its first successful BGFX submission, and when its attempt limit is
+reached. If `VK_LAYER_LUNARG_api_dump` is installed, prefix the same launch with
+`VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump VK_APIDUMP_FILE=true
+VK_APIDUMP_LOG_FILENAME=/tmp/vpx-vulkan-api.log VK_APIDUMP_DETAILED=true` to capture detailed
+Vulkan call arguments for diagnosis.
+
 ## Table acceptance list
 
 Black Hole BigusMOD 2.0 and 4 Queens 1.2 are stored under
@@ -99,11 +112,9 @@ substitute a ROM set by name alone.
 
 ## Remaining acceptance gates
 
-- Build from the final Frame source and verify the artifact hash and AArch64/OpenXR metadata.
-- Install and launch through Steam Linux Runtime 4; capture OpenXR runtime, instance/session
-  timing and session-state logs.
-- Confirm both projected eye images using runtime capture or wearer inspection. The current
-  code logs stereo view count and eye dimensions but does not read back eye images.
+- Resolve the shared Vulkan descriptor-update crash during active rendering, then verify
+  both the example and exact 4 Queens file through their normal Steam entries.
+- Confirm both projected eye images using runtime capture or wearer inspection.
 - Exercise triggers, squeeze values, right ABXY, Menu, View short press and 1-second hold, vector2
   plunger/nudge input, focus loss and return from standby.
 - Test each exact table version with its locally supplied dependencies, then complete wearer

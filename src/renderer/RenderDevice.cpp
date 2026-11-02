@@ -624,11 +624,11 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
 
       // Let OpenXR throttle rendering, preparing frame on demand when view positions are acquired and predicted display time is defined
       g_pplayer->m_vrDevice->RenderFrame(this,
-         [this](RenderTarget* vrRenderTarget)
+         [this](RenderTarget* vrRenderTarget) -> bool
          {
             // FIXME No VR target, we should still render to the desktop display
             if (vrRenderTarget == nullptr)
-               return;
+               return false;
 
             // Set acquired swapchain images as render target, request a new renderframe from GameLogic thread, and wait for it
             BEGIN_SPAN(tagSpanFF, "vpxWaitFrame")
@@ -641,7 +641,7 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
             g_pplayer->m_renderProfiler->ExitProfileSection();
             END_SPAN(tagSpanFF)
             if (!m_framePending)
-               return; // Nothing was submitted (spurious release or shutdown), wait for the next swapchain acquire
+               return false; // Nothing was submitted (spurious release or shutdown), wait for the next swapchain acquire
 
             // Submit frame to BGFX (which contains all rendering commands, for VR headset but also other windows like the desktop display,...)
             bool noPresent;
@@ -693,6 +693,7 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
             g_pplayer->m_renderProfiler->ExitProfileSection();
             g_pplayer->m_renderProfiler->AdjustBGFXSubmit(static_cast<uint32_t>(bgfxSubmit));
             END_SPAN(tagSpan)
+            return true;
          });
    }
    g_pplayer->m_vrDevice->ReleaseSession();

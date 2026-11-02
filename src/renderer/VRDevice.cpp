@@ -13,6 +13,7 @@
 #include "renderer/RenderTarget.h"
 #include "renderer/Sampler.h"
 #include "renderer/VertexBuffer.h"
+#include "renderer/VRRenderDiagnostic.h"
 
 // MSVC Concurrency Viewer support
 // This requires to add the MSVC Concurrency SDK to the project
@@ -36,6 +37,7 @@ extern marker_series series;
    #include <vector>
    #include <time.h>
    #include <chrono>
+   #include <cstdlib>
 
 static inline const char* GetXRErrorString(XrInstance xrInstance, XrResult result)
 {
@@ -120,6 +122,17 @@ inline static void XrPosef_ToMatrix3D(Matrix3D* result, const XrPosef* pose)
 
 VRDevice::VRDevice(const Settings& settings)
 {
+#if defined(ENABLE_XR)
+   if (const char* const forceRenderFrames = std::getenv("VPX_VR_FORCE_RENDER_FRAMES"); forceRenderFrames != nullptr && forceRenderFrames[0] != '\0')
+   {
+      m_forceRenderFrameLimit = VPX::VRDiagnostics::ParseForcedRenderFrameLimit(forceRenderFrames);
+      if (m_forceRenderFrameLimit != 0)
+         PLOGI << "[vr] Standby render diagnostic enabled for up to " << m_forceRenderFrameLimit
+               << " frame attempts while the OpenXR session is synchronized and shouldRender is false";
+      else
+         PLOGW << "[vr] Ignoring invalid VPX_VR_FORCE_RENDER_FRAMES value (expected a positive integer)";
+   }
+#endif
    // Scene offset (vertical rotation and horizontal shift), part of the real world player setup (global only)
    const Settings& appSettings = g_settingsService.GetAppSettings();
    m_orientation = appSettings.GetPlayerVR_HeadSetOrientation();
@@ -1076,7 +1089,7 @@ void VRDevice::UpdateVisibilityMask(RenderDevice* rd)
    }
 }
 
-void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarget* vrRenderTarget)>& submitFrame)
+void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarget* vrRenderTarget)>& submitFrame)
 {
    assert(m_session);
 
@@ -1136,8 +1149,17 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
    #endif
 
    // Check that the session is active and that we should render.
-   const bool sessionActive = (m_sessionState == XR_SESSION_STATE_SYNCHRONIZED || m_sessionState == XR_SESSION_STATE_VISIBLE || m_sessionState == XR_SESSION_STATE_FOCUSED);
-   if (!sessionActive || !frameState.shouldRender)
+   const bool sessionSynchronized = (m_sessionState == XR_SESSION_STATE_SYNCHRONIZED);
+   const bool sessionActive = (sessionSynchronized || m_sessionState == XR_SESSION_STATE_VISIBLE || m_sessionState == XR_SESSION_STATE_FOCUSED);
+   const bool forceStandbyRender = VPX::VRDiagnostics::ShouldForceStandbyRender(sessionSynchronized, frameState.shouldRender,
+      m_forceRenderFrameAttempts, m_forceRenderFrameLimit);
+   if (forceStandbyRender)
+   {
+      ++m_forceRenderFrameAttempts;
+      if (m_forceRenderFrameAttempts == 1)
+         PLOGI << "[vr] Forcing standby render attempt 1/" << m_forceRenderFrameLimit << " with a synthetic stereo head pose at 1.60 m";
+   }
+   if (!sessionActive || (!frameState.shouldRender && !forceStandbyRender))
       rendered = false;
 
    if (rendered)
@@ -1159,6 +1181,18 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
       }
       if (rendered)
       {
+         if (forceStandbyRender)
+         {
+            constexpr float eyeSeparation = 0.064f;
+            constexpr float headHeight = 1.6f;
+            const float eyeCenter = (static_cast<float>(viewCount) - 1.f) * 0.5f;
+            for (uint32_t eye = 0; eye < viewCount; ++eye)
+            {
+               views[eye].pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+               views[eye].pose.position = { (static_cast<float>(eye) - eyeCenter) * eyeSeparation, headHeight, 0.f };
+            }
+         }
+
          // The steps that leads to the matrix stack implemented below are the followings, with first matrix being view, 
          // second being projection, i.e. notation is (view) * (projection):
          // - What would be right: (sceneScale * sceneBasis * VPUToWorldScale * viewOffset * view[eye]) * (projection[eye])
@@ -1504,7 +1538,13 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
             m_uiRenderTarget = uiRenderTarget;
          }
 
-         submitFrame(vrRenderTarget);
+         const bool submitted = submitFrame(vrRenderTarget);
+         if (forceStandbyRender && submitted)
+         {
+            ++m_forceRenderSuccessfulSubmissions;
+            if (m_forceRenderSuccessfulSubmissions == 1)
+               PLOGI << "[vr] First forced standby frame reached BGFX submission (" << viewCount << " views)";
+         }
 
          // Fill out the XrCompositionLayerProjection structure for usage with xrEndFrame().
          renderLayerInfo.layerProjection.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_CORRECT_CHROMATIC_ABERRATION_BIT;
@@ -1560,6 +1600,13 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
    frameEndInfo.layerCount = static_cast<uint32_t>(renderLayerInfo.layers.size());
    frameEndInfo.layers = renderLayerInfo.layers.data();
    OPENXR_CHECK(xrEndFrame(m_session, &frameEndInfo), "Failed to end the XR Frame.");
+
+   if (forceStandbyRender && m_forceRenderFrameAttempts >= m_forceRenderFrameLimit && !m_forceRenderLimitLogged)
+   {
+      m_forceRenderLimitLogged = true;
+      PLOGI << "[vr] Standby render diagnostic reached its " << m_forceRenderFrameLimit << "-attempt limit; successful BGFX submissions: "
+            << m_forceRenderSuccessfulSubmissions;
+   }
 
    // Perform desktop display rendering only
    if (!rendered)

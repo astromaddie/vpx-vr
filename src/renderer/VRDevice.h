@@ -236,7 +236,7 @@ public:
    void* GetGraphicPlatformQueue() const;
    bgfx::RendererType::Enum GetGraphicContextType() const;
    void PollEvents();
-   void RenderFrame(class RenderDevice* rd, const std::function<void(RenderTarget* vrRenderTarget)>& submitFrame);
+   void RenderFrame(class RenderDevice* rd, const std::function<bool(RenderTarget* vrRenderTarget)>& submitFrame);
    RenderTarget* GetUIRenderTarget() const { return m_uiRenderTarget; } // Acquired swapchain target for the UI composition layer (or nullptr if unsupported/not acquired yet)
    void UpdateVisibilityMask(class RenderDevice* rd);
    bool UseDepthBuffer() const { return m_depthExtensionSupported; }
@@ -282,6 +282,10 @@ private:
    XrSessionState m_sessionState = XR_SESSION_STATE_UNKNOWN;
    bool m_applicationRunning = true;
    bool m_sessionRunning = false;
+   uint32_t m_forceRenderFrameLimit = 0;
+   uint32_t m_forceRenderFrameAttempts = 0;
+   uint32_t m_forceRenderSuccessfulSubmissions = 0;
+   bool m_forceRenderLimitLogged = false;
 
    std::vector<XrViewConfigurationType> m_applicationViewConfigurations = { XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO };
    std::vector<XrViewConfigurationType> m_viewConfigurations;
