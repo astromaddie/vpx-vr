@@ -695,6 +695,18 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
             g_pplayer->m_renderProfiler->ExitProfileSection();
             g_pplayer->m_renderProfiler->AdjustBGFXSubmit(static_cast<uint32_t>(bgfxSubmit));
             VRPerfLog::OnFrame(stats, g_pplayer->m_logicProfiler, *g_pplayer->m_renderProfiler);
+            // VPX_VR_LOG_FRAME=<seconds> logs every pass and draw of one frame (mesh names and index counts), <seconds> after the first frame
+            static uint64_t vrLogFrameAt = ~0ull;
+            if (vrLogFrameAt == ~0ull)
+            {
+               const char* const request = std::getenv("VPX_VR_LOG_FRAME");
+               vrLogFrameAt = request != nullptr ? usec() + static_cast<uint64_t>(std::atof(request) * 1e6) : 0;
+            }
+            if (vrLogFrameAt != 0 && usec() >= vrLogFrameAt)
+            {
+               vrLogFrameAt = 0;
+               LogNextFrame();
+            }
             // VPX_VR_SCREENSHOT=<seconds>:<file> saves the left eye once, <seconds> after the first frame (unattended image checks)
             static uint64_t vrScreenshotAt = ~0ull;
             static string vrScreenshotPath;
