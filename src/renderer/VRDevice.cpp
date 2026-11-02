@@ -249,7 +249,14 @@ VRDevice::VRDevice(const Settings& settings)
       if (!hasGraphicBackend)
          return;
 
-      m_depthExtensionSupported = EnableExtensionIfSupported(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+      // VPX_VR_NO_DEPTH=1 skips depth submission (and its per frame depth copy) to measure its cost
+      if (const char* const noDepth = std::getenv("VPX_VR_NO_DEPTH"); noDepth != nullptr && noDepth[0] == '1')
+      {
+         m_depthExtensionSupported = false;
+         PLOGI << "[vr] Depth layer submission disabled by VPX_VR_NO_DEPTH";
+      }
+      else
+         m_depthExtensionSupported = EnableExtensionIfSupported(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
       m_colorSpaceExtensionSupported = EnableExtensionIfSupported(XR_FB_COLOR_SPACE_EXTENSION_NAME);
       m_visibilityMaskExtensionSupported = EnableExtensionIfSupported(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
       m_frameControllerProfileSupported = EnableExtensionIfSupported("XR_VALVE_frame_controller_interaction");
