@@ -144,4 +144,9 @@ if "success" not in result:
     raise SystemExit(f"Steam shortcut registration failed: {result.get('error', result)}")
 print(f"Registered Steam library entry {sys.argv[2]} ({result['success']}).")
 PY_RESULT
+# The Frame target for VPX is 72 Hz at 1760 px eyes; SteamVR keeps both per library entry
+appid=$(python3 -c 'import json,sys; s=json.loads(sys.argv[1]).get("success"); print(s if str(s).isdigit() else "")' "$registration")
+if [[ -n "$appid" ]]; then
+   bash "$(dirname "$0")/set-vr-display.sh" "$appid" || echo "Could not set SteamVR refresh rate and resolution for $appid." >&2
+fi
 printf 'Launcher: %s\n' "$launcher"

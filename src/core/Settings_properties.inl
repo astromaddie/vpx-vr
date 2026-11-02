@@ -163,7 +163,7 @@ PropBool(Player, DisableAO, "Disable Ambient Occlusion"s, ""s, false);
 PropBool(Player, DynamicAO, "Dynamic Ambient Occlusion"s, ""s, true);
 PropEnum(Player, PFReflection, "Reflection Quality"s,
    "Limit the quality of reflections for better performance.\n'Dynamic' is recommended and will give the best results, but may harm performance.\n'Static Only' has no performance cost (except for VR rendering).\nOther options feature different trade-offs between quality and performance."s,
-   int, 5, "Disable Reflections"s, "Balls Only"s, "Static Only"s, "Static & Balls"s, "Static & Unsynced Dynamic"s, "Dynamic"s);
+   int, VPX_STANDALONE_XR_DEFAULTS ? 1 : 5, "Disable Reflections"s, "Balls Only"s, "Static Only"s, "Static & Balls"s, "Static & Unsynced Dynamic"s, "Dynamic"s);
 PropInt(Player, GPUMemoryBudget, "GPU Memory Budget"s,
    "Total GPU memory budget in MB that textures are kept within, replacing the figure reported by the driver (0 uses the driver's figure). Overridden by the VPX_GPU_MEMORY_BUDGET environment variable"s,
    0, 65536, 0);

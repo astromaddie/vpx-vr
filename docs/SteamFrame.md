@@ -76,6 +76,11 @@ the supplied table from its original folder, retains table-local companions and 
 mode through the separate Frame preferences file. No table or ROM is copied into the app
 bundle, and no custom launcher UI is added.
 
+Registration also sets SteamVR's per-app refresh rate and eye size for the entry to the Frame
+target of 72 Hz at 1760x1760 per eye (`set-vr-display.sh <appid> [Hz] [px]` changes them later;
+SteamVR applies them at the entry's next launch). On the Frame build the desktop mirror and the
+OpenXR depth layer default off and reflections default to balls only; all three remain settings.
+
 Use the existing in-game Menu button to open VR settings. A new Frame configuration applies the
 usable default layout automatically. If saved Frame action or sensor mappings differ, VPX keeps
 them and presents its existing layout proposal so defaults are applied only if chosen.
