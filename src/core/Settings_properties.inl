@@ -1,3 +1,12 @@
+// Standalone Linux XR headsets (Steam Frame): no desktop to mirror, and the compositor gains little from the depth layer
+#ifndef VPX_STANDALONE_XR_DEFAULTS
+   #if defined(__linux__) && defined(__aarch64__) && defined(ENABLE_XR) && !defined(__ANDROID__)
+      #define VPX_STANDALONE_XR_DEFAULTS true
+   #else
+      #define VPX_STANDALONE_XR_DEFAULTS false
+   #endif
+#endif
+
 // Versions
 PropString(Version, VPinball, "VPX Version"s, "VPX version that saved this file"s, string(VP_VERSION_STRING_DIGITS));
 
@@ -249,8 +258,11 @@ PropFloat(PlayerVR, SeatedTilt, "Seated Play Tilt"s,
    -90.f, 90.f, 0.f);
 PropBool(
    PlayerVR, UsePassthroughColor, "Color Keyed Passthrough"s, "Replace VR background by full black to allow color keyed passthrough (for example using Virtual Desktop, setting passthrough to sharp full black)"s, false);
-PropEnum(PlayerVR, DesktopDisplay, "Desktop display"s, "Select the content to show on the desktop display while playing in VR"s, int, 1, "Disabled"s,
+PropEnum(PlayerVR, DesktopDisplay, "Desktop Display"s, "Select the content to show on the desktop display while playing in VR"s, int, VPX_STANDALONE_XR_DEFAULTS ? 0 : 1, "Disabled"s,
    "Playfield and other displays"s, "Playfield only"s, "Left eye"s, "Right eye"s, "Both eyes"s);
+PropBool(PlayerVR, SubmitDepth, "Submit Depth"s,
+   "Send the depth buffer to the VR compositor along with the eye images. It can steady reprojection when frames are missed, but copying it costs GPU time every frame"s,
+   !VPX_STANDALONE_XR_DEFAULTS);
 PropBool(PlayerVR, ShrinkDesktopDisplay, "Shrink desktop display"s, "Shrink the mirrored eye view to fit inside the desktop display"s, false);
 PropBool(PlayerVR, AddBackglass, "Add Backglass"s, "Add a default backglass display to the scene"s, false);
 PropBool(PlayerVR, SpatialAudioBackglass, "Backglass Spatial Audio"s,

@@ -249,11 +249,16 @@ VRDevice::VRDevice(const Settings& settings)
       if (!hasGraphicBackend)
          return;
 
-      // VPX_VR_NO_DEPTH=1 skips depth submission (and its per frame depth copy) to measure its cost
+      // Depth submission costs a per frame depth copy. [PlayerVR] SubmitDepth selects it; VPX_VR_NO_DEPTH=1 overrides it for timing runs
       if (const char* const noDepth = std::getenv("VPX_VR_NO_DEPTH"); noDepth != nullptr && noDepth[0] == '1')
       {
          m_depthExtensionSupported = false;
          PLOGI << "[vr] Depth layer submission disabled by VPX_VR_NO_DEPTH";
+      }
+      else if (!g_settingsService.GetAppSettings().GetPlayerVR_SubmitDepth())
+      {
+         m_depthExtensionSupported = false;
+         PLOGI << "[vr] Depth layer submission disabled by [PlayerVR] SubmitDepth";
       }
       else
          m_depthExtensionSupported = EnableExtensionIfSupported(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
