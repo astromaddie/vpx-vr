@@ -156,6 +156,7 @@ public:
    void WriteRegDefaults() final;
 
    float GetDepth(const Vertex3Ds& viewDir) const final;
+   bool GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds) final;
 
    bool IsConstCollidable() const final { return false; }
    bool IsCollidable() const final { return !m_d.m_isDropped; }
@@ -186,6 +187,9 @@ private:
    unsigned int     m_numIndices = 0;
    std::shared_ptr<MeshBuffer> m_meshBuffer;
    std::shared_ptr<MeshBuffer> m_meshEdgeBuffer; // Editor wireframe, built on demand
+   VPX::Culling::Aabb m_renderBounds; // Object space bounds of the mesh in m_meshBuffer
+
+   Matrix3D GetRenderMatrix() const; // Object transform, including the drop/hit animation
 
    vector<HitObject*> m_vhoCollidable; // Objects to that may be collide selectable
 
