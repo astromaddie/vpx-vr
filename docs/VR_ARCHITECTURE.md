@@ -122,3 +122,51 @@ Turnip then uses its linear pool allocator, which resets correctly. The descript
 [SteamFrame.md](SteamFrame.md#descriptor-pool-probe) reproduces the fault and the fix
 without VPX: on the Frame, `reset_free_set_pool` ends with SIGSEGV and `reset_linear_pool`
 returns normally.
+
+## Texture memory budget
+
+With BGFX, `TextureManager` keeps uploaded table images inside 85% of the GPU memory budget
+that `bgfx::Stats::gpuMemoryMax` reports. On Vulkan that is `VK_EXT_memory_budget`, summed
+over device-local heaps. Turnip exposes one shared heap and bounds its budget by
+`/proc/meminfo` `MemAvailable`, so the figure is an allocation budget rather than free
+memory. The render thread copies `gpuMemoryMax`, `gpuMemoryUsed` and `gpuFrameNum` right
+after each `bgfx::frame()`, and the manager reads that copy instead of the live stats.
+
+When an upload does not fit, the manager evicts least recently used samplers down to 70%.
+It skips samplers that something else still references (bound shader state, ImGui, queued
+uploads), because dropping them frees nothing. A dropped sampler's bytes stay accounted until
+the sampler is actually destroyed, then for four more frames while BGFX releases it. If the
+upload still does not fit, the image is box-downsized, from the decoded bitmap when one is
+alive and otherwise by decoding the file at the smaller size. The size is picked to fit the
+room left, and the copy is never cached as the image's bitmap. Only then does the image fall
+back to the magenta checkerboard. Degraded images retry full size every 60 frames once they
+fit below 70%. The estimate counts the mip chain. Once the textures exist, each sampler
+reports what it really allocated, including a base level kept alongside the mips, and the
+estimate is raised to that.
+
+ImGui textures (the font atlas) and the table's color grading LUT are pinned: they are never
+evicted, downsized or replaced by the checkerboard, and are admitted over the cap if needed.
+If the LUT image cannot be decoded, color grading is turned off and an error is logged,
+instead of grading through the checkerboard.
+
+Diagnostics and overrides:
+
+- Every budget decision logs one line starting with `TexBudget:`, at most every 2 s, with a
+  count of suppressed lines. It has the decision and image, the upload size, the effective
+  budget with the driver figure and any override, the 85% cap, the driver's used figure, the
+  manager's managed, retired, pending-free and other bytes, the projected use, and
+  `MemAvailable` in MB. One line is also logged on the first budget sample after startup.
+- `[Player] GPUMemoryBudget` (MB, default 0) replaces the driver's budget figure; 0 keeps the
+  driver's figure. `VPX_GPU_MEMORY_BUDGET=<MB>` in the environment overrides the setting, and
+  `VPX_GPU_MEMORY_BUDGET=0` forces the driver's figure. A higher budget only moves the
+  admission limit; the allocation can still fail if the system runs out of memory.
+- `BGFX_VK_DESCRIPTOR_CACHE` controls BGFX's per-frame descriptor-set cache in the Linux ARM64
+  build ([`bgfx-vk-descriptor-cache-diagnostic.patch`](../platforms/linux-aarch64/bgfx-vk-descriptor-cache-diagnostic.patch)).
+  The cache reuses a set when a 32-bit hash matches, without comparing the key, and the key
+  leaves out the program's texture view types. Unset or `1` keeps the default. `0` bypasses
+  the cache and writes a set for every draw and dispatch. `verify` keeps the cache but compares
+  the full key on each hit, and logs one warning on a hash collision and one when a set is
+  reused across programs with different texture metadata. Setting the variable logs
+  `BGFX VK descriptor cache: mode ...` once. Writing a set also records the image layout
+  transitions of its textures, so a fault that goes away under `0` points at either the
+  cache identity or a layout transition skipped on reuse; `verify` tells the first apart.
