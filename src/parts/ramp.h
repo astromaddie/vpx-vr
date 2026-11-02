@@ -110,6 +110,7 @@ public:
    void GetBoundingVertices(vector<Vertex3Ds> &bounds, vector<Vertex3Ds> *const legacy_bounds) final;
 
    float GetDepth(const Vertex3Ds &viewDir) const final;
+   bool GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds) final;
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader &loader) final;
 
@@ -144,6 +145,7 @@ private:
    std::shared_ptr<MeshBuffer> m_meshBuffer;
    std::shared_ptr<MeshBuffer> m_meshEdgeBuffer;
    bool m_dynamicVertexBufferRegenerate = false;
+   VPX::Culling::Aabb m_renderBounds; // Bounds of the vertices of m_meshBuffer
 
    vector<HitObject*> m_vhoCollidable; // Objects to that may be collide selectable
 

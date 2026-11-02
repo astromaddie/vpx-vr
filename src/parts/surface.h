@@ -113,6 +113,7 @@ public:
    bool IsShownInEditor() const final { return m_d.m_displayTexture; }
 
    float GetDepth(const Vertex3Ds& viewDir) const final { return viewDir.z * m_d.m_heighttop; }
+   bool GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds) final;
 
 protected:
    void RenderSlingshots();
@@ -176,6 +177,7 @@ private:
    std::shared_ptr<MeshBuffer> m_slingshotMeshBuffer;
    std::shared_ptr<MeshBuffer> m_meshBuffer;
    std::shared_ptr<MeshBuffer> m_meshEdgeBuffer;
+   VPX::Culling::Aabb m_renderBounds; // Bounds of all the vertices of m_meshBuffer (side, top, dropped top and bottom)
    vector<WORD> m_sideIndices; // Side wall triangle indices (pairs of triangles per polygon quad), used for UI edge rendering
 
    bool m_isWall = true;

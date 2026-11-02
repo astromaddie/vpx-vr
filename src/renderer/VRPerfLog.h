@@ -10,6 +10,7 @@
 
 #include <bgfx/bgfx.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
@@ -36,6 +37,21 @@ public:
    }
 
    static bool IsEnabled() { return Get().m_periodUs != 0; }
+
+   // Frustum culling state and per frame counts (main scene, reflection probes), called from the thread recording frames
+   static void SetCullingEnabled(const bool enabled) { Get().m_cullingEnabled.store(enabled, std::memory_order_relaxed); }
+   static void AddCulling(const unsigned int sceneTested, const unsigned int sceneCulled, const uint64_t sceneTriangles,
+      const unsigned int reflTested, const unsigned int reflCulled, const uint64_t reflTriangles)
+   {
+      VRPerfLog& log = Get();
+      log.m_cull[0].tested.fetch_add(sceneTested, std::memory_order_relaxed);
+      log.m_cull[0].culled.fetch_add(sceneCulled, std::memory_order_relaxed);
+      log.m_cull[0].triangles.fetch_add(sceneTriangles, std::memory_order_relaxed);
+      log.m_cull[1].tested.fetch_add(reflTested, std::memory_order_relaxed);
+      log.m_cull[1].culled.fetch_add(reflCulled, std::memory_order_relaxed);
+      log.m_cull[1].triangles.fetch_add(reflTriangles, std::memory_order_relaxed);
+      log.m_cullFrames.fetch_add(1, std::memory_order_relaxed);
+   }
 
    // Call on the render thread once per presented frame, after bgfx::frame
    static void OnFrame(const bgfx::Stats* stats, const FrameProfiler& logic, const FrameProfiler& render)
@@ -99,6 +115,26 @@ public:
          << " sleep " << (render.GetSlidingAvg(FrameProfiler::PROFILE_RENDER_SLEEP) * 1e-3);
       PLOGI << ss.str();
 
+      // Frustum culling, averaged per recorded frame: parts with bounds that were tested, parts culled, and the triangles (per eye) they would have drawn
+      ss.str({});
+      if (!log.m_cullingEnabled.load(std::memory_order_relaxed))
+         ss << "[vr-perf] culling off";
+      else
+      {
+         const double cullFrames = static_cast<double>(std::max<uint64_t>(log.m_cullFrames.exchange(0, std::memory_order_relaxed), 1));
+         ss << std::setprecision(1) << "[vr-perf] culling per frame:";
+         static constexpr const char* passNames[2] = { "scene", "reflection" };
+         for (int i = 0; i < 2; i++)
+         {
+            const double tested = static_cast<double>(log.m_cull[i].tested.exchange(0, std::memory_order_relaxed)) / cullFrames;
+            const double culled = static_cast<double>(log.m_cull[i].culled.exchange(0, std::memory_order_relaxed)) / cullFrames;
+            const double triangles = static_cast<double>(log.m_cull[i].triangles.exchange(0, std::memory_order_relaxed)) / cullFrames;
+            ss << (i ? " |" : "") << ' ' << passNames[i] << " tested " << tested << " culled " << culled << " tris skipped " << (triangles * 1e-3) << "k";
+         }
+         ss << std::setprecision(2);
+      }
+      PLOGI << ss.str();
+
       std::vector<std::pair<string, double>> views(log.m_viewGpuMs.begin(), log.m_viewGpuMs.end());
       std::sort(views.begin(), views.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
       for (const auto& [name, ms] : views)
@@ -138,6 +174,12 @@ private:
    double m_waitSubmitMs = 0.;
    uint64_t m_draws = 0;
    std::unordered_map<string, double> m_viewGpuMs;
+   struct CullCounters
+   {
+      std::atomic<uint64_t> tested { 0 }, culled { 0 }, triangles { 0 };
+   } m_cull[2];
+   std::atomic<uint64_t> m_cullFrames { 0 };
+   std::atomic<bool> m_cullingEnabled { false };
 };
 
 #endif

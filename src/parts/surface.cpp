@@ -731,6 +731,11 @@ void Surface::RenderSetup(Renderer *renderer)
       memcpy(verts, sideBuf.data(), sizeof(Vertex3D_NoTex2) * sideBuf.size());
       memcpy(verts + sideBuf.size(), topBottomBuf.data(), sizeof(Vertex3D_NoTex2) * topBottomBuf.size());
       VBuffer->Unlock();
+      m_renderBounds = {};
+      for (const Vertex3D_NoTex2 &v : sideBuf)
+         m_renderBounds.Extend(v.x, v.y, v.z);
+      for (const Vertex3D_NoTex2 &v : topBottomBuf)
+         m_renderBounds.Extend(v.x, v.y, v.z);
 
       // Offset indices to directly point to the right vertices in the vertex buffer
       for (unsigned int i = 0; i < m_numPolys * 3; i++)
@@ -826,6 +831,17 @@ void Surface::Render(const unsigned int renderMask)
       // Render wall dropped (smashed to a pancake at bottom height).
       RenderWallsAtHeight(true, renderMask);
    }
+}
+
+bool Surface::GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds)
+{
+   // Surfaces with slingshots are never culled: their Render() also runs the slingshot hit animation timing
+   if (m_meshBuffer == nullptr || !m_vlinesling.empty() || !m_renderBounds.IsValid())
+      return false;
+   bounds.local = m_renderBounds;
+   bounds.toWorld.SetIdentity();
+   bounds.triangles = m_numVertices * 2 + m_numPolys;
+   return true;
 }
 
 void Surface::RenderSlingshots()

@@ -24,7 +24,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run Frame input binding, gesture and texture budget tests
+      - name: Run Frame input binding, gesture, texture budget and frustum culling tests
         run: |
           cat > "$RUNNER_TEMP/xrinputbindings-test-main.cpp" <<'EOF'
           #define DOCTEST_CONFIG_IMPLEMENT
@@ -39,6 +39,10 @@ jobs:
             tests/render/test-texturebudget.cpp "$RUNNER_TEMP/xrinputbindings-test-main.cpp" \
             -o "$RUNNER_TEMP/test-texturebudget"
           "$RUNNER_TEMP/test-texturebudget"
+          g++ -std=c++20 -Wall -Ithird-party/include -Isrc \
+            tests/render/test-frustum.cpp "$RUNNER_TEMP/xrinputbindings-test-main.cpp" \
+            -o "$RUNNER_TEMP/test-frustum"
+          "$RUNNER_TEMP/test-frustum"
           tests/frame/test-frame-tools.sh
 
       - name: Install build dependencies

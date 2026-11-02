@@ -293,6 +293,7 @@ public:
 private:
    void SetSpaceReference(PartGroupData::SpaceReference spaceReference, bool force);
    void RenderItem(IEditable* const renderable, bool isNoBackdrop);
+   bool IsOutsideFrustum(IRenderable* const renderable); // Frustum culling test against the active camera (all eyes, possibly mirrored)
    void RenderStatics(); // Render background, then static parts if IsUsingStaticPrepass
    void RenderDynamics(); // Render static parts if not IsUsingStaticPrepass, then render dynamic parts
    void DrawBackground();
@@ -452,6 +453,17 @@ private:
    void ApplyTableSettings(); // (Re)load the cached table settings (called from ctor and SetTable)
 
    float m_visualNudgeStrength; // whether to shake the table/screen during nudges and how much
+
+   // Frustum culling of parts outside of every eye's view (VR only, [PlayerVR] FrustumCulling, overridden by VPX_VR_CULLING=0|1)
+   bool m_frustumCulling = false;
+   Matrix3D m_cullView[2], m_cullProj[2]; // Camera of the cached frustums (view includes reflection, projection includes flip)
+   bool m_cullCached[2] { false, false };
+   VPX::Culling::Frustum m_cullFrustum[2];
+   struct FrustumCullStats
+   {
+      unsigned int tested = 0, culled = 0;
+      uint64_t culledTriangles = 0;
+   } m_cullStats[2]; // Main scene, reflection probes
    Vertex2D m_screenOffset = Vertex2D(0.f, 0.f); // for screen shake effect during nudge
 
    Texture* m_tonemapLUT = nullptr;

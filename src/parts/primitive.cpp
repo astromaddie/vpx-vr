@@ -746,6 +746,7 @@ void Primitive::RenderSetup(Renderer *renderer)
    // Check if we are part of a group, and if so if we are a child or the base
    m_groupdRendering = false;
    m_skipRendering = false;
+   m_renderBounds = {};
    for (const auto collection : m_vCollection)
    {
       if (!collection->m_groupElements)
@@ -840,6 +841,7 @@ void Primitive::RenderSetup(Renderer *renderer)
                vt.ny = n.y;
                vt.nz = n.z;
                buf[ofs] = vt;
+               m_renderBounds.Extend(vt.x, vt.y, vt.z);
                ofs++;
             }
          }
@@ -863,6 +865,13 @@ void Primitive::RenderSetup(Renderer *renderer)
       // Compute and upload mesh to let a chance for renderdevice to share the buffers with other static objects
       RecalculateMatrices();
       m_mesh.UploadToVB(vertexBuffer, m_currentFrame);
+
+      // Culling bounds cover the base mesh and every animation frame (interpolated frames lie between two of them)
+      for (const Vertex3D_NoTex2 &v : m_mesh.m_vertices)
+         m_renderBounds.Extend(v.x, v.y, v.z);
+      for (const Mesh::FrameData &frame : m_mesh.m_animationFrames)
+         for (const Mesh::VertData &v : frame.m_frameVerts)
+            m_renderBounds.Extend(v.x, v.y, v.z);
    }
    else
    {
@@ -879,6 +888,21 @@ void Primitive::RenderRelease()
    m_meshEdgeBuffer = nullptr;
    m_lightmap = nullptr;
    m_renderer = nullptr;
+}
+
+bool Primitive::GetRenderBounds(const unsigned int renderMask, RenderBounds &bounds)
+{
+   // The playfield is always kept: it is cheap, and requests the playfield reflection probe
+   if (!m_d.m_visible || m_skipRendering || m_useAsPlayfield || m_meshBuffer == nullptr || !m_renderBounds.IsValid())
+      return false;
+   bounds.local = m_renderBounds;
+   // Same object matrix as Render(): grouped meshes are baked in table space, others use the current (script driven) transform
+   if (m_groupdRendering)
+      bounds.toWorld.SetIdentity();
+   else
+      bounds.toWorld = RecalculateMatrices();
+   bounds.triangles = (m_groupdRendering ? (unsigned int)m_numGroupIndices : (unsigned int)m_mesh.NumIndices()) / 3;
+   return true;
 }
 
 void Primitive::Render(const unsigned int renderMask)
