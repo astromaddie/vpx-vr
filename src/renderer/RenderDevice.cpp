@@ -760,7 +760,7 @@ void RenderDevice::RequestVRCapture(RenderTarget* vrRenderTarget, const string& 
    const uint16_t height = static_cast<uint16_t>(vrRenderTarget->GetHeight());
    for (uint16_t eye = 0; eye < 2; eye++)
       RequestVRReadback(vrRenderTarget->GetColorSampler()->GetCoreTexture(false), bgfx::TextureFormat::RGBA8, width, height, eye, prefix + "-eye" + std::to_string(eye) + ".png");
-   const Renderer* const renderer = g_pplayer->m_renderer;
+   const Renderer* const renderer = g_pplayer->m_renderer.get();
    if (renderer->IsFoveated())
    {
       // Linear HDR content, saved clamped and sRGB encoded
