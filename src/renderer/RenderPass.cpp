@@ -4,6 +4,9 @@
 #include "RenderPass.h"
 #include "RenderCommand.h"
 #include "RenderDevice.h"
+#if defined(ENABLE_BGFX)
+#include "VRPerfLog.h"
+#endif
 
 RenderPass::RenderPass(const string& name, RenderTarget* const rt)
    : m_rt(rt)
@@ -261,6 +264,9 @@ bool RenderPass::Execute(const bool log)
       #if defined(ENABLE_BGFX)
       #if defined(_DEBUG)
       bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, m_name.append(" [RT=").append(m_rt->m_name).append(1,']').c_str());
+      #else
+      if (VRPerfLog::IsEnabled())
+         bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, (m_name + " [RT=" + m_rt->m_name + ']').c_str());
       #endif
       #endif
       for (RenderCommand* cmd : m_commands)
@@ -273,6 +279,9 @@ bool RenderPass::Execute(const bool log)
       #if defined(ENABLE_BGFX)
       #if defined(_DEBUG)
       bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, m_name.append(" [RT=").append(m_rt->m_name).append(" / Layer=").append(std::to_string(m_singleLayerRendering)).append(1,']').c_str());
+      #else
+      if (VRPerfLog::IsEnabled())
+         bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, (m_name + " [RT=" + m_rt->m_name + " / Layer=" + std::to_string(m_singleLayerRendering) + ']').c_str());
       #endif
       #endif
       for (RenderCommand* cmd : m_commands)
@@ -286,6 +295,9 @@ bool RenderPass::Execute(const bool log)
          #if defined(ENABLE_BGFX)
          #if defined(_DEBUG)
          bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, m_name.append(" [RT=").append(m_rt->m_name).append(" / Layer=").append(std::to_string(layer)).append(1,']').c_str());
+         #else
+         if (VRPerfLog::IsEnabled())
+            bgfx::setViewName(m_rt->GetRenderDevice()->m_activeViewId, (m_name + " [RT=" + m_rt->m_name + " / Layer=" + std::to_string(layer) + ']').c_str());
          #endif
          #endif
          for (RenderCommand* cmd : m_commands)

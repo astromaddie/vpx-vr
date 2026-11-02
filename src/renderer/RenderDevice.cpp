@@ -34,6 +34,7 @@
 #include "RenderCommand.h"
 #include "Shader.h"
 #include "VRDevice.h"
+#include "VRPerfLog.h"
 #include "renderer/AreaTex.h"
 #include "renderer/SearchTex.h"
 
@@ -529,6 +530,7 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
       PLOGE << "BGFX initialization failed";
       exit(-1);
    }
+   VRPerfLog::Init();
 
    // A specific backend was requested but BGFX created a different one (init.fallback let it fall back to
    // the next best because the requested backend failed to initialize), so make that explicit.
@@ -692,6 +694,7 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
             g_pplayer->m_logicProfiler.OnPresented(usec() - bgfxSubmit);
             g_pplayer->m_renderProfiler->ExitProfileSection();
             g_pplayer->m_renderProfiler->AdjustBGFXSubmit(static_cast<uint32_t>(bgfxSubmit));
+            VRPerfLog::OnFrame(stats, g_pplayer->m_logicProfiler, *g_pplayer->m_renderProfiler);
             END_SPAN(tagSpan)
             return true;
          });
