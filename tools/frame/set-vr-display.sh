@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Set SteamVR's per-app refresh rate and eye resolution for a Steam library entry.
-# usage: set-vr-display.sh <shortcut appid> [refresh Hz, default 72] [eye size px, default 1760]
+# usage: set-vr-display.sh <shortcut appid> [refresh Hz, default 72] [eye size px, default 2160]
 # SteamVR applies the values at the entry's next launch.
 set -euo pipefail
 
 appid=${1:?usage: set-vr-display.sh <shortcut appid> [refresh Hz] [eye size px]}
 refresh=${2:-${VPX_FRAME_REFRESH:-72}}
-eye_size=${3:-${VPX_FRAME_EYE_SIZE:-1760}}
+eye_size=${3:-${VPX_FRAME_EYE_SIZE:-2160}}
 vrcmd=${VPX_FRAME_VRCMD:-/opt/steamvr/bin/linuxarm64/vrcmd}
 
 if [[ ! "$appid" =~ ^[0-9]+$ ]]; then
