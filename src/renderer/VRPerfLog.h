@@ -57,7 +57,8 @@ public:
          for (uint16_t i = 0; i < stats->numViews; i++)
          {
             const bgfx::ViewStats& view = stats->viewStats[i];
-            log.m_viewGpuMs[view.name] += static_cast<double>(view.gpuTimeElapsed) * toMs;
+            if (view.gpuTimeEnd > view.gpuTimeBegin)
+               log.m_viewGpuMs[view.name] += static_cast<double>(view.gpuTimeEnd - view.gpuTimeBegin) * toMs;
          }
       }
       if (stats->cpuTimerFreq > 0)
