@@ -695,6 +695,25 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
             g_pplayer->m_renderProfiler->ExitProfileSection();
             g_pplayer->m_renderProfiler->AdjustBGFXSubmit(static_cast<uint32_t>(bgfxSubmit));
             VRPerfLog::OnFrame(stats, g_pplayer->m_logicProfiler, *g_pplayer->m_renderProfiler);
+            // VPX_VR_SCREENSHOT=<seconds>:<file> saves the left eye once, <seconds> after the first frame (unattended image checks)
+            static uint64_t vrScreenshotAt = ~0ull;
+            static string vrScreenshotPath;
+            if (vrScreenshotAt == ~0ull)
+            {
+               vrScreenshotAt = 0;
+               if (const char* const request = std::getenv("VPX_VR_SCREENSHOT"); request != nullptr)
+                  if (const char* const colon = std::strchr(request, ':'); colon != nullptr && colon[1] != '\0')
+                  {
+                     vrScreenshotAt = usec() + static_cast<uint64_t>(std::atof(request) * 1e6);
+                     vrScreenshotPath = colon + 1;
+                  }
+            }
+            if (vrScreenshotAt != 0 && usec() >= vrScreenshotAt)
+            {
+               vrScreenshotAt = 0;
+               CaptureScreenshot({ g_pplayer->m_playfieldWnd }, { PathFromUTF8(vrScreenshotPath) },
+                  [](bool success) { PLOGI << "[vr] Screenshot " << (success ? "saved to " : "failed for ") << vrScreenshotPath; }, 1);
+            }
             END_SPAN(tagSpan)
             return true;
          });
