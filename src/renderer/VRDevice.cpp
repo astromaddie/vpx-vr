@@ -1192,7 +1192,20 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
       }
       if (rendered)
       {
-         if (forceStandbyRender)
+         // VPX_VR_TEST_POSE=1 uses the synthetic pose for every frame (unattended timing runs and screenshots
+         // while the headset is awake but not worn); it is recentered once, like the forced standby frames
+         static const bool testPose = [] {
+            const char* const env = std::getenv("VPX_VR_TEST_POSE");
+            return env != nullptr && env[0] == '1';
+         }();
+         static bool testPoseCentered = false;
+         if (testPose && !testPoseCentered)
+         {
+            testPoseCentered = true;
+            m_headsetViewCentering = true;
+            PLOGI << "[vr] Using the fixed test head pose for every frame (VPX_VR_TEST_POSE)";
+         }
+         if (forceStandbyRender || testPose)
          {
             constexpr float eyeSeparation = 0.064f;
             constexpr float headHeight = 1.6f;
