@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+python3 "$repo_root/tests/frame/test-vulkan-descriptor-probe.py"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

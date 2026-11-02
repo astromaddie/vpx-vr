@@ -95,6 +95,19 @@ reached. If `VK_LAYER_LUNARG_api_dump` is installed, prefix the same launch with
 VK_APIDUMP_LOG_FILENAME=/tmp/vpx-vulkan-api.log VK_APIDUMP_DETAILED=true` to capture detailed
 Vulkan call arguments for diagnosis.
 
+For a descriptor-only comparison, copy this checkout to the Frame and run from its root
+inside the installed Steam Linux Runtime:
+
+```bash
+~/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4-arm64/run -- \
+  /usr/bin/python3 tools/frame/vulkan_sampler_descriptor_probe.py --suite
+```
+
+This uses the system Vulkan loader and checks for the Frame's Adreno 750 / Mesa Turnip
+device. Each case has a 30-second subprocess limit and disables core dumps. It compares
+the captured BGFX descriptor pool and layout with a lower sampler binding and a sampler-only
+layout. It creates no shaders, swapchain or XR session; passing does not establish VPX rendering.
+
 ## Table acceptance list
 
 Black Hole BigusMOD 2.0 and 4 Queens 1.2 are stored under

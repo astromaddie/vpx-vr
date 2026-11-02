@@ -118,3 +118,22 @@ Reproduce through the normal Steam entry using the opt-in bounded standby render
 diagnostic described in [SteamFrame.md](SteamFrame.md#off-head-vulkan-crash-diagnostic).
 Use the installed API-dump layer to inspect descriptor writes and their corresponding
 layouts. Diagnostic frames do not establish headset appearance or physical control behavior.
+
+Further same-binary checks isolated the first three descriptor writes: sampled image at
+binding 3 and dynamic UBO at binding 0 each returned, while the sampler at binding 19 alone
+reproduced SIGSEGV. GDB stopped each successful case immediately after the Vulkan call,
+before any draw. The faulting sampler destination was the last 32 bytes of a 5 MiB
+`/dev/dri/renderD128` mapping; the writer's padding crossed into an unmapped page.
+
+The descriptor-only Python probe then passed all three layouts inside Steam Linux Runtime 4
+on the same Turnip driver (`Mesa 26.3.0-devel`, `git-e07916b45f`). It uses the exact BGFX pool
+sizes and recorded sampler configuration, but an ordinary `vkCreateDevice` with no optional
+extensions/features. VPX's failing resources belong to the OpenXR-created Vulkan device.
+The probe result does not identify a generic driver sampler or sparse-binding defect;
+device creation, dispatch and VPX/BGFX resource state remain under investigation.
+
+The bounded-render diagnostic package from source `9f695609263782197070f20aeba282db8f2fe506`
+also passed [ARM64 CI run 41371818188](https://github.com/astromaddie/vpx-vr/actions/runs/41371818188),
+including all 3,562 package file hashes. Its executable SHA-256 is
+`927e8073ee31888a13d0a58c21e03fa9ff2c9c423d2e86af27a9e75f995bbe65`.
+It has not replaced the installed `b7a68ed` package; it adds diagnostics rather than a crash fix.
