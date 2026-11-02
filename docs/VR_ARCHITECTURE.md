@@ -76,78 +76,49 @@ or commercial tables, ROMs, or other user-owned content are bundled or tracked h
 
 ## Verified build and startup
 
-The native package from commit `b7a68edf6cf4233087958a58fb4024bae23d29ea` passed
-[ARM64 CI run 41325381021](https://github.com/astromaddie/vpx-vr/actions/runs/41325381021).
+The package from commit `0fb8011ceeb6b093a221b8c07f18f988fa678284` passed
+[ARM64 CI run 41378642429](https://github.com/astromaddie/vpx-vr/actions/runs/41378642429).
 Its archive SHA-256 is
-`1ff651443e5fcd1440b74f3c451b6b07d933b708e3ac3bf5388ea25e6cf5a9a8`.
-The installed executable is an AArch64 ELF PIE; its SHA-256 is
-`419c7a2080e000ee72242b86e260e92306f4dd6a309fc1baf33788755a93eeac`.
-All 3,562 packaged file hashes passed verification before installation.
+`49861e69467dcfc94a7347c395f7e486a610666747d61c4250b6bea1c965a3b7`, and the installed
+AArch64 executable's SHA-256 is
+`2baa03ae52c493ad097266c9d14b613e15f61fa8f349b9fe46db10b416e1cd70`. The installer verified
+every packaged file hash.
 
-On 2026-11-02, the bundled example and the supplied 4 Queens 1.2 table loaded through
-Steam Linux Runtime 4 and created SteamVR/OpenXR 2.18.2 sessions with two 1728×1728 views.
-The runtime accepted all 20 explicit Frame controller bindings. These startup checks used
-the `521ca05` executable; the engine C++ sources are identical in `b7a68ed`, which changes
-table registration tooling, its tests, and documentation. Both sessions were stopped through
-Steam and the speaker and EQ sink mute/volume states matched their pre-test values.
+On 2026-11-02 the supplied 4 Queens 1.2 table, launched from its Steam entry, created a
+SteamVR/OpenXR 2.18.2 session with two 1728×1728 views and rendered until it was stopped
+through Steam 72 seconds later. The compositor counted 5,120 presents, 10 dropped and 3,144
+reprojected, with an average application time of 13.2 ms CPU and 17.9 ms GPU against the
+72 Hz target. The runtime accepts all 20 explicit Frame controller bindings. The speaker and
+EQ sink mute/volume states matched their values from before the test.
 
-The 4 Queens input file remained unchanged at SHA-256
+The 4 Queens input file is unchanged at SHA-256
 `f5e6ca897820ce0d12c426c3a646b6f66469341025be5de3a609b9914e7e3805`.
-Its current Steam display name is `Devkit Game: VPX_4_Queens`. Black Hole BigusMOD 2.0 is
-also imported; its default ROM set requires the separately supplied `blkhole2.zip`.
+Its Steam display name is `Devkit Game: VPX_4_Queens`. Black Hole BigusMOD 2.0 is also
+imported; its default ROM set requires the separately supplied `blkhole2.zip`.
 
 Reproduction details: relative launcher paths must live under `~/devkit-game/<gameid>`;
 the shortcut helper's `directory` field does not change Steam's path resolution. Automated
 Steam stop calls use the unsigned 64-bit game ID as a string. For this device's 4 Queens
 entry that is `13227685663173771264`, rather than the 32-bit shortcut AppID `3079810567`.
+Startup logs an SDL desktop-backbuffer-format error, then selects RGBA8 and initializes the
+Vulkan backend and OpenXR session.
 
-Startup logged an SDL desktop-backbuffer-format error, then selected RGBA8 and initialized
-the Vulkan backend and OpenXR session. Session creation establishes initialization, not
-rendered stereo, frame pacing, physical controls, or comfort.
+## Turnip descriptor pool workaround
 
-Active rendering currently fails: normal Steam launches on 2026-11-02 at 09:21:50 and
-09:22:12 JST loaded 4 Queens, then received SIGSEGV at 09:21:54 and 09:22:16. The example
-table launch at 09:22:37 failed at 09:22:41 with the same stack. The crashing thread enters
-`vkUpdateDescriptorSets` from BGFX `RendererContextVK::getDescriptorSet`, then faults in
-`libvulkan_freedreno.so+0xb2bd98`. Installed BGFX disassembly places its call at
-`libbgfx.so+0x125edc`; the saved return address is `+0x125ee0`. This is a shared render-path
-failure, with no table-script error found in these logs. The exact invalid state remains
-under investigation. The earlier synchronized, off-head sessions skipped active rendering.
+Earlier builds crashed in `vkUpdateDescriptorSets` on the first rendered frame of every
+table. The cause is in Mesa Turnip (`Mesa 26.3.0-devel`, `git-e07916b45f` on the Frame, and
+current upstream): `tu_ResetDescriptorPool` rebuilds a `FREE_DESCRIPTOR_SET` pool's VMA heap
+with `util_vma_heap_init(heap, 32, size + 32)`, which spans 32 bytes more than the pool's BO,
+and leaves the heap allocating from the top. The first set allocated after a reset therefore
+ends 32 bytes past the BO. BGFX resets its per-frame pools before allocating from them, and
+its pool is exactly 5 MiB, so the overrun reaches an unmapped page. Pools whose size is not a
+multiple of the page size overrun into padding instead, which is why other Vulkan apps and
+in-process layers on the Frame do not fault.
 
-Reproduce through the normal Steam entry using the opt-in bounded standby rendering
-diagnostic described in [SteamFrame.md](SteamFrame.md#off-head-vulkan-crash-diagnostic).
-Use the installed API-dump layer to inspect descriptor writes and their corresponding
-layouts. Diagnostic frames do not establish headset appearance or physical control behavior.
-
-Further same-binary checks isolated the first three descriptor writes: sampled image at
-binding 3 and dynamic UBO at binding 0 each returned, while the sampler at binding 19 alone
-reproduced SIGSEGV. GDB stopped each successful case immediately after the Vulkan call,
-before any draw. The faulting sampler destination was the last 32 bytes of a 5 MiB
-`/dev/dri/renderD128` mapping; the writer's padding crossed into an unmapped page.
-
-The descriptor-only Python probe then passed all three layouts inside Steam Linux Runtime 4
-on the same Turnip driver (`Mesa 26.3.0-devel`, `git-e07916b45f`). It uses the exact BGFX pool
-sizes and recorded sampler configuration, but an ordinary `vkCreateDevice` with no optional
-extensions/features. VPX's failing resources belong to the OpenXR-created Vulkan device.
-The probe result does not identify a generic driver sampler or sparse-binding defect;
-device creation, dispatch and VPX/BGFX resource state remain under investigation.
-
-The direct-create control with the intercepted OpenXR instance/device extension lists,
-feature chain and queue settings also returned successfully. Disabling Vulkan FDM injection
-for a normal Steam launch did not remove the crash. A temporary Khronos validation layer
-(1.3.275) emitted runtime/swapchain/layout messages but no descriptor-write validation error
-before the process failed; this older layer is not a clean validation result for the current
-1.4 driver/runtime stack. It also changed how far initialization progressed, so it is not a
-substitute for an uninstrumented comparison.
-
-The matching detached driver symbols (BuildID `81c47ab542579a291182ebf3e336b1bceea63276`)
-identify the fault inside `tu_update_descriptor_sets<chip7>`. They contain a symbol table,
-but no Mesa DWARF types. The saved set bytes appear to record a 128-byte allocation with
-only 96 bytes remaining in the mapped BO; exact allocator disassembly is needed before
-treating that private-field interpretation as established.
-
-The bounded-render diagnostic package from source `9f695609263782197070f20aeba282db8f2fe506`
-also passed [ARM64 CI run 41371818188](https://github.com/astromaddie/vpx-vr/actions/runs/41371818188),
-including all 3,562 package file hashes. Its executable SHA-256 is
-`927e8073ee31888a13d0a58c21e03fa9ff2c9c423d2e86af27a9e75f995bbe65`.
-It has not replaced the installed `b7a68ed` package; it adds diagnostics rather than a crash fix.
+BGFX never frees individual descriptor sets, so the Linux ARM64 build patches its pools to
+be created without `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`
+([`platforms/linux-aarch64/bgfx-turnip-descriptor-pool.patch`](../platforms/linux-aarch64/bgfx-turnip-descriptor-pool.patch)).
+Turnip then uses its linear pool allocator, which resets correctly. The descriptor probe in
+[SteamFrame.md](SteamFrame.md#descriptor-pool-probe) reproduces the fault and the fix
+without VPX: on the Frame, `reset_free_set_pool` ends with SIGSEGV and `reset_linear_pool`
+returns normally.

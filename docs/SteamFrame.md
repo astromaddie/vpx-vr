@@ -82,33 +82,38 @@ them and presents its existing layout proposal so defaults are applied only if c
 Preferences and saves are isolated from other VPX builds and persist in
 `$XDG_DATA_HOME/VPXFrame/10.8`.
 
-## Off-head Vulkan crash diagnostic
+## Off-head render diagnostic
 
-To reproduce an active-render failure while the headset is off-head, add
-`VPX_VR_FORCE_RENDER_FRAMES=240 %command%` to the Steam entry's launch options. This opt-in
-diagnostic only forces frames while OpenXR is in the synchronized state and reports
-`shouldRender=false`; it uses a synthetic 1.60 m stereo pose and stops forcing after at most
-240 attempts. Normal launches are unchanged when the variable is unset. Logs identify when
-the diagnostic starts, its first successful BGFX submission, and when its attempt limit is
-reached. If `VK_LAYER_LUNARG_api_dump` is installed, prefix the same launch with
-`VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump VK_APIDUMP_FILE=true
-VK_APIDUMP_LOG_FILENAME=/tmp/vpx-vulkan-api.log VK_APIDUMP_DETAILED=true` to capture detailed
-Vulkan call arguments for diagnosis.
+To render while the headset is off-head, add `VPX_VR_FORCE_RENDER_FRAMES=240 %command%` to
+the Steam entry's launch options. This opt-in diagnostic only forces frames while OpenXR is
+in the synchronized state and reports `shouldRender=false`; it uses a synthetic 1.60 m stereo
+pose and stops forcing after at most 240 attempts. Normal launches are unchanged when the
+variable is unset. Logs identify when the diagnostic starts, its first successful BGFX
+submission, and when its attempt limit is reached. If `VK_LAYER_LUNARG_api_dump` is
+installed, prefix the same launch with `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump
+VK_APIDUMP_FILE=true VK_APIDUMP_LOG_FILENAME=/tmp/vpx-vulkan-api.log VK_APIDUMP_DETAILED=true`
+to capture detailed Vulkan call arguments.
 
-For a descriptor-only comparison, copy this checkout to the Frame and run from its root
-inside the installed Steam Linux Runtime:
+## Descriptor pool probe
+
+`tools/frame/vulkan_sampler_descriptor_probe.py` checks the Turnip descriptor pool fault
+described in [VR_ARCHITECTURE.md](VR_ARCHITECTURE.md#turnip-descriptor-pool-workaround)
+without VPX. Copy it to the Frame and run it inside the installed Steam Linux Runtime:
 
 ```bash
 ~/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4-arm64/run -- \
-  /usr/bin/python3 tools/frame/vulkan_sampler_descriptor_probe.py --suite
+  /usr/bin/python3 vulkan_sampler_descriptor_probe.py --suite
 ```
 
-This uses the system Vulkan loader and checks for the Frame's Adreno 750 / Mesa Turnip
-device. Each case has a 30-second subprocess limit and disables core dumps. It compares
-the captured BGFX descriptor pool and layout with a lower sampler binding and a sampler-only
-layout, then repeats the sparse layout with the captured OpenXR Vulkan creation payload.
-That last case uses direct Vulkan calls; it does not exercise `xrCreateVulkanDeviceKHR`.
-The probe creates no shaders, swapchain or XR session; passing does not establish VPX rendering.
+It uses the system Vulkan loader, checks for the Frame's Adreno 750 / Mesa Turnip device and
+runs each case in a child process with a 30-second limit and core dumps disabled. Every case
+creates BGFX's captured 1,024-set pool and the descriptor-set layout of the first crashing
+write, allocates one set and writes its sampler. The first four cases vary the layout and the
+device creation payload on a fresh pool and all return normally. `reset_free_set_pool` resets
+the pool first, as BGFX does each frame, and ends with SIGSEGV while the driver still has the
+bug. `reset_linear_pool` does the same with the pool created without
+`FREE_DESCRIPTOR_SET_BIT`, as the patched BGFX does, and returns normally. The probe creates
+no shaders, swapchain or XR session.
 
 ## Table acceptance list
 
@@ -127,8 +132,9 @@ substitute a ROM set by name alone.
 
 ## Remaining acceptance gates
 
-- Resolve the shared Vulkan descriptor-update crash during active rendering, then verify
-  both the example and exact 4 Queens file through their normal Steam entries.
+- Run the example table through its Steam entry on the current build.
+- Bring GPU time within the 72 Hz frame budget: 4 Queens currently averages 17.9 ms of
+  application GPU time per frame, and the compositor reprojects most frames.
 - Confirm both projected eye images using runtime capture or wearer inspection.
 - Exercise triggers, squeeze values, right ABXY, Menu, View short press and 1-second hold, vector2
   plunger/nudge input, focus loss and return from standby.
