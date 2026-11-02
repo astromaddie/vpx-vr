@@ -18,6 +18,9 @@ public:
    virtual uint64_t GetLiveHash() const = 0;
    virtual bool IsOpaque() const = 0;
    virtual std::shared_ptr<const class BaseTexture> GetRawBitmap(bool resizeOnLowMem, unsigned int maxTexDimension) const = 0;
+   // A copy at most maxDimension wide and high, for an upload downsized under GPU memory pressure. Never cached, so that
+   // later full size requests are not served the smaller copy. nullptr when it cannot be produced
+   virtual std::shared_ptr<const class BaseTexture> GetDownsizedBitmap(unsigned int /*maxDimension*/) const { return nullptr; }
    virtual const string& GetName() const = 0;
 };
 
@@ -88,6 +91,8 @@ public:
 
    uint64_t GetLiveHash() const override { return m_liveHash; }
    std::shared_ptr<const BaseTexture> GetRawBitmap(bool resizeOnLowMem, unsigned int maxTexDimension) const override { std::shared_ptr<const BaseTexture> ptr = m_selfPointer.lock(); assert(ptr); return ptr; }
+   std::shared_ptr<const BaseTexture> GetDownsizedBitmap(unsigned int maxDimension) const override { return CreateDownsized(maxDimension); }
+   std::shared_ptr<BaseTexture> CreateDownsized(unsigned int maxDimension) const; // Box filtered halvings, nullptr if already small enough or for 565/FP16/compressed-only data
    void SetName(const string& name) { m_name = name; }
    const string& GetName() const override { return m_name; }
 
@@ -170,6 +175,7 @@ public:
    void SetIsOpaque(const bool v) const;
 
    std::shared_ptr<const BaseTexture> GetRawBitmap(bool resizeOnLowMem, unsigned int maxTexDimension) const override; // Lazily created view of the image, suitable for GPU sampling
+   std::shared_ptr<const BaseTexture> GetDownsizedBitmap(unsigned int maxDimension) const override;
 
    size_t GetEstimatedGPUSize() const;
 

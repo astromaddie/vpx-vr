@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <string>
 using std::string;
@@ -46,6 +47,7 @@ public:
    Sampler(RenderDevice* rd, string name, SurfaceType type, bgfx::TextureHandle bgfxTexture, bgfx::TextureFormat::Enum bgfxFormat, unsigned int width, unsigned int height, bool ownTexture);
    bgfx::TextureHandle GetCoreTexture(bool withMipmaps);
    bool IsUploadPending() const { return (m_textureUpdate != nullptr) || m_pendingMipMapGen || m_compressedUploadPending; }
+   size_t GetGpuBytes() const { return m_gpuBytes.load(std::memory_order_relaxed); } // Bytes of the GPU textures currently allocated (mipmapped and base variants), 0 until uploaded
    class RenderTarget* m_msaaDepthResolve = nullptr;
 
 #elif defined(ENABLE_OPENGL)
@@ -65,6 +67,7 @@ public:
    int GetWidth() const { return m_width; }
    int GetHeight() const { return m_height; }
    bool IsSRGB() const { return m_isSRGB; } // Sampling decodes sRGB to linear (on DX9, the effect sampler state decides instead)
+   bool IsFallback() const { return m_isFallback; } // Holds RenderDevice::m_fallbackTexture (image missing, undecodable or not admitted) instead of the requested content
 
    const SurfaceType m_type;
    const string m_name;
@@ -75,6 +78,7 @@ private:
    unsigned int m_width;
    unsigned int m_height;
    bool m_isSRGB = false;
+   bool m_isFallback = false;
 
 #if defined(ENABLE_BGFX)
    bgfx::TextureFormat::Enum m_bgfx_format = bgfx::TextureFormat::Enum::Count;
@@ -88,6 +92,12 @@ private:
    std::shared_ptr<const struct CompressedTexture> m_compressed;
    bool m_compressedUploadPending = false;
    bool m_usePrecompressed = false;
+   bgfx::TextureHandle GetCoreTextureImpl(bool withMipmaps);
+   void PublishGpuBytes();
+   bgfx::TextureFormat::Enum m_bytesFormat = bgfx::TextureFormat::Enum::Count; // Format m_nomipsBytes and m_mipsBytes were computed for
+   size_t m_nomipsBytes = 0; // Allocation size of m_nomipsTexture, and of m_mipsTexture
+   size_t m_mipsBytes = 0;
+   std::atomic<size_t> m_gpuBytes { 0 }; // Written by the render thread, read by the texture manager
 #elif defined(ENABLE_OPENGL)
    GLenum m_texTarget = 0;
    GLuint m_texture = 0;

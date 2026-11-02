@@ -455,6 +455,7 @@ private:
    Vertex2D m_screenOffset = Vertex2D(0.f, 0.f); // for screen shake effect during nudge
 
    Texture* m_tonemapLUT = nullptr;
+   const Texture* m_colorLUTWarned = nullptr; // Color grading LUT already reported as not loadable
 
    #if defined(ENABLE_DX9) || defined(__OPENGLES__) || defined(__APPLE__) || defined(__EMSCRIPTEN__) || (defined(__ANDROID__) && defined(ENABLE_XR))
    std::shared_ptr<BaseTexture> m_envRadianceTexture = nullptr;

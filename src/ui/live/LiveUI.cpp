@@ -458,7 +458,8 @@ void LiveUI::RenderUI()
             auto texture = static_cast<std::shared_ptr<BaseTexture> *>(tex->BackendUserData);
             BaseTexture::Update(*texture, tex->Width, tex->Height, BaseTexture::RGBA, static_cast<const uint8_t *>(tex->GetPixels()));
             (*texture)->SetName(std::format("ImGui.Tex{}", tex->UniqueID));
-            tex->SetTexID(m_renderer->m_renderDevice->m_texMan.LoadTexture(texture->get(), false));
+            // Pinned: ImGui keeps drawing with this sampler, so evicting it would not free anything, and the font atlas must not degrade
+            tex->SetTexID(m_renderer->m_renderDevice->m_texMan.LoadTexture(texture->get(), false, true));
             tex->SetStatus(ImTextureStatus_OK);
          }
          else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)

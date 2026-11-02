@@ -2786,13 +2786,27 @@ void Renderer::SetupTonemapping(RenderTarget* renderedRT, RenderTarget* tonemapR
    m_renderDevice->m_FBShader->SetVector(ShaderUniform::agx_params, agx_params[0], agx_params[1], agx_params[2], agx_params[3]);
 
    Texture *const pin = m_table->GetImage(m_table->m_imageColorGrade);
+   std::shared_ptr<Sampler> colorLUT;
    if (pin)
+   {
       // FIXME ensure that we always honor the linear RGB. Here it can be defeated if texture is used for something else (which is very unlikely)
-      m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_color_lut, pin, true, SamplerFilter::SF_BILINEAR, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP);
+      // Pinned, as grading through a downsized or fallback LUT corrupts every color on screen
+      colorLUT = m_renderDevice->m_texMan.LoadTexture(pin, true, true);
+      if (colorLUT && colorLUT->IsFallback())
+      {
+         // The LUT image could not be decoded: render without color grading rather than through the fallback checkerboard
+         if (m_colorLUTWarned != pin)
+            PLOGE << "Color grading LUT '" << pin->m_name << "' could not be loaded, color grading is disabled";
+         m_colorLUTWarned = pin;
+         colorLUT = nullptr;
+      }
+      if (colorLUT)
+         m_renderDevice->m_FBShader->SetTexture(ShaderUniform::tex_color_lut, colorLUT, SamplerFilter::SF_BILINEAR, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP);
+   }
    m_renderDevice->m_FBShader->SetVector(ShaderUniform::bloom_dither_colorgrade,
       IsBloomEnabled() ? 1.f : 0.f, // Bloom
       (!isHdr2020 && (outputRT->GetColorFormat() != colorFormat::RGBA10)) ? 1.f : 0.f, // Dither
-      (pin != nullptr) ? 1.f : 0.f, /* LUT colorgrade */
+      (colorLUT != nullptr) ? 1.f : 0.f, /* LUT colorgrade */
       0.f);
    if (IsBloomEnabled())
       m_renderDevice->AddRenderTargetDependency(GetBloomBufferTexture());

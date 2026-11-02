@@ -100,6 +100,18 @@ void RenderDevice::tBGFXCallback::fatal(const char* _filePath, uint16_t _line, b
 
 void RenderDevice::tBGFXCallback::traceVargs(const char* _filePath, uint16_t _line, const char* _format, va_list _argList)
 {
+   // Diagnostics of the patched Linux ARM64 BGFX build (BGFX_VK_DESCRIPTOR_CACHE, see platforms/linux-aarch64) are always logged
+   if (!LOG_BGFX && strncmp(_format, "BGFX VK descriptor cache", 24) == 0)
+   {
+      char msg[512];
+      int len = vsnprintf(msg, std::size(msg), _format, _argList);
+      len = std::clamp(len, 0, static_cast<int>(std::size(msg)) - 1);
+      msg[len] = '\0';
+      if (len > 0 && msg[len - 1] == '\n')
+         msg[len - 1] = '\0';
+      PLOGW << msg;
+      return;
+   }
 #if LOG_BGFX
    char temp[2048];
    char* out = temp;
@@ -2471,6 +2483,11 @@ void RenderDevice::SubmitAndFlipFrame(bool present)
    const uint32_t frameIdx = bgfx::frame(present ? BGFX_FRAME_NONE : BGFX_FRAME_FLUSH);
    if (present)
       m_lastPresentFrameIdx = frameIdx;
+   if (const bgfx::Stats* const stats = bgfx::getStats(); stats != nullptr)
+   {
+      const std::lock_guard lock(m_gpuMemorySnapshotMutex);
+      m_gpuMemorySnapshot = { stats->gpuFrameNum, stats->gpuMemoryMax, stats->gpuMemoryUsed };
+   }
    ResetActiveView();
 }
 #endif

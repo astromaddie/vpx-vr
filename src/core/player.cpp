@@ -29,6 +29,7 @@
 #include "plugins/VPXPlugin.h"
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
+#include "renderer/TextureBudget.h"
 #include "renderer/TextureCompressor.h"
 #include "renderer/trace.h"
 #include "renderer/typedefs3D.h"
@@ -377,6 +378,8 @@ Player::Player(PinTable *const table, const PlayMode playMode, LoadProgress &loa
    m_renderer->m_renderDevice->m_texMan.m_notify = [this](const string& message, int lengthMs, unsigned int reuseId) -> unsigned int {
       return m_liveUI ? m_liveUI->PushNotification(message, lengthMs, reuseId) : 0u;
    };
+   // VPX_GPU_MEMORY_BUDGET=<MB> overrides the setting, for A/B runs on a device (see TextureManager)
+   m_renderer->m_renderDevice->m_texMan.SetBudgetOverride(VPX::TextureBudget::ResolveBudgetOverride(std::getenv("VPX_GPU_MEMORY_BUDGET"), m_ptable->GetSettings().GetPlayer_GPUMemoryBudget()));
 
 #ifdef PLAYBACK
    if (m_playback)

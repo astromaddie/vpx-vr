@@ -46,6 +46,7 @@ Sampler::Sampler(RenderDevice* rd, string name, std::shared_ptr<const BaseTextur
    // Callers can substitute RenderDevice::m_fallbackTexture, so there is (mostly) something to upload
    assert(surf != nullptr);
    m_isSRGB = !BaseTexture::IsLinearFormat(surf->m_format) && !force_linear_rgb;
+   m_isFallback = surf == m_rd->m_fallbackTexture;
 
 #if defined(ENABLE_BGFX)
    m_usePrecompressed = surf->m_compressed && m_rd->m_compressTextures;
@@ -212,6 +213,29 @@ bgfx::TextureHandle Sampler::GetCoreTexture(bool withMipmaps)
    if (!m_ownTexture)
       return m_nomipsTexture;
 
+   const bgfx::TextureHandle texture = GetCoreTextureImpl(withMipmaps);
+   PublishGpuBytes();
+   return texture;
+}
+
+void Sampler::PublishGpuBytes()
+{
+   if (m_bytesFormat != m_bgfx_format)
+   {
+      // Sizes as allocated by BGFX for the format (block compression included). A precompressed upload may hold a single
+      // level in m_mipsTexture, which this slightly overestimates
+      bgfx::TextureInfo info;
+      bgfx::calcTextureSize(info, static_cast<uint16_t>(m_width), static_cast<uint16_t>(m_height), 1, false, false, 1, m_bgfx_format);
+      m_nomipsBytes = info.storageSize;
+      bgfx::calcTextureSize(info, static_cast<uint16_t>(m_width), static_cast<uint16_t>(m_height), 1, false, true, 1, m_bgfx_format);
+      m_mipsBytes = info.storageSize;
+      m_bytesFormat = m_bgfx_format;
+   }
+   m_gpuBytes.store((bgfx::isValid(m_nomipsTexture) ? m_nomipsBytes : 0) + (bgfx::isValid(m_mipsTexture) ? m_mipsBytes : 0), std::memory_order_relaxed);
+}
+
+bgfx::TextureHandle Sampler::GetCoreTextureImpl(bool withMipmaps)
+{
    if (m_usePrecompressed)
    {
       const std::lock_guard lock(m_textureUpdateMutex);
@@ -423,6 +447,7 @@ void Sampler::UpdateTexture(std::shared_ptr<const BaseTexture> surf, const bool 
       PLOGE << "Texture '" << m_name << "' update has a different size (" << surf->width() << 'x' << surf->height() << " vs " << m_width << 'x' << m_height << "), keeping previous content";
       return;
    }
+   m_isFallback = surf == m_rd->m_fallbackTexture;
    m_rd->m_curTextureUpdates++;
 
 #if defined(ENABLE_BGFX)
