@@ -1,0 +1,36 @@
+--- a/include/bgfx/bgfx.h
++++ b/include/bgfx/bgfx.h
+@@ -732 +732 @@
+-		void* queue;                       //!< D3D12 Queue, or `VulkanExternalDevice*` describing an
++		void* queue;                       //!< D3D12 or Metal command queue, or `VulkanExternalDevice*` describing an
+--- a/src/renderer_mtl.cpp
++++ b/src/renderer_mtl.cpp
+@@ -5721 +5721,11 @@
+-		m_commandQueue = _device->newCommandQueue();
++		m_commandQueue = (MTL::CommandQueue*)g_platformData.queue;
++		m_externalQueue = NULL != m_commandQueue;
++		if (m_externalQueue)
++		{
++			BX_ASSERT(m_commandQueue->device() == _device, "Metal command queue and device do not match.");
++			m_commandQueue->retain();
++		}
++		else
++		{
++			m_commandQueue = _device->newCommandQueue();
++		}
+@@ -5743 +5753,8 @@
+-			MTL_RELEASE(m_commandQueue, 0);
++			if (m_externalQueue)
++			{
++				MTL_RELEASE_I(m_commandQueue);
++			}
++			else
++			{
++				MTL_RELEASE(m_commandQueue, 0);
++			}
+--- a/src/renderer_mtl.h
++++ b/src/renderer_mtl.h
+@@ -648,0 +649 @@
++			, m_externalQueue(false)
+@@ -672,0 +674 @@
++		bool m_externalQueue;

@@ -1,0 +1,10 @@
+--- a/cmake/bgfx/bgfx.cmake
++++ b/cmake/bgfx/bgfx.cmake
+@@ -148,0 +149,7 @@
++elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
++	target_link_libraries(
++		bgfx PUBLIC "-framework Metal -framework UIKit -framework CoreGraphics -framework QuartzCore -framework IOKit -framework CoreFoundation"
++	)
++	if(BGFX_CONFIG_VIDEO)
++		target_link_libraries(bgfx PUBLIC "-framework VideoToolbox -framework CoreMedia -framework CoreVideo")
++	endif()
