@@ -12,7 +12,7 @@
 			mainGroup = 900000000000000000000003;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 900000000000000000000005;
-			targets = (900000000000000000000002);
+			targets = (900000000000000000000002, 910000000000000000000002);
 		};
 		900000000000000000000002 = {
 			isa = PBXNativeTarget;
@@ -28,18 +28,18 @@
 		};
 		900000000000000000000003 = {
 			isa = PBXGroup;
-			children = (900000000000000000000004, 90000000000000000000000F, 900000000000000000000005);
+			children = (900000000000000000000004, 90000000000000000000000F, 910000000000000000000004, 91000000000000000000000F, 900000000000000000000005);
 			sourceTree = "<group>";
 		};
 		900000000000000000000004 = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (90000000000000000000000E);
+			exceptions = (90000000000000000000000E, 91000000000000000000000E);
 			path = CabinetHands;
 			sourceTree = "<group>";
 		};
 		900000000000000000000005 = {
 			isa = PBXGroup;
-			children = (900000000000000000000006);
+			children = (900000000000000000000006, 910000000000000000000006);
 			name = Products;
 			sourceTree = "<group>";
 		};
@@ -109,6 +109,82 @@
 			lastKnownFileType = text.xcconfig;
 			path = CabinetHands.xcconfig;
 			sourceTree = SOURCE_ROOT;
+		};
+		910000000000000000000002 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 910000000000000000000009;
+			buildPhases = (910000000000000000000007, 910000000000000000000010);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (900000000000000000000004, 910000000000000000000004);
+			name = VPXVision;
+			productName = VPXVision;
+			productReference = 910000000000000000000006;
+			productType = "com.apple.product-type.application";
+		};
+		910000000000000000000004 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (91000000000000000000000B);
+			path = NativePlayer;
+			sourceTree = "<group>";
+		};
+		910000000000000000000006 = {
+			isa = PBXFileReference;
+			explicitFileType = wrapper.application;
+			path = VPXVision.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		910000000000000000000007 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		910000000000000000000009 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (91000000000000000000000C, 91000000000000000000000D);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		91000000000000000000000B = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (EmbedEngine.sh, Info.plist);
+			target = 910000000000000000000002;
+		};
+		91000000000000000000000C = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 91000000000000000000000F;
+			buildSettings = { SWIFT_OPTIMIZATION_LEVEL = "-Onone"; };
+			name = Debug;
+		};
+		91000000000000000000000D = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 91000000000000000000000F;
+			buildSettings = { SWIFT_OPTIMIZATION_LEVEL = "-O"; };
+			name = Release;
+		};
+		91000000000000000000000E = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (CabinetHandsApp.swift, CabinetModel.swift, Info.plist);
+			target = 910000000000000000000002;
+		};
+		91000000000000000000000F = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.xcconfig;
+			path = NativePlayer.xcconfig;
+			sourceTree = SOURCE_ROOT;
+		};
+		910000000000000000000010 = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ();
+			name = "Embed VPX Engine and Assets";
+			outputPaths = ();
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "sh \"$SRCROOT/NativePlayer/EmbedEngine.sh\"";
 		};
 	};
 	rootObject = 900000000000000000000001;

@@ -485,6 +485,13 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
       // Note that this is needed for native VR (running directly on the headset), and when the desktop display is disabled
       if (init.type == bgfx::RendererType::Vulkan && (g_isAndroid || rd->m_outputWnd.size() < 2))
          init.swapChain.nwh = nullptr;
+#elif defined(VPX_VISIONOS_HEADSET)
+      const auto& host = g_pplayer->m_vrDevice->GetVisionHost();
+      init.type = bgfx::RendererType::Metal;
+      init.fallback = false;
+      init.platformData.context = host.metalDevice;
+      init.platformData.queue = host.metalQueue;
+      init.swapChain.nwh = nullptr;
 #endif
    }
 
@@ -591,8 +598,8 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    {
 #ifdef ENABLE_XR
       g_pplayer->m_vrDevice->CreateSession();
-      rd->m_frameRequested = false; // Delay first frame preparation until the first swapchain image is acquired
 #endif
+      rd->m_frameRequested = false; // Wait until the headset frame has a target
    }
    else
    {
@@ -613,6 +620,10 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    if (g_pplayer->m_vrDevice)
       rd->BGFXOpenXRRenderLoop(init);
    else
+#elif defined(VPX_VISIONOS_HEADSET)
+   if (g_pplayer->m_vrDevice)
+      rd->BGFXVisionRenderLoop();
+   else
 #endif
       rd->BGFXDesktopRenderLoop(init);
 
@@ -625,6 +636,54 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    bgfx::shutdown();
    rd->m_renderDeviceAlive = true;
 }
+
+#ifdef VPX_VISIONOS_HEADSET
+void RenderDevice::BGFXVisionRenderLoop()
+{
+   auto* const headset = g_pplayer->m_vrDevice;
+   while (m_renderDeviceAlive)
+   {
+      headset->RenderVisionFrame(this, [this](RenderTarget* target) {
+         // Keep the render target and predicted views valid through submission.
+         g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_WAIT);
+         m_outputWnd[0]->SetBackBuffer(target, false);
+         m_frameRequested = true;
+         m_frameReadySem.acquire();
+         m_frameRequested = false;
+         m_outputWnd[0]->SetBackBuffer(nullptr, false);
+         g_pplayer->m_renderProfiler->ExitProfileSection();
+         if (!m_framePending)
+            return false;
+
+         bool noPresent;
+         {
+            std::lock_guard lock(m_frameMutex);
+            g_pplayer->m_renderProfiler->NewFrame(g_pplayer->m_time_msec);
+            g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_SUBMIT);
+            SubmitRenderFrame();
+            g_pplayer->m_renderProfiler->ExitProfileSection();
+            noPresent = m_frameNoPresent;
+            m_frameNoPresent = false;
+            m_framePending = false;
+         }
+         g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_FLIP);
+         if (noPresent)
+            SubmitAndFlipFrame(false);
+         else
+            Flip();
+         ++m_frameIndex;
+         const bgfx::Stats* const stats = bgfx::getStats();
+         const uint64_t bgfxSubmit = (stats->cpuTimeEnd - stats->cpuTimeBegin) * 1000000ull / stats->cpuTimerFreq;
+         g_pplayer->m_logicProfiler.OnPresented(usec() - bgfxSubmit);
+         g_pplayer->m_renderProfiler->ExitProfileSection();
+         g_pplayer->m_renderProfiler->AdjustBGFXSubmit(static_cast<uint32_t>(bgfxSubmit));
+         VRPerfLog::OnFrame(stats, g_pplayer->m_logicProfiler, *g_pplayer->m_renderProfiler);
+         return !noPresent;
+      });
+   }
+   headset->ReleaseVisionTarget();
+}
+#endif
 
 #ifdef ENABLE_XR
 void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
@@ -1470,7 +1529,7 @@ RenderDevice::RenderDevice(
    // It is configured as the playfield display: all of its settings come from the playfield window properties
    // When the desktop display is disabled, no desktop window nor swapchain is created: its presentation would otherwise
    // pace the render thread and gate the headset submission (standalone headsets like the Steam Frame have no desktop to show)
-   if (isVR && !g_isAndroid && g_pplayer->m_ptable->GetSettings().GetPlayerVR_DesktopDisplay() != 0)
+   if (isVR && !g_isAndroid && !g_isVisionOS && g_pplayer->m_ptable->GetSettings().GetPlayerVR_DesktopDisplay() != 0)
    {
       VPX::Window* desktopWnd = new VPX::Window("Visual Pinball Desktop Display"s, g_settingsService.GetActiveSettings(), VPXWindowId::VPXWINDOW_Playfield);
 #ifdef ENABLE_BGFX
@@ -1565,7 +1624,7 @@ RenderDevice::RenderDevice(
    }
    #elif BX_PLATFORM_OSX
    init.swapChain.nwh = SDL_GetRenderMetalLayer(SDL_CreateRenderer(swapchainWnd->GetCore(), "Metal"));
-   #elif BX_PLATFORM_IOS
+   #elif BX_PLATFORM_IOS || BX_PLATFORM_VISIONOS
    init.swapChain.nwh = VPinballLib::VPinballLib::Instance().GetMetalLayer();
    #elif BX_PLATFORM_ANDROID
    init.swapChain.nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
@@ -2293,7 +2352,7 @@ void RenderDevice::AddWindow(VPX::Window* wnd)
          renderer = SDL_CreateRenderer(sdlWnd, "Metal");
       nwh = SDL_GetRenderMetalLayer(renderer);
    }
-#elif BX_PLATFORM_IOS
+#elif BX_PLATFORM_IOS || BX_PLATFORM_VISIONOS
    nwh = VPinballLib::VPinballLib::Instance().GetMetalLayer();
 #elif BX_PLATFORM_ANDROID
    nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(sdlWnd), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);

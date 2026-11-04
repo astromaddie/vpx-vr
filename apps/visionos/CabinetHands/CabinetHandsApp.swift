@@ -47,6 +47,8 @@ private final class CabinetPreview {
         switch input {
         case let .flipper(_, pressed):
             if pressed { actions.insert(action) } else { actions.remove(action) }
+        case .pullPlunger, .releasePlunger, .cancelPlunger:
+            break
         case .insertCoin, .pressStart:
             if input == .insertCoin { credits += 1 } else { starts += 1 }
             actions.insert(action)

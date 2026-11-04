@@ -119,6 +119,11 @@ inline std::filesystem::path PathFromUTF8OrString(const std::string& s) { return
    #else
       #define g_isIOS false
    #endif
+   #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+      #define g_isVisionOS true
+   #else
+      #define g_isVisionOS false
+   #endif
    #if defined(__ANDROID__)
       #define g_isAndroid true
    #else
@@ -139,6 +144,11 @@ inline std::filesystem::path PathFromUTF8OrString(const std::string& s) { return
       constexpr bool g_isIOS = true;
    #else
       constexpr bool g_isIOS = false;
+   #endif
+   #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+      constexpr bool g_isVisionOS = true;
+   #else
+      constexpr bool g_isVisionOS = false;
    #endif
 
    #if defined(__ANDROID__)

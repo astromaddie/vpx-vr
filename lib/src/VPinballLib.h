@@ -9,10 +9,18 @@
 #include <atomic>
 #include <mutex>
 #include "../include/vpinball/VPinballLib_C.h"
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include "../include/vpinball/VPinballVision.h"
+#include <optional>
+#endif
 #include "WebServer.h"
 #include "core/vpversion.h"
 
 namespace VPinballLib {
+
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+const VPINBALL_VISION_HOST& GetVisionHost();
+#endif
 
 using std::string;
 using std::vector;
@@ -68,6 +76,9 @@ public:
    VPINBALL_STATUS ExtractTableScript(const string& tablePath);
    VPINBALL_STATUS Play(const string& tablePath);
    VPINBALL_STATUS Stop();
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+   void SetVisionButton(VPINBALL_VISION_INPUT button, bool pressed);
+#endif
    void SetGameLoop(std::function<void()> gameLoop) { m_gameLoop = gameLoop; }
 
    static void SetupStaticPlugins(MsgPI::MsgPluginManager& manager);
@@ -81,6 +92,9 @@ private:
    void OnPlayerCreated();
    void SetRumbleCallback(VPinballRumbleCallback callback) { m_rumbleCallback = callback; }
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+   std::optional<uint16_t> m_visionHands;
+#endif
    SDL_Window* m_pWindow = nullptr;
 #ifdef __APPLE__
    void* m_pMetalLayer = nullptr;

@@ -57,11 +57,11 @@ Renderer::Renderer(PinTable* const table, VPX::Window* wnd, VideoSyncMode& syncM
 
    #if defined(ENABLE_BGFX)
    constexpr int MSAASamples[] = { 1, 4, 6, 8, 16 };
-   const int nMSAASamples = MSAASamples[m_table->GetSettings().GetPlayer_MSAASamples()];
+   const int nMSAASamples = g_isVisionOS && m_stereo3D == STEREO_VR ? 1 : MSAASamples[m_table->GetSettings().GetPlayer_MSAASamples()];
    const bool compressTextures = m_table->GetSettings().GetPlayer_CompressTextures();
    #elif defined(ENABLE_OPENGL)
    constexpr int MSAASamples[] = { 1, 4, 6, 8, 16 };
-   int nMSAASamples = MSAASamples[m_table->GetSettings().GetPlayer_MSAASamples()];
+   int nMSAASamples = g_isVisionOS && m_stereo3D == STEREO_VR ? 1 : MSAASamples[m_table->GetSettings().GetPlayer_MSAASamples()];
    const bool compressTextures = false;
    #elif defined(ENABLE_DX9)
    // Sadly DX9 does not support resolving an MSAA depth buffer, making MSAA implementation complex for it. So just disable
@@ -113,7 +113,7 @@ Renderer::Renderer(PinTable* const table, VPX::Window* wnd, VideoSyncMode& syncM
    }
    m_renderSourceWidth = wnd->GetPixelWidth();
    m_renderSourceHeight = wnd->GetPixelHeight();
-   const float AAfactor = m_table->GetSettings().GetPlayer_AAFactor();
+   const float AAfactor = g_isVisionOS && m_stereo3D == STEREO_VR ? 1.f : m_table->GetSettings().GetPlayer_AAFactor();
    const int renderWidthAA = (int)((float)m_renderWidth * AAfactor);
    const int renderHeightAA = (int)((float)m_renderHeight * AAfactor);
 
@@ -293,7 +293,7 @@ void Renderer::ApplyTableSettings()
    m_disableAO = m_table->GetSettings().GetPlayer_DisableAO();
    for (int wnd = VPXWindowId::VPXWINDOW_Backglass; wnd <= VPXWindowId::VPXWINDOW_Topper; wnd++)
       m_ancillaryWndRotation[wnd] = 90 * clamp(m_table->GetSettings().GetWindow_Rotation(wnd), 0, 3); // Setting is an index in the 0 / 90 / 180 / 270 literals
-   m_vrDesktop = static_cast<VRDesktopMode>(m_table->GetSettings().GetPlayerVR_DesktopDisplay());
+   m_vrDesktop = g_isVisionOS ? VRDesktopMode::Disabled : static_cast<VRDesktopMode>(m_table->GetSettings().GetPlayerVR_DesktopDisplay());
    m_vrDesktopShrink = m_table->GetSettings().GetPlayerVR_ShrinkDesktopDisplay();
    m_FXAA = m_table->GetSettings().GetPlayer_FXAA();
    m_sharpen = m_table->GetSettings().GetPlayer_Sharpen();
@@ -312,7 +312,7 @@ void Renderer::ApplyTableSettings()
       m_ballImage = BaseTexture::CreateFromFile(m_table->GetSettings().GetPlayer_BallImage(), m_table->GetSettings().GetPlayer_MaxTexDimension());
       m_decalImage = BaseTexture::CreateFromFile(m_table->GetSettings().GetPlayer_DecalImage(), m_table->GetSettings().GetPlayer_MaxTexDimension());
    }
-   m_vrApplyColorKey = m_stereo3D == STEREO_VR && m_table->GetSettings().GetPlayerVR_UsePassthroughColor();
+   m_vrApplyColorKey = !g_isVisionOS && m_stereo3D == STEREO_VR && m_table->GetSettings().GetPlayerVR_UsePassthroughColor();
    m_visualNudgeStrength = m_table->GetSettings().GetPlayer_NudgeStrength();
    if (m_stereo3D == STEREO_VR)
    {
@@ -2068,7 +2068,7 @@ void Renderer::SetSpaceReference(PartGroupData::SpaceReference spaceReference, b
    if (!force && m_mvpSpaceReference == spaceReference)
       return;
 
-#if defined(ENABLE_XR)
+#if defined(ENABLE_XR) || defined(VPX_VISIONOS_HEADSET)
    if (m_stereo3D == STEREO_VR && !m_desktopScenePass)
       g_pplayer->m_vrDevice->UpdateVRPosition(spaceReference, m_mvp);
    else
@@ -3303,7 +3303,7 @@ RenderTarget* Renderer::ApplyStereo(RenderTarget* renderedRT, RenderTarget* outp
 
    if (m_stereo3D == STEREO_VR)
    {
-   #if defined(ENABLE_XR)
+   #if defined(ENABLE_XR) || defined(VPX_VISIONOS_HEADSET)
       int w = renderedRT->GetWidth();
       int h = renderedRT->GetHeight();
 
@@ -3632,7 +3632,7 @@ void Renderer::Render3DScene()
    const bool hasSharpenPass = m_sharpen != 0;
    const bool hasUpscalerPass = GetBackBufferTexture()->GetWidth() < m_renderWidth;
    // OpenXR directly renders to the XR render target view without any postprocess needs
-   #ifdef ENABLE_XR
+   #if defined(ENABLE_XR) || defined(VPX_VISIONOS_HEADSET)
    const bool hasStereoPass = (m_stereo3Denabled && (m_stereo3D != STEREO_OFF) && (m_stereo3D != STEREO_VR)) || ((m_stereo3D == STEREO_VR) && m_vrApplyColorKey);
    #else
    const bool hasStereoPass = m_stereo3Denabled && (m_stereo3D != STEREO_OFF);

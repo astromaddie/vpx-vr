@@ -76,10 +76,18 @@ int VPinballLib::AppInit(int argc, char** argv)
    if (g_isAndroid)
       SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "1");
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+   const bool spatial = GetVisionHost().metalDevice != nullptr;
+   if (spatial)
+      SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
+#else
+   constexpr bool spatial = false;
+#endif
+
    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
       return 0;
 
-   if (g_isIOS) {
+   if (g_isIOS || (g_isVisionOS && !spatial)) {
       SDL_PropertiesID props = SDL_CreateProperties();
       SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Visual Pinball Player");
       SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -151,6 +159,9 @@ void VPinballLib::AppIterate()
       Player::PlayMode nextMode = Player::PlayMode::Play;
       PinTable* const nextTable = g_pplayer->TakeTableSwitch(nextMode);
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+      m_visionHands.reset();
+#endif
       delete g_pplayer;
       g_pplayer = nullptr;
       SendEvent(VPINBALL_EVENT_PLAYER_CLOSED, nullptr);
@@ -193,12 +204,36 @@ void VPinballLib::OnPlayerCreated()
       SendEvent(VPINBALL_EVENT_PLAYER_FAILED, nullptr);
       return;
    }
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+   auto& input = g_pplayer->m_pininput;
+   const auto device = input.RegisterDevice("VisionHands"s, InputManager::DeviceType::VRController, "Vision Pro Hands"s);
+   m_visionHands = device;
+   input.RegisterElementName(device, false, VPINBALL_VISION_LEFT_FLIPPER, "Left Flipper"s);
+   input.RegisterElementName(device, false, VPINBALL_VISION_RIGHT_FLIPPER, "Right Flipper"s);
+   input.RegisterElementName(device, false, VPINBALL_VISION_ADD_CREDIT, "Add Credit"s);
+   input.RegisterElementName(device, false, VPINBALL_VISION_START, "Start"s);
+   input.SetDeviceDefaultMapping(device, [&input, device](InputManager::MappingSetupHandler& map) {
+      map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_LEFT_FLIPPER), input.GetLeftFlipperActionId());
+      map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_RIGHT_FLIPPER), input.GetRightFlipperActionId());
+      map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_ADD_CREDIT), input.GetAddCreditActionId(0));
+      map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_START), input.GetStartActionId());
+   }, true);
+#endif
+
    g_pplayer->GameLoop();
    if (!m_playerReadySent) {
       m_playerReadySent = true;
       SendEvent(VPINBALL_EVENT_PLAYER_READY, nullptr);
    }
 }
+
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+void VPinballLib::SetVisionButton(VPINBALL_VISION_INPUT button, bool pressed)
+{
+   if (m_visionHands && g_pplayer)
+      g_pplayer->m_pininput.PushButtonEvent(*m_visionHands, static_cast<uint16_t>(button), SDL_GetTicksNS(), pressed);
+}
+#endif
 
 bool VPinballLib::PollAppEvent(SDL_Event& event)
 {

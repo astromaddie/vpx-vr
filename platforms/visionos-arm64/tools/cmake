@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Retarget the pinned iOS dependency builds to the visionOS SDK."""
+
+import os
+from pathlib import Path
+import re
+import sys
+
+args = sys.argv[1:]
+if "--build" in args:
+    args = [f"-j{os.environ['VPX_BUILD_JOBS']}" if re.fullmatch(r"-j[0-9]+", arg) else arg for arg in args]
+if "-DCMAKE_SYSTEM_NAME=iOS" in args or "-DPLATFORM=ios" in args:
+    # Keep the dependencies' iOS option and output directory names, which
+    # select their existing mobile features and are used by the nested scripts.
+    if "-DPLATFORM=ios" in args:
+        project = Path("CMakeLists.txt")
+        original = project.read_text()
+        patched = original.replace("set(CMAKE_SYSTEM_NAME iOS)", "set(CMAKE_SYSTEM_NAME visionOS)")
+        patched = re.sub(r"set\(CMAKE_OSX_DEPLOYMENT_TARGET [0-9.]+\)",
+                         "set(CMAKE_OSX_DEPLOYMENT_TARGET 2.0)", patched)
+        if patched != original:
+            project.write_text(patched)
+
+    # Use the existing mobile implementations for the serial and HID code.
+    mobile = "(defined(TARGET_OS_TV) && TARGET_OS_TV)"
+    for source in (Path("src/ZeDMDComm.h"), Path("src/ZeDMDComm.cpp"), Path("include/DOF/DOF.h")):
+        if not source.is_file():
+            continue
+        original = source.read_text()
+        if "TARGET_OS_VISION" not in original and mobile in original:
+            source.write_text(original.replace(mobile, mobile + " || (defined(TARGET_OS_VISION) && TARGET_OS_VISION)"))
+
+    args = [arg for arg in args if arg != "-DCMAKE_SYSTEM_NAME=iOS"
+            and not arg.startswith("-DCMAKE_OSX_DEPLOYMENT_TARGET=")]
+    args.extend(["-DCMAKE_SYSTEM_NAME=visionOS", "-DCMAKE_OSX_SYSROOT=xros",
+                 "-DCMAKE_OSX_DEPLOYMENT_TARGET=2.0", "-DCMAKE_OSX_ARCHITECTURES=arm64"])
+
+cmake = os.environ["VPX_HOST_CMAKE"]
+os.execv(cmake, [cmake, *args])

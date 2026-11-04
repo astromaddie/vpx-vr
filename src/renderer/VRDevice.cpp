@@ -15,6 +15,10 @@
 #include "renderer/VertexBuffer.h"
 #include "renderer/VRRenderDiagnostic.h"
 
+#ifdef VPX_VISIONOS_HEADSET
+#include "lib/src/VPinballLib.h"
+#endif
+
 // MSVC Concurrency Viewer support
 // This requires to add the MSVC Concurrency SDK to the project
 //#define MSVC_CONCURRENCY_VIEWER
@@ -352,6 +356,19 @@ VRDevice::VRDevice(const Settings& settings)
                                  << XR_VERSION_PATCH(instanceProperties.runtimeVersion);
       PLOGI << "OpenXR instance initialization took "
             << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - xrInstanceStart).count() << " ms";
+   #elif defined(VPX_VISIONOS_HEADSET)
+      m_visionHost = VPinballLib::GetVisionHost();
+      if (IsVisionReady())
+      {
+         m_eyeWidth = m_visionHost.width;
+         m_eyeHeight = m_visionHost.height;
+         const auto* table = g_pplayer->m_ptable;
+         m_lockbarWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
+         m_lockbarHeight = VPUTOCM(table->m_groundToLockbarHeight);
+         m_orientation = 0.f;
+         m_headsetPos = {0.f, 0.f, 0.f};
+         m_tableOffset = {0.f, 0.f, 0.f};
+      }
    #endif
 }
 
@@ -1326,105 +1343,7 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
             m_worldDirty = true;
          }
 
-         // Prepare the view/projection matrices for the 4 space references we use:
-         // - Room is the VR room, offseted and rotated to the table orientation (rotation around vertical axis)
-         // - Cabinet feet is the same as the room with cabinet scaling applied (to match lockbar width)
-         // - Cabinet is the same as the cabinet feet but also applying depth offset (to match lockbar height)
-         // - Playfield is the main space reference where the simulation happens (only one to support physics), relative to the cabinet, with inclination and table coordinate system
-
-         // playfield is inclined at a fixed slope that should be defined with the table (it corresponds to the cabinet design),
-         // then player adjust the play angle by adjusting the feet casters, so the whole cab rotates.
-         const PinTable* const table = g_pplayer->m_ptable;
-         if (const float liveSlope = table->GetPlayfieldSlope(); m_worldDirty || m_slope != liveSlope)
-         {
-            m_worldDirty = false;
-            m_slope = liveSlope;
-
-            // Update fixed scaling, considering lockbar size to be the width of the playfield + 2"1/4
-            const float tableWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
-            m_scale = clamp(m_lockbarWidth / tableWidth, 0.1f, 2.0f);
-            const Matrix3D sceneScale = Matrix3D::MatrixScale(m_scale);
-            const Matrix3D invSceneScale = Matrix3D::MatrixScale(1.f / m_scale);
-
-            // Move table (in VPU coordinates), adjust coord from RH to LH system
-            const Matrix3D coords = Matrix3D::MatrixScale(1.f, -1.f, 1.f);
-            const Matrix3D rotz = Matrix3D::MatrixRotateZ(ANGTORAD(m_orientation));
-            const Matrix3D rotx2 = Matrix3D::MatrixRotateX(ANGTORAD(-90.f));
-            const Matrix3D viewOrientation = rotz * rotx2;
-            const Matrix3D viewOrientationInv = Matrix3D::MatrixInverse(viewOrientation);
-
-            // The users define in their settings the real world height where they want the top of the lockbar to be.
-            // The real world playfield height is then computed by removing the glass distance at the playfield bottom (typically 2 to 3").
-            // The m_tableOffset allows to slightly adjust this height on a per table basis.
-            // In the end Playfield height = m_tableOffset.z (User adjustement) + m_lockBatHeight (Real world lockbar height) - glass distance * scale
-            const float scaledGlassHeight = m_scale * VPUTOCM(table->m_glassBottomHeight);
-
-            // The table defines the height of the lockbar of its cabinet model, as well as the playfield base inclination.
-            // This allows to fit the cabinet & playfield models to the real world space.
-            // If user adjust the inclination, then the cab is rotated as it would in real life (still missing the legs stretching a bit using caster adjustments)
-            const float groundToPlayfieldHeight = m_scale * (table->m_groundToLockbarHeight - table->m_glassBottomHeight);
-            const float baseSlope = lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty);
-
-            // Before 10.8.1, there weren't multiple space reference, so room used to be inclined to compensate the playfield inclination.
-            // This may leads to slight visual artefact for old VR room (that is to say very slightly inclined room).
-            // Seated play tilt rotates the whole cabinet (feet and playfield included) around the lockbar axis to face the player, the room staying upright
-            const float viewSlope = liveSlope + m_seatedTilt;
-            const Matrix3D playfieldSlope = Matrix3D::MatrixRotateX(ANGTORAD(viewSlope));
-            const Matrix3D playfieldSlopeInv = Matrix3D::MatrixRotateX(-ANGTORAD(viewSlope));
-            const Matrix3D tableCoords = Matrix3D::MatrixTranslate(
-               - m_scale * (table->m_right - table->m_left) * 0.5f,
-               + m_scale * (table->m_bottom - table->m_top),
-               0.f);
-            const Matrix3D playfieldPos = Matrix3D::MatrixTranslate(
-               -CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield), CMTOVPU(m_tableOffset.z + m_lockbarHeight - scaledGlassHeight));
-            const Matrix3D playfieldPosInv = Matrix3D::MatrixInverse(playfieldPos);
-            m_pfWorld.m_toWorld = sceneScale * coords * tableCoords * playfieldSlope * playfieldPos * viewOrientation;
-
-            const Matrix3D cabinetSlope = playfieldPosInv * Matrix3D::MatrixRotateX(ANGTORAD(viewSlope - baseSlope)) * playfieldPos;
-            const Matrix3D pfToCab = viewOrientationInv // Revert view orientation
-               * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
-               * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
-                  // Cabinet model has its z origin at the feet level, m_groundToLockbarHeight corresponding to the playfield level, so we move it down (to real world ground) then up to match user seyup (where we placed the playfield)
-                  CMTOVPU(m_tableOffset.z + m_lockbarHeight - scaledGlassHeight) - groundToPlayfieldHeight)
-               * cabinetSlope // Apply cabinet slope
-               * viewOrientation; // Reapply view orientation
-            m_cabWorld.m_toWorld = m_pfWorld.m_toWorld * pfToCab;
-
-            // Feet are always touching the ground, scaled against the real world vs model defined playfield level
-            // Note that since we are rotating the cabinet with its feet, the feet may slightly leave or enter the ground.
-            if (m_lockFeetToGround)
-            {
-               constexpr float cabHeight
-                  = 0.4f * INCHESTOVPU(16.25f); // Magic value where the top of the leg should approximately stand (16.25" is the front height of a modern Stern cabinet)
-               const float feetScale = (CMTOVPU(m_tableOffset.z + m_lockbarHeight) / m_scale - cabHeight) / (table->m_groundToLockbarHeight - cabHeight);
-               //const float feetScale = (CMTOVPU(m_tableOffset.z + m_lockbarHeight) / m_scale - table->m_glassBottomHeight) / (table->m_groundToLockbarHeight - table->m_glassBottomHeight);
-               //const float feetScale = (m_tableOffset.z + m_lockbarHeight - scaledGlassHeight) / VPUTOCM(groundToPlayfieldHeight);
-               const Matrix3D pfToFeet = viewOrientationInv // Revert view orientation
-                  * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
-                  * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
-                     CMTOVPU(m_tableOffset.z)) // Feets are always at z=0 in real world, that is to say ground
-                  * Matrix3D::MatrixScale(1.f, 1.f, feetScale) // Scale feets in order to match feet bottom to real world floor
-                  * cabinetSlope // Apply cabinet slope
-                  * viewOrientation; // Reapply view orientation
-               m_feetWorld.m_toWorld = m_pfWorld.m_toWorld * pfToFeet;
-            }
-            else
-            {
-               m_feetWorld.m_toWorld = m_cabWorld.m_toWorld;
-            }
-
-            // Room does not apply the cabinet scaling nor any inclination, as it is the real world room
-            const Matrix3D pfToRoom = viewOrientationInv // Revert view orientation
-               * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
-               * Matrix3D::MatrixTranslate( // Apply table coordinate but without table scale
-                  -(1.f - m_scale) * (table->m_right - table->m_left) * 0.5f, +(1.f - m_scale) * (table->m_bottom - table->m_top),
-                  0.f)
-               * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), // For the ease of positioning, align the room to the table view setting, except for z which must stay on ground
-                  CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
-                  CMTOVPU(m_tableOffset.z))
-               * viewOrientation; // Reapply view orientation
-            m_roomWorld.m_toWorld = invSceneScale * m_pfWorld.m_toWorld * pfToRoom;
-         }
+         UpdateWorldTransforms();
 
          // As we only have one view matrix for shading, each eye view is integrated in the projection matrix, by reverting the 'shading' view matrix then
          // applying the eye view matrix, we also apply scale in the projection matrix as it would break shading otherwise (it needs an orthonormal view matrix)
@@ -1452,46 +1371,7 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<bool(RenderTarg
             m_sceneProj[eye] = sceneScale * m_roomProj[eye];
          }
 
-         // Feed the head tracked pose to the spatial audio listener (in table space, VPU)
-         if (g_pplayer->m_audioPlayer)
-         {
-            // m_view maps table space to view space: its inverse maps the camera pose to table space
-            const Matrix3D headPose = Matrix3D::MatrixInverse(m_pfWorld.m_view[0]);
-            const Matrix3D rightEyePose = m_viewConfigurationViews.size() > 1 ? Matrix3D::MatrixInverse(m_pfWorld.m_view[1]) : headPose;
-            const float posX = 0.5f * (headPose.m[3][0] + rightEyePose.m[3][0]);
-            const float posY = 0.5f * (headPose.m[3][1] + rightEyePose.m[3][1]);
-            const float posZ = 0.5f * (headPose.m[3][2] + rightEyePose.m[3][2]);
-            // Head basis vectors in table space (rows of the inverse view matrix, renormalized
-            // as the view matrix chain contains scaling): right = row 0, up = row 1, forward = -row 2
-            const float rLen = sqrtf(headPose.m[0][0] * headPose.m[0][0] + headPose.m[0][1] * headPose.m[0][1] + headPose.m[0][2] * headPose.m[0][2]);
-            const float rx = rLen > 0.f ? headPose.m[0][0] / rLen : 1.f;
-            const float ry = rLen > 0.f ? headPose.m[0][1] / rLen : 0.f;
-            const float rz = rLen > 0.f ? headPose.m[0][2] / rLen : 0.f;
-            const float uLen = sqrtf(headPose.m[1][0] * headPose.m[1][0] + headPose.m[1][1] * headPose.m[1][1] + headPose.m[1][2] * headPose.m[1][2]);
-            const float ux = uLen > 0.f ? headPose.m[1][0] / uLen : 0.f;
-            const float uy = uLen > 0.f ? headPose.m[1][1] / uLen : 0.f;
-            const float uz = uLen > 0.f ? headPose.m[1][2] / uLen : 1.f;
-            const float fLen = sqrtf(headPose.m[2][0] * headPose.m[2][0] + headPose.m[2][1] * headPose.m[2][1] + headPose.m[2][2] * headPose.m[2][2]);
-            const float fx = fLen > 0.f ? -headPose.m[2][0] / fLen : 0.f;
-            const float fy = fLen > 0.f ? -headPose.m[2][1] / fLen : -1.f;
-            const float fz = fLen > 0.f ? -headPose.m[2][2] / fLen : 0.f;
-            const float yaw = atan2f(-fx, -fy); // Positive = looking toward the player's left
-            const float pitch = atan2f(fz, sqrtf(fx * fx + fy * fy)); // Positive = looking up
-            // Roll = tilt of the head up vector against the up vector expected for an untilted head
-            // (world up projected on the plane normal to the forward vector)
-            const float upDot = fz; // world up (0,0,1) dot forward
-            float euX = -upDot * fx, euY = -upDot * fy, euZ = 1.f - upDot * fz;
-            const float euLen = sqrtf(euX * euX + euY * euY + euZ * euZ);
-            float roll = 0.f;
-            if (euLen > 1e-6f)
-            {
-               euX /= euLen;
-               euY /= euLen;
-               euZ /= euLen;
-               roll = atan2f(ux * rx + uy * ry + uz * rz, ux * euX + uy * euY + uz * euZ); // Positive = tilting head to the right
-            }
-            g_pplayer->m_audioPlayer->SetListenerPose(posX, posY, posZ, yaw, pitch, roll);
-         }
+         UpdateSpatialAudio(m_viewConfigurationViews.size() > 1);
 
          // Swapchain is acquired, rendered to, and released together for all views as a texture array
 
@@ -1665,6 +1545,156 @@ void VRDevice::OffsetTable(float dx, float dy, float dz)
    m_lockbarHeight = Settings::GetPlayer_LockbarHeight_Property()->GetClamped(m_lockbarHeight + dz);
    m_worldDirty = true;
 }
+
+void VRDevice::UpdateWorldTransforms()
+{
+   constexpr float lockbarToPlayfield = 5.f;
+   // Prepare the view/projection matrices for the 4 space references we use:
+   // - Room is the VR room, offseted and rotated to the table orientation (rotation around vertical axis)
+   // - Cabinet feet is the same as the room with cabinet scaling applied (to match lockbar width)
+   // - Cabinet is the same as the cabinet feet but also applying depth offset (to match lockbar height)
+   // - Playfield is the main space reference where the simulation happens (only one to support physics), relative to the cabinet, with inclination and table coordinate system
+
+   // playfield is inclined at a fixed slope that should be defined with the table (it corresponds to the cabinet design),
+   // then player adjust the play angle by adjusting the feet casters, so the whole cab rotates.
+   const PinTable* const table = g_pplayer->m_ptable;
+   if (const float liveSlope = table->GetPlayfieldSlope(); m_worldDirty || m_slope != liveSlope)
+   {
+      m_worldDirty = false;
+      m_slope = liveSlope;
+
+      // Update fixed scaling, considering lockbar size to be the width of the playfield + 2"1/4
+      const float tableWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
+      m_scale = clamp(m_lockbarWidth / tableWidth, 0.1f, 2.0f);
+      const Matrix3D sceneScale = Matrix3D::MatrixScale(m_scale);
+      const Matrix3D invSceneScale = Matrix3D::MatrixScale(1.f / m_scale);
+
+      // Move table (in VPU coordinates), adjust coord from RH to LH system
+      const Matrix3D coords = Matrix3D::MatrixScale(1.f, -1.f, 1.f);
+      const Matrix3D rotz = Matrix3D::MatrixRotateZ(ANGTORAD(m_orientation));
+      const Matrix3D rotx2 = Matrix3D::MatrixRotateX(ANGTORAD(-90.f));
+      const Matrix3D viewOrientation = rotz * rotx2;
+      const Matrix3D viewOrientationInv = Matrix3D::MatrixInverse(viewOrientation);
+
+      // The users define in their settings the real world height where they want the top of the lockbar to be.
+      // The real world playfield height is then computed by removing the glass distance at the playfield bottom (typically 2 to 3").
+      // The m_tableOffset allows to slightly adjust this height on a per table basis.
+      // In the end Playfield height = m_tableOffset.z (User adjustement) + m_lockBatHeight (Real world lockbar height) - glass distance * scale
+      const float scaledGlassHeight = m_scale * VPUTOCM(table->m_glassBottomHeight);
+
+      // The table defines the height of the lockbar of its cabinet model, as well as the playfield base inclination.
+      // This allows to fit the cabinet & playfield models to the real world space.
+      // If user adjust the inclination, then the cab is rotated as it would in real life (still missing the legs stretching a bit using caster adjustments)
+      const float groundToPlayfieldHeight = m_scale * (table->m_groundToLockbarHeight - table->m_glassBottomHeight);
+      const float baseSlope = lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty);
+
+      // Before 10.8.1, there weren't multiple space reference, so room used to be inclined to compensate the playfield inclination.
+      // This may leads to slight visual artefact for old VR room (that is to say very slightly inclined room).
+      // Seated play tilt rotates the whole cabinet (feet and playfield included) around the lockbar axis to face the player, the room staying upright
+      const float viewSlope = liveSlope + m_seatedTilt;
+      const Matrix3D playfieldSlope = Matrix3D::MatrixRotateX(ANGTORAD(viewSlope));
+      const Matrix3D playfieldSlopeInv = Matrix3D::MatrixRotateX(-ANGTORAD(viewSlope));
+      const Matrix3D tableCoords = Matrix3D::MatrixTranslate(
+         - m_scale * (table->m_right - table->m_left) * 0.5f,
+         + m_scale * (table->m_bottom - table->m_top),
+         0.f);
+      const Matrix3D playfieldPos = Matrix3D::MatrixTranslate(
+         -CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield), CMTOVPU(m_tableOffset.z + m_lockbarHeight - scaledGlassHeight));
+      const Matrix3D playfieldPosInv = Matrix3D::MatrixInverse(playfieldPos);
+      m_pfWorld.m_toWorld = sceneScale * coords * tableCoords * playfieldSlope * playfieldPos * viewOrientation;
+
+      const Matrix3D cabinetSlope = playfieldPosInv * Matrix3D::MatrixRotateX(ANGTORAD(viewSlope - baseSlope)) * playfieldPos;
+      const Matrix3D pfToCab = viewOrientationInv // Revert view orientation
+         * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
+         * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
+            // Cabinet model has its z origin at the feet level, m_groundToLockbarHeight corresponding to the playfield level, so we move it down (to real world ground) then up to match user seyup (where we placed the playfield)
+            CMTOVPU(m_tableOffset.z + m_lockbarHeight - scaledGlassHeight) - groundToPlayfieldHeight)
+         * cabinetSlope // Apply cabinet slope
+         * viewOrientation; // Reapply view orientation
+      m_cabWorld.m_toWorld = m_pfWorld.m_toWorld * pfToCab;
+
+      // Feet are always touching the ground, scaled against the real world vs model defined playfield level
+      // Note that since we are rotating the cabinet with its feet, the feet may slightly leave or enter the ground.
+      if (m_lockFeetToGround)
+      {
+         constexpr float cabHeight
+            = 0.4f * INCHESTOVPU(16.25f); // Magic value where the top of the leg should approximately stand (16.25" is the front height of a modern Stern cabinet)
+         const float feetScale = (CMTOVPU(m_tableOffset.z + m_lockbarHeight) / m_scale - cabHeight) / (table->m_groundToLockbarHeight - cabHeight);
+         //const float feetScale = (CMTOVPU(m_tableOffset.z + m_lockbarHeight) / m_scale - table->m_glassBottomHeight) / (table->m_groundToLockbarHeight - table->m_glassBottomHeight);
+         //const float feetScale = (m_tableOffset.z + m_lockbarHeight - scaledGlassHeight) / VPUTOCM(groundToPlayfieldHeight);
+         const Matrix3D pfToFeet = viewOrientationInv // Revert view orientation
+            * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
+            * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
+               CMTOVPU(m_tableOffset.z)) // Feets are always at z=0 in real world, that is to say ground
+            * Matrix3D::MatrixScale(1.f, 1.f, feetScale) // Scale feets in order to match feet bottom to real world floor
+            * cabinetSlope // Apply cabinet slope
+            * viewOrientation; // Reapply view orientation
+         m_feetWorld.m_toWorld = m_pfWorld.m_toWorld * pfToFeet;
+      }
+      else
+      {
+         m_feetWorld.m_toWorld = m_cabWorld.m_toWorld;
+      }
+
+      // Room does not apply the cabinet scaling nor any inclination, as it is the real world room
+      const Matrix3D pfToRoom = viewOrientationInv // Revert view orientation
+         * playfieldPosInv * playfieldSlopeInv // Revert playfield slope
+         * Matrix3D::MatrixTranslate( // Apply table coordinate but without table scale
+            -(1.f - m_scale) * (table->m_right - table->m_left) * 0.5f, +(1.f - m_scale) * (table->m_bottom - table->m_top),
+            0.f)
+         * Matrix3D::MatrixTranslate(-CMTOVPU(m_headsetPos.x), // For the ease of positioning, align the room to the table view setting, except for z which must stay on ground
+            CMTOVPU(m_headsetPos.y + m_tableOffset.y + lockbarToPlayfield),
+            CMTOVPU(m_tableOffset.z))
+         * viewOrientation; // Reapply view orientation
+      m_roomWorld.m_toWorld = invSceneScale * m_pfWorld.m_toWorld * pfToRoom;
+   }
+}
+
+#if defined(ENABLE_XR) || defined(VPX_VISIONOS_HEADSET)
+void VRDevice::UpdateSpatialAudio(bool stereo)
+{
+   // Feed the head tracked pose to the spatial audio listener (in table space, VPU)
+   if (g_pplayer->m_audioPlayer)
+   {
+      // m_view maps table space to view space: its inverse maps the camera pose to table space
+      const Matrix3D headPose = Matrix3D::MatrixInverse(m_pfWorld.m_view[0]);
+      const Matrix3D rightEyePose = stereo ? Matrix3D::MatrixInverse(m_pfWorld.m_view[1]) : headPose;
+      const float posX = 0.5f * (headPose.m[3][0] + rightEyePose.m[3][0]);
+      const float posY = 0.5f * (headPose.m[3][1] + rightEyePose.m[3][1]);
+      const float posZ = 0.5f * (headPose.m[3][2] + rightEyePose.m[3][2]);
+      // Head basis vectors in table space (rows of the inverse view matrix, renormalized
+      // as the view matrix chain contains scaling): right = row 0, up = row 1, forward = -row 2
+      const float rLen = sqrtf(headPose.m[0][0] * headPose.m[0][0] + headPose.m[0][1] * headPose.m[0][1] + headPose.m[0][2] * headPose.m[0][2]);
+      const float rx = rLen > 0.f ? headPose.m[0][0] / rLen : 1.f;
+      const float ry = rLen > 0.f ? headPose.m[0][1] / rLen : 0.f;
+      const float rz = rLen > 0.f ? headPose.m[0][2] / rLen : 0.f;
+      const float uLen = sqrtf(headPose.m[1][0] * headPose.m[1][0] + headPose.m[1][1] * headPose.m[1][1] + headPose.m[1][2] * headPose.m[1][2]);
+      const float ux = uLen > 0.f ? headPose.m[1][0] / uLen : 0.f;
+      const float uy = uLen > 0.f ? headPose.m[1][1] / uLen : 0.f;
+      const float uz = uLen > 0.f ? headPose.m[1][2] / uLen : 1.f;
+      const float fLen = sqrtf(headPose.m[2][0] * headPose.m[2][0] + headPose.m[2][1] * headPose.m[2][1] + headPose.m[2][2] * headPose.m[2][2]);
+      const float fx = fLen > 0.f ? -headPose.m[2][0] / fLen : 0.f;
+      const float fy = fLen > 0.f ? -headPose.m[2][1] / fLen : -1.f;
+      const float fz = fLen > 0.f ? -headPose.m[2][2] / fLen : 0.f;
+      const float yaw = atan2f(-fx, -fy); // Positive = looking toward the player's left
+      const float pitch = atan2f(fz, sqrtf(fx * fx + fy * fy)); // Positive = looking up
+      // Roll = tilt of the head up vector against the up vector expected for an untilted head
+      // (world up projected on the plane normal to the forward vector)
+      const float upDot = fz; // world up (0,0,1) dot forward
+      float euX = -upDot * fx, euY = -upDot * fy, euZ = 1.f - upDot * fz;
+      const float euLen = sqrtf(euX * euX + euY * euY + euZ * euZ);
+      float roll = 0.f;
+      if (euLen > 1e-6f)
+      {
+         euX /= euLen;
+         euY /= euLen;
+         euZ /= euLen;
+         roll = atan2f(ux * rx + uy * ry + uz * rz, ux * euX + uy * euY + uz * euZ); // Positive = tilting head to the right
+      }
+      g_pplayer->m_audioPlayer->SetListenerPose(posX, posY, posZ, yaw, pitch, roll);
+   }
+}
+#endif
 
 void VRDevice::UpdateVRPosition(PartGroupData::SpaceReference spaceRef, ModelViewProj& mvp)
 {

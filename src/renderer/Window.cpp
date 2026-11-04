@@ -184,7 +184,7 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
    assert(fullscreenDisplayMode || (wnd_x + m_width) <= (selectedDisplay.left + selectedDisplay.videomode.width));
    assert(fullscreenDisplayMode || (wnd_y + m_height) <= (selectedDisplay.top + selectedDisplay.videomode.height));
    SDL_PropertiesID props;
-   if (g_isMobile && g_isIOS) // Window is already externally created
+   if (g_isMobile && (g_isIOS || g_isVisionOS)) // Window is already externally created
    {
       #ifdef __LIBVPINBALL__
          m_nwnd = VPinballLib::VPinballLib::Instance().GetWindow();
@@ -307,7 +307,7 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
 
 Window::~Window()
 {
-   if (!m_isVR && !(g_isMobile && g_isIOS))
+   if (!m_isVR && !(g_isMobile && (g_isIOS || g_isVisionOS)))
       SDL_RunOnMainThread([](void* userdata) { SDL_DestroyWindow(static_cast<SDL_Window*>(userdata)); }, m_nwnd, true);
 }
 

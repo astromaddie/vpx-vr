@@ -132,7 +132,13 @@
 #include "math/matrix.h"
 #include "parts/PartGroup.h"
 
+#ifdef VPX_VISIONOS_HEADSET
+#include "lib/include/vpinball/VPinballVision.h"
+#include <bgfx/bgfx.h>
+#endif
+
 class MeshBuffer;
+class RenderTarget;
 
 class VRDevice final
 {
@@ -193,6 +199,11 @@ public:
    void SetShowUILayer(bool show) { m_showUILayer = show; }
 
 private:
+   void UpdateWorldTransforms();
+#if defined(ENABLE_XR) || defined(VPX_VISIONOS_HEADSET)
+   void UpdateSpatialAudio(bool stereo);
+#endif
+
    unsigned int m_eyeWidth = 1080;
    unsigned int m_eyeHeight = 1020;
 
@@ -222,6 +233,21 @@ private:
    Matrix3D m_sceneProj[2];
 
    bool m_showUILayer = false;
+
+#ifdef VPX_VISIONOS_HEADSET
+public:
+   bool IsVisionReady() const { return m_visionHost.metalDevice != nullptr; }
+   const VPINBALL_VISION_HOST& GetVisionHost() const { return m_visionHost; }
+   bool UseDepthBuffer() const { return true; }
+   bgfx::TextureFormat::Enum GetDepthFormat() const { return bgfx::TextureFormat::D32F; }
+   RenderTarget* GetUIRenderTarget() const { return nullptr; }
+   void RenderVisionFrame(class RenderDevice* rd, const std::function<bool(RenderTarget*)>& submit);
+   void ReleaseVisionTarget();
+
+private:
+   VPINBALL_VISION_HOST m_visionHost{};
+   std::unique_ptr<RenderTarget> m_visionTarget;
+#endif
 
 #ifdef ENABLE_XR
 public:

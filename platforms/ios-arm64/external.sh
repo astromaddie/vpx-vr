@@ -4,6 +4,11 @@ set -e
 
 source ./platforms/config.sh
 
+APPLE_TARGET="${VPX_APPLE_TARGET:-ios-arm64}"
+REPO_ROOT="$PWD"
+BUILD_LIBS="../../../third-party/build-libs/${APPLE_TARGET}"
+mkdir -p "third-party/build-libs/${APPLE_TARGET}"
+
 echo "Building external libraries..."
 echo "  SDL_SHA: ${SDL_SHA}"
 echo "  SDL_IMAGE_SHA: ${SDL_IMAGE_SHA}"
@@ -28,10 +33,10 @@ echo "  LIBSPATIALAUDIO_SHA: ${LIBSPATIALAUDIO_SHA}"
 echo "  ZLIB_SHA: ${ZLIB_SHA}"
 echo ""
 
-NUM_PROCS=$(sysctl -n hw.ncpu)
+NUM_PROCS=${VPX_BUILD_JOBS:-$(sysctl -n hw.ncpu)}
 
-mkdir -p "external/ios-arm64/${BUILD_TYPE}"
-cd "external/ios-arm64/${BUILD_TYPE}"
+mkdir -p "external/${APPLE_TARGET}/${BUILD_TYPE}"
+cd "external/${APPLE_TARGET}/${BUILD_TYPE}"
 
 #
 # build SDL3, SDL3_image, SDL3_ttf#
@@ -50,7 +55,9 @@ if [ "${SDL3_EXPECTED_SHA}" != "${SDL3_FOUND_SHA}" ]; then
    tar xzf SDL-${SDL_SHA}.tar.gz
    mv SDL-${SDL_SHA} SDL
    cd SDL
-   cp -R ../../../../../platforms/ios-arm64/SDL/. .
+   if [ "$APPLE_TARGET" = ios-arm64 ]; then
+      cp -R "$REPO_ROOT/platforms/ios-arm64/SDL/." .
+   fi
    cmake \
       -DSDL_SHARED=OFF \
       -DSDL_STATIC=ON \
@@ -166,6 +173,10 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    cd bgfx.cmake
    rm -rf bgfx
    mv ../bgfx-${BGFX_PATCH_SHA} bgfx
+   if [ "$APPLE_TARGET" = visionos-arm64 ]; then
+      patch -p1 < "$REPO_ROOT/platforms/visionos-arm64/bgfx-cmake-visionos.patch"
+      patch -d bgfx -p1 < "$REPO_ROOT/platforms/visionos-arm64/bgfx-metal-command-queue.patch"
+   fi
    cmake -S. \
       -DBGFX_BUILD_EXAMPLES=OFF \
       -DBGFX_BUILD_TOOLS=OFF \
@@ -510,8 +521,16 @@ if [ "${FFMPEG_EXPECTED_SHA}" != "${FFMPEG_FOUND_SHA}" ]; then
    tar xzf FFmpeg-${FFMPEG_SHA}.tar.gz
    mv FFmpeg-${FFMPEG_SHA} ffmpeg
    cd ffmpeg
-   FFMPEG_IPHONEOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-   FFMPEG_IPHONEOS_FLAGS="-isysroot ${FFMPEG_IPHONEOS_SDK} -miphoneos-version-min=16.0"
+   if [ "$APPLE_TARGET" = visionos-arm64 ]; then
+      patch -p1 < "$REPO_ROOT/platforms/visionos-arm64/ffmpeg-videotoolbox.patch"
+      FFMPEG_SDK=$(xcrun --sdk xros --show-sdk-path)
+      FFMPEG_FLAGS="-isysroot ${FFMPEG_SDK} -target arm64-apple-xros2.0"
+      FFMPEG_LDFLAGS="$FFMPEG_FLAGS"
+   else
+      FFMPEG_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+      FFMPEG_FLAGS="-isysroot ${FFMPEG_SDK} -miphoneos-version-min=16.0"
+      FFMPEG_LDFLAGS="-Wl,-ld_classic $FFMPEG_FLAGS"
+   fi
    ./configure \
       --enable-cross-compile \
       --enable-static \
@@ -523,8 +542,8 @@ if [ "${FFMPEG_EXPECTED_SHA}" != "${FFMPEG_FOUND_SHA}" ]; then
       --disable-audiotoolbox \
       --disable-securetransport \
       --arch=arm64 \
-      --extra-cflags="${FFMPEG_IPHONEOS_FLAGS}" \
-      --extra-ldflags="-Wl,-ld_classic ${FFMPEG_IPHONEOS_FLAGS}"
+      --extra-cflags="$FFMPEG_FLAGS" \
+      --extra-ldflags="$FFMPEG_LDFLAGS"
    make -j${NUM_PROCS}
    cd ..
 
@@ -691,26 +710,26 @@ fi
 # copy libraries
 #
 
-cp SDL3/SDL/build/libSDL3.a ../../../third-party/build-libs/ios-arm64
+cp SDL3/SDL/build/libSDL3.a "$BUILD_LIBS"
 cp -r SDL3/SDL/include/SDL3 ../../../third-party/include/
 
-cp SDL3/SDL_image/build/libSDL3_image.a ../../../third-party/build-libs/ios-arm64
+cp SDL3/SDL_image/build/libSDL3_image.a "$BUILD_LIBS"
 cp -r SDL3/SDL_image/include/SDL3_image ../../../third-party/include/
 
-cp SDL3/SDL_ttf/build/libSDL3_ttf.a ../../../third-party/build-libs/ios-arm64
+cp SDL3/SDL_ttf/build/libSDL3_ttf.a "$BUILD_LIBS"
 cp -r SDL3/SDL_ttf/include/SDL3_ttf ../../../third-party/include/
-cp SDL3/SDL_ttf/build/external/freetype/libfreetype.a ../../../third-party/build-libs/ios-arm64
-cp SDL3/SDL_ttf/build/external/harfbuzz/libharfbuzz.a ../../../third-party/build-libs/ios-arm64
+cp SDL3/SDL_ttf/build/external/freetype/libfreetype.a "$BUILD_LIBS"
+cp SDL3/SDL_ttf/build/external/harfbuzz/libharfbuzz.a "$BUILD_LIBS"
 
-cp freeimage/freeimage/build/libfreeimage.a ../../../third-party/build-libs/ios-arm64
+cp freeimage/freeimage/build/libfreeimage.a "$BUILD_LIBS"
 cp freeimage/freeimage/Source/FreeImage.h ../../../third-party/include
 
-cp bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx.a ../../../third-party/build-libs/ios-arm64
+cp bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx.a "$BUILD_LIBS"
 cp -r bgfx/bgfx.cmake/bgfx/include/bgfx ../../../third-party/include/
-cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg.a ../../../third-party/build-libs/ios-arm64
-cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode.a ../../../third-party/build-libs/ios-arm64
+cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg.a "$BUILD_LIBS"
+cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode.a "$BUILD_LIBS"
 cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
-cp bgfx/bgfx.cmake/build/cmake/bx/libbx.a ../../../third-party/build-libs/ios-arm64
+cp bgfx/bgfx.cmake/build/cmake/bx/libbx.a "$BUILD_LIBS"
 
 # shaderc is a host tool (compiles the embedded BGFX shaders at build time):
 # place it under the host platform's tools dir so CMake can find it when cross-building.
@@ -724,7 +743,7 @@ mkdir -p "../../../third-party/tools/${HOST_TOOLS}"
 cp bgfx/bgfx.cmake/build-tools/cmake/bgfx/shaderc "../../../third-party/tools/${HOST_TOOLS}/"
 cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 
-cp pinmame/pinmame/build/libpinmame.a ../../../third-party/build-libs/ios-arm64
+cp pinmame/pinmame/build/libpinmame.a "$BUILD_LIBS"
 mkdir -p ../../../third-party/include/pinmame
 cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
 cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
@@ -734,49 +753,49 @@ cp -r pinmame-data/memmaps/index.json pinmame-data/memmaps/maps pinmame-data/mem
 mkdir -p ../../../third-party/gamedefs
 cp -r pinmame-data/gamedefs/catalog pinmame-data/gamedefs/machines pinmame-data/gamedefs/controllers ../../../third-party/gamedefs/
 
-cp libdmdutil/libdmdutil/build/libdmdutil.a ../../../third-party/build-libs/ios-arm64
+cp libdmdutil/libdmdutil/build/libdmdutil.a "$BUILD_LIBS"
 cp -r libdmdutil/libdmdutil/include/DMDUtil ../../../third-party/include/
-cp libdmdutil/libdmdutil/third-party/build-libs/ios/arm64/libzedmd.a ../../../third-party/build-libs/ios-arm64
+cp libdmdutil/libdmdutil/third-party/build-libs/ios/arm64/libzedmd.a "$BUILD_LIBS"
 cp libdmdutil/libdmdutil/third-party/include/ZeDMD.h ../../../third-party/include
-cp libserum/libserum/build/libserum.a ../../../third-party/build-libs/ios-arm64
+cp libserum/libserum/build/libserum.a "$BUILD_LIBS"
 cp libserum/libserum/src/serum.h ../../../third-party/include
 cp libserum/libserum/src/serum-decode.h ../../../third-party/include
-cp libpupdmd/libpupdmd/build/libpupdmd.a ../../../third-party/build-libs/ios-arm64
+cp libpupdmd/libpupdmd/build/libpupdmd.a "$BUILD_LIBS"
 cp libpupdmd/libpupdmd/src/pupdmd.h ../../../third-party/include
-cp libdmdutil/libdmdutil/third-party/build-libs/ios/arm64/libsockpp.a ../../../third-party/build-libs/ios-arm64
-cp libvni/libvni/build/libvni.a ../../../third-party/build-libs/ios-arm64
+cp libdmdutil/libdmdutil/third-party/build-libs/ios/arm64/libsockpp.a "$BUILD_LIBS"
+cp libvni/libvni/build/libvni.a "$BUILD_LIBS"
 cp libvni/libvni/src/vni.h ../../../third-party/include
 
-cp libaltsound/libaltsound/build/libaltsound.a ../../../third-party/build-libs/ios-arm64
+cp libaltsound/libaltsound/build/libaltsound.a "$BUILD_LIBS"
 cp libaltsound/libaltsound/src/altsound.h ../../../third-party/include
 
-cp libwinevbs/libwinevbs/build/libwinevbs.a ../../../third-party/build-libs/ios-arm64
+cp libwinevbs/libwinevbs/build/libwinevbs.a "$BUILD_LIBS"
 mkdir -p ../../../third-party/include/libwinevbs/wine/include
 mkdir -p ../../../third-party/include/libwinevbs/atl/include
 cp libwinevbs/libwinevbs/include/libwinevbs.h ../../../third-party/include/libwinevbs/
 cp -r libwinevbs/libwinevbs/wine/include/* ../../../third-party/include/libwinevbs/wine/include/
 cp -r libwinevbs/libwinevbs/atl/include/* ../../../third-party/include/libwinevbs/atl/include/
 
-cp libdof/libdof/build/libdof.a ../../../third-party/build-libs/ios-arm64
+cp libdof/libdof/build/libdof.a "$BUILD_LIBS"
 cp -r libdof/libdof/include/DOF ../../../third-party/include/
 
 for LIB in libavcodec libavformat libavutil libswresample libswscale; do
-   cp -a ffmpeg/ffmpeg/${LIB}/${LIB}.a ../../../third-party/build-libs/ios-arm64
+   cp -a ffmpeg/ffmpeg/${LIB}/${LIB}.a "$BUILD_LIBS"
    mkdir -p ../../../third-party/include/${LIB}
    cp ffmpeg/ffmpeg/${LIB}/*.h ../../../third-party/include/${LIB}
 done
 
-cp libzip/libzip/build/lib/libzip.a ../../../third-party/build-libs/ios-arm64
+cp libzip/libzip/build/lib/libzip.a "$BUILD_LIBS"
 cp libzip/libzip/build/zipconf.h ../../../third-party/include
 cp libzip/libzip/lib/zip.h ../../../third-party/include
 
-cp zlib/zlib/build/libz.a ../../../third-party/build-libs/ios-arm64
+cp zlib/zlib/build/libz.a "$BUILD_LIBS"
 
-cp libmysofa/libmysofa/build/src/libmysofa.a ../../../third-party/build-libs/ios-arm64
+cp libmysofa/libmysofa/build/src/libmysofa.a "$BUILD_LIBS"
 cp libmysofa/libmysofa/src/hrtf/mysofa.h ../../../third-party/include
 cp libmysofa/libmysofa/src/hrtf/mysofa_export.h ../../../third-party/include
 
-cp libspatialaudio/libspatialaudio/build/libspatialaudio.a ../../../third-party/build-libs/ios-arm64
+cp libspatialaudio/libspatialaudio/build/libspatialaudio.a "$BUILD_LIBS"
 mkdir -p ../../../third-party/include/spatialaudio
 cp -r libspatialaudio/libspatialaudio/include/*.h libspatialaudio/libspatialaudio/include/{adm,dsp,hrtf,kiss_fft} ../../../third-party/include/spatialaudio
 cp libspatialaudio/libspatialaudio/build/include/SpatialaudioConfig.h ../../../third-party/include/spatialaudio

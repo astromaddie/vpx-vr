@@ -10,11 +10,14 @@ import simd
 final class CabinetHandTracking {
     private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
     private var controls: CabinetHandControls
+    private let layoutHasPlunger: Bool
     private let send: (CabinetInput) -> Void
+    let world = WorldTrackingProvider()
     private var cabinetFromOrigin: simd_float4x4?
 
     init(layout: CabinetControlsLayout, send: @escaping (CabinetInput) -> Void) {
         controls = CabinetHandControls(layout: layout)
+        layoutHasPlunger = layout.plunger != nil
         self.send = send
     }
 
@@ -35,7 +38,6 @@ final class CabinetHandTracking {
     ) async {
         let session = ARKitSession()
         let hands = HandTrackingProvider()
-        let world = WorldTrackingProvider()
         defer {
             session.stop()
             reset()
@@ -150,7 +152,8 @@ final class CabinetHandTracking {
             palmNormal = nil
         }
         let sample = CabinetHandSample(
-            palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal
+            palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
+            thumb: layoutHasPlunger ? joint(.thumbTip) : nil
         )
         controls.update(side, sample: sample, at: time).forEach(send)
     }

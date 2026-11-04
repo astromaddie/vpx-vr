@@ -10,7 +10,7 @@ Open `CabinetHands.xcodeproj`, select the **CabinetHands** scheme, and run on a 
 
 The cabinet keeps the real hands visible in mixed immersion. The simulator can show the layout. Live hand tracking, reach and timing need a headset check.
 
-The gesture recognizer takes tracked joints in metres relative to the cabinet. The ARKit adapter turns world-space samples into those local coordinates. Both the preview and a future player can consume `CabinetInput` events. The player should send those events through its existing `InputManager` as a separate input device, with held left and right flippers and button presses for Add Credit and Start. A table's render transform must also position the hit zones. Clear held buttons when the cabinet moves, play pauses or tracking is lost.
+The gesture recognizer takes tracked joints in metres relative to the cabinet. The ARKit adapter turns world-space samples into those local coordinates. Both apps use the same Build 4 recognizer and cabinet placement. The native player sends its held flippers and button presses through VPX's input manager. Grab the plunger to the right of the coin door with your thumb and index finger. Pull it toward you, then open your fingers. A longer pull gives the ball more speed.
 
 To check the recognizer on the Mac from this directory:
 
@@ -31,7 +31,20 @@ The player can keep a table's authored cabinet and resolve control locations fro
 
 ## Native VPX bring-up
 
-I built the pinned SDL, PinMAME, BGFX and VBScript libraries for ARM64 visionOS with the Xcode 26.5 SDK. The Data East VR Room Time Machine table requests `tmac_a24`. Each of the five files in that ROM archive matched the CRC and SHA-1 in the pinned PinMAME driver. A small visionOS executable linked the PinMAME game lookup and headless BGFX Metal. The full VPX build still has no visionOS target, and the table renderer's stereo frame loop uses OpenXR.
+The native player builds VPX and its plugins for ARM64 visionOS. Its Compositor Services host supplies the two predicted eye poses and submits color and depth from BGFX on a shared Metal queue. The standalone hand-control preview remains a separate Xcode scheme.
+
+Build the dependencies with CMake, Ninja, and Bison 3.8.2 or newer on the path, using the full Xcode SDK.
+
+```sh
+BUILD_TYPE=Release CMAKE_GENERATOR=Ninja platforms/visionos-arm64/external.sh
+cmake -S . -B build-visionos -G Ninja -DPLATFORM=visionos -DARCH=arm64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-visionos --target vpinball --parallel 2
+```
+
+Open `CabinetHands.xcodeproj`, select the **VPXVision** scheme and the Vision Pro, and set `VPX_NATIVE_BUILD_DIR` to the absolute path of the CMake build directory. Import the VR Room Time Machine table into the app's `Documents/Time Machine/` folder and put its `tmac_a24.zip` in `Documents/Time Machine/pinmame/roms/`. Choose **Play Time Machine** and hold your head steady to place the cabinet.
+
+The Vision Pro path uses VPX's shared stereo culling, texture budget, and spatial audio code. Set `VPX_VR_PERF=5` in the launch environment to log the same timing breakdown as the Frame. Packed HDR can be compared with `VPX_PACKED_HDR=0|1`.
+
 
 ### Build the pinned libraries
 

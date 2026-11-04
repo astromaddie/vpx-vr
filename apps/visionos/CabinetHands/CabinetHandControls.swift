@@ -9,6 +9,7 @@ struct CabinetControlsLayout {
     // The default preview uses Time Machine's 1,000 by 1,910 VP units.
     var playfieldWidth: Float = 0.53975
     var playfieldLength: Float = 1.0309225
+    var plunger: SIMD3<Float>? = nil
 
     // VPX's lockbar calculation leaves 2 1/4 inches around the playfield.
     var width: Float { playfieldWidth + 0.05715 }
@@ -32,15 +33,17 @@ struct CabinetHandSample {
     var index: SIMD3<Float>?
     var fingerDirection: SIMD3<Float>?
     var palmNormal: SIMD3<Float>?
+    var thumb: SIMD3<Float>?
 }
 
 enum CabinetAction: Hashable {
-    case leftFlipper, rightFlipper, addCredit, start
+    case leftFlipper, rightFlipper, addCredit, start, launchBall
 }
 
 enum CabinetInput: Equatable {
     case flipper(CabinetHandSide, pressed: Bool)
     case insertCoin, pressStart
+    case pullPlunger(Float), releasePlunger(Float), cancelPlunger
 
     var action: CabinetAction {
         switch self {
@@ -48,6 +51,7 @@ enum CabinetInput: Equatable {
         case .flipper(.right, _): .rightFlipper
         case .insertCoin: .addCredit
         case .pressStart: .start
+        case .pullPlunger, .releasePlunger, .cancelPlunger: .launchBall
         }
     }
 }
@@ -57,24 +61,75 @@ struct CabinetHandControls {
     let layout: CabinetControlsLayout
     private var left = Hand()
     private var right = Hand()
+    private var plunger = PlungerGrip()
 
     init(layout: CabinetControlsLayout = .init()) {
         self.layout = layout
     }
 
     mutating func update(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) -> [CabinetInput] {
-        switch side {
+        let buttons = switch side {
         case .left: left.update(.left, sample: sample, layout: layout, time: time)
         case .right: right.update(.right, sample: sample, layout: layout, time: time)
         }
+        guard let handle = layout.plunger else { return buttons }
+        return buttons + plunger.update(side, sample: sample, handle: handle, time: time)
     }
 
     mutating func expire(at time: Double) -> [CabinetInput] {
-        left.expire(.left, time: time) + right.expire(.right, time: time)
+        left.expire(.left, time: time) + right.expire(.right, time: time) + plunger.expire(at: time)
     }
 
     mutating func reset() -> [CabinetInput] {
-        left.reset(.left) + right.reset(.right)
+        left.reset(.left) + right.reset(.right) + plunger.reset()
+    }
+
+    private struct PlungerGrip {
+        private static let stroke: Float = 0.0762
+        private var hand: CabinetHandSide?
+        private var grabDepth: Float = 0
+        private var pull: Float = 0
+        private var lastSample: Double = 0
+
+        mutating func reset() -> [CabinetInput] {
+            guard hand != nil else { return [] }
+            self = PlungerGrip()
+            return [.cancelPlunger]
+        }
+
+        mutating func expire(at time: Double) -> [CabinetInput] {
+            time - lastSample > CabinetHandControls.trackingTimeout ? reset() : []
+        }
+
+        mutating func update(
+            _ side: CabinetHandSide, sample: CabinetHandSample?, handle: SIMD3<Float>, time: Double
+        ) -> [CabinetInput] {
+            let expired = expire(at: time)
+            guard hand == nil || hand == side else { return expired }
+            guard let thumb = sample?.thumb, let index = sample?.index else { return expired + reset() }
+            let gap = simd_distance(thumb, index)
+            let center = (thumb + index) * 0.5
+            let offset = center - handle
+            if hand == nil {
+                guard gap <= 0.024, simd_length_squared(offset) <= 0.047 * 0.047 else { return expired }
+                hand = side
+                grabDepth = center.z
+                lastSample = time
+                return expired + [.pullPlunger(0)]
+            }
+
+            lastSample = time
+            if gap >= 0.042 {
+                let released = pull
+                self = PlungerGrip()
+                return released >= 0.04 ? [.releasePlunger(released)] : [.cancelPlunger]
+            }
+            guard simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.10 * 0.10 else { return reset() }
+            let newPull = min(max((center.z - grabDepth) / Self.stroke, 0), 1)
+            guard abs(newPull - pull) >= 0.005 else { return [] }
+            pull = newPull
+            return [.pullPlunger(pull)]
+        }
     }
 
     private struct Hand {

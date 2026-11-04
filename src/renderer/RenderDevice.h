@@ -338,6 +338,9 @@ private:
    static colorFormat BGFXtoVPXTextureFormat(bgfx::TextureFormat::Enum format);
    static void RenderThread(RenderDevice* rd, bgfx::Init init);
    void BGFXDesktopRenderLoop(const bgfx::Init& init);
+#ifdef VPX_VISIONOS_HEADSET
+   void BGFXVisionRenderLoop();
+#endif
 #ifdef ENABLE_XR
    void BGFXOpenXRRenderLoop(const bgfx::Init& init);
 #endif

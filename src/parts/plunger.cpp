@@ -1284,6 +1284,17 @@ STDMETHODIMP Plunger::put_MechStrength(float newVal)
    return S_OK;
 }
 
+#ifdef VPX_VISIONOS_HEADSET
+void Plunger::ReleaseMechanicalPull(float pull)
+{
+   if (!m_phitplunger || !m_d.m_mechPlunger || m_d.m_autoPlunger)
+      return;
+
+   auto& mover = m_phitplunger->m_plungerMover;
+   mover.Fire(lerp(mover.m_restPos, 1.f, clamp(pull, 0.f, 1.f)));
+}
+#endif
+
 STDMETHODIMP Plunger::get_MechPlunger(VARIANT_BOOL *pVal)
 {
    *pVal = FTOVB(m_d.m_mechPlunger);

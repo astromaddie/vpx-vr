@@ -264,6 +264,17 @@ Player::Player(PinTable *const table, const PlayMode playMode, LoadProgress &loa
             m_vrDevice = nullptr;
          }
       }
+   #elif defined(VPX_VISIONOS_HEADSET)
+      if (m_playMode != PlayMode::LiveEdit && m_playMode != PlayMode::FullEdit)
+      {
+         m_vrDevice = new VRDevice(m_ptable->GetSettings());
+         useVR = m_vrDevice->IsVisionReady();
+         if (!useVR)
+         {
+            delete m_vrDevice;
+            m_vrDevice = nullptr;
+         }
+      }
    #endif
 
    #ifdef ENABLE_DX9

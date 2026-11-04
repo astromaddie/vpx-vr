@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 # Single build file for every target, selected by three cache variables (default to host BGFX):
 #   RENDERER  BGFX (default), GL, DX9
-#   PLATFORM  macos, linux, windows, windows-mingw, ios, ios-simulator, android, wasm
+#   PLATFORM  macos, linux, windows, windows-mingw, ios, ios-simulator, visionos, android, wasm
 #   ARCH      x64, x86, arm64, aarch64, arm64-v8a, wasm32
 
 if(CMAKE_HOST_APPLE)
@@ -46,6 +46,7 @@ set(_vpx_valid_combos
    BGFX-linux
    BGFX-ios
    BGFX-ios-simulator
+   BGFX-visionos
    BGFX-android
    BGFX-wasm
    GL-windows
@@ -65,6 +66,11 @@ if(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator")
       set(CMAKE_OSX_SYSROOT iphonesimulator)
    endif()
    set(CMAKE_OSX_DEPLOYMENT_TARGET 18.0)
+elseif(PLATFORM STREQUAL "visionos")
+   set(CMAKE_SYSTEM_NAME visionOS)
+   set(CMAKE_OSX_SYSROOT xros)
+   set(CMAKE_OSX_DEPLOYMENT_TARGET 2.0)
+   set(CMAKE_OSX_ARCHITECTURES arm64)
 elseif(PLATFORM STREQUAL "android")
    set(CMAKE_SYSTEM_NAME Android)
    set(CMAKE_SYSTEM_VERSION 33)
@@ -98,11 +104,11 @@ if(PLATFORM STREQUAL "linux")
    option(ENABLE_XR "Enable OpenXR support (BGFX only)" ON)
    message(STATUS "ENABLE_XR: ${ENABLE_XR}")
 endif()
-if(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "android")
+if(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "visionos" OR PLATFORM STREQUAL "android")
    option(ENABLE_XR "Enable OpenXR support" OFF)
    message(STATUS "ENABLE_XR: ${ENABLE_XR}")
-   if((PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator") AND ENABLE_XR)
-      message(FATAL_ERROR "iOS does not support ENABLE_XR")
+   if(NOT PLATFORM STREQUAL "android" AND ENABLE_XR)
+      message(FATAL_ERROR "${PLATFORM} does not support the OpenXR player")
    endif()
 endif()
 
@@ -174,7 +180,7 @@ elseif(PLATFORM STREQUAL "macos")
 elseif(PLATFORM STREQUAL "linux")
    set(CMAKE_INSTALL_RPATH "$ORIGIN")
    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-elseif(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "android")
+elseif(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "visionos" OR PLATFORM STREQUAL "android")
    add_compile_options(-fPIC)
 elseif(PLATFORM STREQUAL "wasm")
    add_compile_options(-pthread -fwasm-exceptions)
@@ -185,7 +191,7 @@ if(BUILD_APP)
    include("${CMAKE_SOURCE_DIR}/make/CMakeLists_sources.txt")
    include("${CMAKE_SOURCE_DIR}/make/CMakeLists_shaders.txt")
    include("${CMAKE_SOURCE_DIR}/make/CMakeLists_app.txt")
-   if(NOT (PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "android" OR PLATFORM STREQUAL "wasm"))
+   if(NOT (PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM STREQUAL "visionos" OR PLATFORM STREQUAL "android" OR PLATFORM STREQUAL "wasm"))
       include("${CMAKE_SOURCE_DIR}/make/CMakeLists_test.txt")
    endif()
 endif()

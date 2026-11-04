@@ -2,10 +2,16 @@
 
 #pragma once
 
-#ifdef _MSC_VER
-#define VPINBALLAPI extern "C" __declspec(dllexport)
+#ifdef __cplusplus
+#define VPINBALL_EXTERN_C extern "C"
 #else
-#define VPINBALLAPI extern "C" __attribute__((visibility("default")))
+#define VPINBALL_EXTERN_C extern
+#endif
+
+#ifdef _MSC_VER
+#define VPINBALLAPI VPINBALL_EXTERN_C __declspec(dllexport)
+#else
+#define VPINBALLAPI VPINBALL_EXTERN_C __attribute__((visibility("default")))
 #endif
 
 // Enums
