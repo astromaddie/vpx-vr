@@ -129,28 +129,53 @@ bug. `reset_linear_pool` does the same with the pool created without
 `FREE_DESCRIPTOR_SET_BIT`, as the patched BGFX does, and returns normally. The probe creates
 no shaders, swapchain or XR session.
 
-## Table acceptance list
+## Installed Table Library
 
-Black Hole BigusMOD 2.0 and 4 Queens 1.2 are stored under
-`~/Documents/VPXFrame/Tables/` on the Frame. Transfer sizes and SHA-256 hashes match the
-extracted iCloud originals. These are compatibility gates, not passing claims. Use each
-table's own script and companion files as authoritative for ROM requirements; do not
-substitute a ROM set by name alone.
+The Frame keeps the tables in `~/Documents/VPXFrame/Tables/`, separate from the versioned
+application bundle. On 4 November 2026 I added seven tables from the supplied `pinball`
+folder, alongside 4 Queens. The installed engine is build `c8b2607`.
 
-| Target | Known setup | Acceptance gate |
-| --- | --- | --- |
-| Black Hole (Gottlieb, 1981) | User's BigusMOD 2.0 table defaults to `RomSet = 2`, requiring `blkhole2.zip`; that ROM file is pending | Load the supplied file and verify playfield rendering and gameplay |
-| Time Machine (Data East, 1988) | User confirmed Data East version; common set is `tmac_a24`, but its exact table file is pending | Inspect the supplied table script, verify its ROM requirement and gameplay |
-| 4 Queens (Bally, 1970) | User's 1.2 table is electromechanical; embedded game name is `Bally4Queens_1970` and no ROM is referenced | Verify the exact VPX file loads and its controller script works in standalone mode |
-| Attack from Mars (Bally, 1995) | PinMAME ROM table; common set is `afm_113b`, but its exact table file is pending | Inspect the supplied table script, verify its ROM requirement and gameplay |
+| Table | Supplied Version | ROM Set | Steam Entry |
+| --- | --- | --- | --- |
+| 4 Queens | 1.2 | Electromechanical; no ROM | `VPX_4_Queens` |
+| Attack from Mars | g5k 1.3.11 | `afm_113b` | `VPX_Attack_from_Mars` |
+| Black Hole | 1981 table | `blckhole` | `VPX_Black_Hole` |
+| Gorgar | 2.0 | `grgar_l1` | `VPX_Gorgar` |
+| Meteor | Stern 1979 table | `meteorb` | `VPX_Meteor` |
+| Middle Earth | 1.00 Flipperspiel | `midearth` (incomplete) | `VPX_Middle_Earth` |
+| The Machine: Bride of Pinbot | 2.1 Flipperspiel | `bop_l7` | `VPX_Bride_of_Pinbot` |
+| Time Machine | Data East VR Room 1.0 Flipperspiel | `tmac_a24` | `VPX_Time_Machine` |
 
-## Remaining acceptance gates
+Steam displays these entries with its `Devkit Game: ` prefix. The seven new entries have
+72 Hz and 2160x2160 per-eye targets. The existing 4 Queens entry retains its saved 120 Hz
+and 2160x2160 targets; a refresh-rate setting alone does not establish achieved frame rate.
 
-- Run the example table through its Steam entry on the current build.
-- Bring GPU time within the 72 Hz frame budget: 4 Queens currently averages 17.9 ms of
-  application GPU time per frame, and the compositor reprojects most frames.
-- Confirm both projected eye images using runtime capture or wearer inspection.
-- Exercise triggers, squeeze values, right ABXY, Menu, View short press and 1-second hold, vector2
-  plunger/nudge input, focus loss and return from standby.
-- Test each exact table version with its locally supplied dependencies, then complete wearer
-  comfort and play acceptance.
+The supplied ROM ZIPs are unchanged in `~/Documents/VPXFrame/PinMAME/roms/`. Each new table
+folder has a `pinmame` symlink to that shared root, so PinMAME can find the ROMs and keep its
+writable data outside the application bundle. Black Hole and Bride of Pinbot also have their
+supplied backglasses, with `AddBackglass=1` in their table-local VR settings.
+
+Black Hole's embedded script defaults to `RomSet = 5` (`blkhole7`). I installed a table-local
+`.vbs` override that changes only the supported selector to `RomSet = 1`, matching the
+supplied `blckhole.zip`. The VPX file is unchanged. The earlier BigusMOD 2.0 table remains in
+its separate folder; it defaults to `blkhole2` and is not the target of the new Steam entry.
+
+I checked all 16 transferred files against their source SHA-256 hashes and audited the ROM
+contents with the installed native PinMAME library. Six sets pass. Middle Earth is missing
+`20252-01.bin`, a 512-byte PROM with CRC32 `3d44551d`. Its supplied `82s130.bin` has CRC32
+`da1f77b4` and cannot substitute for it. The table and Steam entry are installed, but the
+correct PROM is still needed.
+
+The import record is in `~/Documents/VPXFrame/imports/20261104-20261104T061009Z/` on the
+Frame. `install-receipt.json` records source hashes, table paths, Steam AppIDs and verified
+display settings; `rom-audit.json` records the native ROM audit. The same folder retains the
+pre-install configuration backup. Launcher syntax, entry paths, ROM links and saved display
+settings passed the installation checks.
+
+## Table Compatibility Checks
+
+For each exact table version, check script startup, playfield and backglass rendering, then
+exercise the table's controls and gameplay. Check triggers, squeeze values, right ABXY,
+Menu, View short press and 1-second hold, vector2 plunger/nudge input, focus loss and return
+from standby. Use the performance logging described above to measure each table at its
+chosen display settings.
