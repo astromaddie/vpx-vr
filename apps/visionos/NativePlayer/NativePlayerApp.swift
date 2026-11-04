@@ -60,6 +60,16 @@ private struct TableWindow: View {
     }
 }
 
+// VPX invokes this from the table loader as well as the main thread.
+private nonisolated func nativePlayerEvent(_ event: VPINBALL_EVENT, _: UnsafePointer<CChar>?) {
+    switch event {
+    case VPINBALL_EVENT_PLAYER_READY, VPINBALL_EVENT_PLAYER_CLOSED, VPINBALL_EVENT_PLAYER_FAILED:
+        Task { @MainActor in NativePlayer.shared.receive(event) }
+    default:
+        break
+    }
+}
+
 @MainActor
 @Observable
 private final class NativePlayer {
@@ -96,9 +106,7 @@ private final class NativePlayer {
             let layout = CabinetControlsLayout(plunger: SIMD3(0.24, -0.095, 0.040))
             let tracker = CabinetHandTracking(layout: layout, send: handle)
             let compositor = try NativeCompositor(layer: layer, world: tracker.world)
-            guard compositor.configurePlayer(), VPinballVisionInit({ event, _ in
-                Task { @MainActor in NativePlayer.shared.receive(event) }
-            }) == VPINBALL_STATUS_SUCCESS else {
+            guard compositor.configurePlayer(), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
                 status = "Couldn’t initialize VPX."
                 needsDismissal = true
                 return
@@ -147,7 +155,7 @@ private final class NativePlayer {
         }
     }
 
-    private func receive(_ event: VPINBALL_EVENT) {
+    fileprivate func receive(_ event: VPINBALL_EVENT) {
         switch event {
         case VPINBALL_EVENT_PLAYER_READY:
             loading = false
