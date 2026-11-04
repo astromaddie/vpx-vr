@@ -122,6 +122,23 @@ namespace
       bool stop = false;
       vector<std::pair<std::filesystem::path, vector<B2SDMDDisplay>>> jobs; // Pending saves, at most one per file
       vector<string> errors; // Failed saves, not yet reported
+
+      void Join(bool reportErrors)
+      {
+         if (!thread.joinable())
+            return;
+         {
+            std::lock_guard lock(mutex);
+            stop = true;
+            if (!reportErrors)
+               msgApi = nullptr;
+         }
+         cv.notify_one();
+         thread.join();
+      }
+
+      // The process can exit while a table is still open, without a plugin unload.
+      ~FileWriter() { Join(false); }
    };
    FileWriter fileWriter;
 
@@ -250,7 +267,8 @@ namespace
          if (!error.empty())
          {
             fileWriter.errors.push_back(std::move(error));
-            fileWriter.msgApi->RunOnMainThread(fileWriter.endpointId, 0., ReportSaveErrors, nullptr);
+            if (fileWriter.msgApi)
+               fileWriter.msgApi->RunOnMainThread(fileWriter.endpointId, 0., ReportSaveErrors, nullptr);
          }
       }
    }
@@ -291,12 +309,7 @@ void B2SServer::StopFileWriter()
 {
    if (!fileWriter.thread.joinable())
       return;
-   {
-      std::lock_guard lock(fileWriter.mutex);
-      fileWriter.stop = true;
-   }
-   fileWriter.cv.notify_one();
-   fileWriter.thread.join(); // Pending saves are completed
+   fileWriter.Join(true); // Pending saves are completed
    fileWriter.msgApi->FlushPendingCallbacks(fileWriter.endpointId); // Reports their errors
    fileWriter.msgApi = nullptr;
    fileWriter.vpxApi = nullptr;
