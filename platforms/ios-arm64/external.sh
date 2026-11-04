@@ -223,6 +223,9 @@ fi
 #
 
 PINMAME_EXPECTED_SHA="${PINMAME_SHA}"
+if [ -n "${VPX_VISIONOS_SDK:-}" ]; then
+   PINMAME_EXPECTED_SHA="${PINMAME_EXPECTED_SHA}_time_fence_001"
+fi
 PINMAME_FOUND_SHA="$([ -f pinmame/cache.txt ] && cat pinmame/cache.txt || echo "")"
 
 if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
@@ -236,6 +239,9 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
+   if [ -n "${VPX_VISIONOS_SDK:-}" ]; then
+      patch -p1 < "$REPO_ROOT/platforms/visionos-arm64/pinmame-time-fence.patch"
+   fi
    cp cmake/libpinmame/CMakeLists.txt .
    cmake \
       -DPLATFORM=ios \

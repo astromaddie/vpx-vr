@@ -1,0 +1,49 @@
+--- a/src/cpuexec.c
++++ b/src/cpuexec.c
+@@ -923,0 +924 @@
++#include <pthread.h>
+@@ -925 +926 @@
+-static int time_fence_initialized = 0;
++static pthread_mutex_t time_fence_lock = PTHREAD_MUTEX_INITIALIZER;
+@@ -933,3 +934,2 @@
+-	if (!time_fence_initialized)
+-	{
+-		time_fence_initialized = 1;
++	pthread_mutex_lock(&time_fence_lock);
++	if (time_fence_semaphore == NULL)
+@@ -937,2 +937,3 @@
+-	}
+-	return 1;
++	const int supported = time_fence_semaphore != NULL;
++	pthread_mutex_unlock(&time_fence_lock);
++	return supported;
+@@ -943 +944,2 @@
+-	if (time_fence_initialized)
++	pthread_mutex_lock(&time_fence_lock);
++	if (time_fence_semaphore != NULL)
+@@ -944,0 +947 @@
++	pthread_mutex_unlock(&time_fence_lock);
+@@ -948,0 +952,8 @@
++	pthread_mutex_lock(&time_fence_lock);
++	dispatch_semaphore_t semaphore = time_fence_semaphore;
++	if (semaphore != NULL)
++		dispatch_retain(semaphore);
++	pthread_mutex_unlock(&time_fence_lock);
++	if (semaphore == NULL)
++		return 0;
++
+@@ -951 +962,3 @@
+-	return time_fence_is_supported() && (dispatch_semaphore_wait(time_fence_semaphore, wait_length) == 0);
++	const int signaled = dispatch_semaphore_wait(semaphore, wait_length) == 0;
++	dispatch_release(semaphore);
++	return signaled;
+@@ -956 +969,2 @@
+-	if (time_fence_initialized)
++	pthread_mutex_lock(&time_fence_lock);
++	if (time_fence_semaphore != NULL)
+@@ -959,2 +973,3 @@
+-		time_fence_initialized = 0;
+-	}
++		time_fence_semaphore = NULL;
++	}
++	pthread_mutex_unlock(&time_fence_lock);
