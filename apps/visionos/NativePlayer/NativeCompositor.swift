@@ -64,6 +64,7 @@ final class NativeCompositor: @unchecked Sendable {
     private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
     private let layer: LayerRenderer
     private let world: WorldTrackingProvider
+    private let mixedReality: Bool
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
@@ -80,9 +81,10 @@ final class NativeCompositor: @unchecked Sendable {
     var isClosed: Bool { layer.state == .invalidated }
     var hasPresentedTable: Bool { handoff.withLock { $0.presentedPicture } }
 
-    init(layer: LayerRenderer, world: WorldTrackingProvider) throws {
+    init(layer: LayerRenderer, world: WorldTrackingProvider, mixedReality: Bool) throws {
         self.layer = layer
         self.world = world
+        self.mixedReality = mixedReality
         let device = layer.device
         guard let queue = device.makeCommandQueue() else { throw SetupError.metal }
         self.queue = queue
@@ -133,6 +135,7 @@ final class NativeCompositor: @unchecked Sendable {
                       Unmanaged.passUnretained(pictures[1].depth as AnyObject).toOpaque())
         host.width = UInt32(pictures[0].color.width)
         host.height = UInt32(pictures[0].color.height)
+        host.mixedReality = mixedReality ? 1 : 0
         host.beginFrame = { user, frame in
             guard let user, let frame else { return 0 }
             let renderer = Unmanaged<NativeCompositor>.fromOpaque(user).takeUnretainedValue()
@@ -306,6 +309,7 @@ final class NativeCompositor: @unchecked Sendable {
                     }
                     pass.colorAttachments[0].loadAction = alreadyCleared ? .load : .clear
                     pass.colorAttachments[0].storeAction = .store
+                    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, mixedReality ? 0 : 1)
                     pass.depthAttachment.texture = drawable.depthTextures[map.textureIndex]
                     pass.depthAttachment.slice = map.sliceIndex
                     pass.depthAttachment.loadAction = alreadyCleared ? .load : .clear
@@ -315,13 +319,13 @@ final class NativeCompositor: @unchecked Sendable {
                     guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { continue }
                     if let completed {
                         let picture = pictures[completed.buffer]
-                        var slice = UInt32(eye)
+                        var copyOptions = SIMD2(UInt32(eye), mixedReality ? 1 : 0)
                         encoder.setViewport(map.viewport)
                         encoder.setRenderPipelineState(pipeline)
                         encoder.setDepthStencilState(depthState)
                         encoder.setFragmentTexture(picture.color, index: 0)
                         encoder.setFragmentTexture(picture.depth, index: 1)
-                        encoder.setFragmentBytes(&slice, length: MemoryLayout<UInt32>.size, index: 0)
+                        encoder.setFragmentBytes(&copyOptions, length: MemoryLayout<SIMD2<UInt32>>.size, index: 0)
                         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                         drewTable = true
                     }
@@ -361,12 +365,17 @@ final class NativeCompositor: @unchecked Sendable {
     fragment EyePixel copyEye(EyeVertex v [[stage_in]],
                               texture2d_array<half> color [[texture(0)]],
                               depth2d_array<float> depth [[texture(1)]],
-                              constant uint& eye [[buffer(0)]]) {
+                              constant uint2& options [[buffer(0)]]) {
         constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
         constexpr sampler depthSampler(coord::normalized, address::clamp_to_edge, filter::nearest);
-        // VPX tone maps stereo frames to linear RGB.
+        const uint eye = options.x;
+        const float reverseDepth = 1.0 - depth.sample(depthSampler, v.uv, eye);
+        // VPX clears its conventional depth to 1. Keep the passthrough visible
+        // there and submit opaque premultiplied color wherever VPX drew geometry.
+        if (options.y && reverseDepth <= 0.0)
+            return { half4(0), 0.0 };
         half3 linear = color.sample(colorSampler, v.uv, eye).rgb;
-        return { half4(linear, 1), 1.0 - depth.sample(depthSampler, v.uv, eye) };
+        return { half4(linear, 1), reverseDepth };
     }
     """
 }

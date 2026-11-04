@@ -7,6 +7,7 @@
 #include "input/PlungerHandler.h"
 #include "parts/pintable.h"
 #include "parts/plunger.h"
+#include "renderer/VRDevice.h"
 #include "VPinballLib.h"
 #include "../include/vpinball/VPinballVision.h"
 
@@ -59,6 +60,13 @@ VPINBALLAPI void VPinballVisionTick(void)
    while (SDL_PollEvent(&event))
       lib.AppEvent(&event);
    lib.AppIterate();
+}
+
+VPINBALLAPI float VPinballVisionCabinetHeight(void)
+{
+   if (!SDL_IsMainThread() || !g_pplayer || !g_pplayer->m_vrDevice)
+      return 0.f;
+   return g_pplayer->m_vrDevice->GetVisionCabinetHeight();
 }
 
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed)

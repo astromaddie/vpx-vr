@@ -27,7 +27,7 @@ The checks cover independent flippers, wrist turns with the palm held still, jit
 
 The supplied Data East Time Machine example (VPX file version 1060) has a 1,000 × 1,910 VP-unit playfield, separate room surfaces, and authored cabinet, backbox, backglass and coin-door primitives. Its `PinCab_Buttons` primitive groups buttons in one mesh, so its origin can't locate each button. The preview takes its dimensions from that playfield and draws a generic cabinet with separate controls.
 
-The player can keep a table's authored cabinet and resolve control locations from an explicit table profile when the mesh doesn't identify them. For tables without a cabinet, use the playfield bounds converted to metres to fit the generic cabinet and place its controls. VPX's own `blankTable.vpz` has separate cabinet, rails, legs, backbox, Start and flipper button parts. That is a reference for a reusable cabinet whose geometry doesn't depend on a user's table artwork. VPX already distinguishes the cabinet, playfield and room transforms, which would also let the player show the cabinet in passthrough without drawing a separate room where the table identifies that room.
+The player can keep a table's authored cabinet and resolve control locations from an explicit table profile when the mesh doesn't identify them. For tables without a cabinet, use the playfield bounds converted to metres to fit the generic cabinet and place its controls. VPX's own `blankTable.vpz` has separate cabinet, rails, legs, backbox, Start and flipper button parts. That is a reference for a reusable cabinet whose geometry doesn't depend on a user's table artwork. VPX already distinguishes cabinet, playfield and room transforms. The native player uses those references to omit room geometry in passthrough and recognizes the four room parts in the legacy Time Machine file.
 
 ## Native VPX bring-up
 
@@ -41,7 +41,7 @@ cmake -S . -B build-visionos -G Ninja -DPLATFORM=visionos -DARCH=arm64 -DCMAKE_B
 cmake --build build-visionos --target vpinball --parallel 2
 ```
 
-Open `CabinetHands.xcodeproj`, select the **VPXVision** scheme and the Vision Pro, and set `VPX_NATIVE_BUILD_DIR` to the absolute path of the CMake build directory. Import the VR Room Time Machine table into the app's `Documents/Time Machine/` folder and put its `tmac_a24.zip` in `Documents/Time Machine/pinmame/roms/`. Choose **Play Time Machine** and hold your head steady to place the cabinet.
+Open `CabinetHands.xcodeproj`, select the **VPXVision** scheme and the Vision Pro, and set `VPX_NATIVE_BUILD_DIR` to the absolute path of the CMake build directory. Import the VR Room Time Machine table into the app's `Documents/Time Machine/` folder and put its `tmac_a24.zip` in `Documents/Time Machine/pinmame/roms/`. Choose **Your Room** or **Virtual Room**, then select **Play Time Machine** and look ahead. Your Room uses the real dimensions of the authored cabinet and seats its four legs on the detected floor. When a floor plane is unavailable it uses the immersive origin at floor level. Pinch the two front sides of the cabinet together, move both hands to slide it or turn them to rotate it, then release either hand to lock it for the session. Poke the coin box and Start, turn your wrists for the flippers, and pinch and pull the plunger.
 
 The Vision Pro path uses VPX's shared stereo culling, texture budget, and spatial audio code. Set `VPX_VR_PERF=5` in the launch environment to log the same timing breakdown as the Frame. Packed HDR can be compared with `VPX_PACKED_HDR=0|1`.
 
@@ -61,12 +61,12 @@ Build **VPXVision** for a visionOS Simulator destination with `VPX_NATIVE_BUILD_
 
 ```sh
 xcrun simctl launch booted org.vpinball.vpxvision.player \
-  --play-time-machine --check-render-stall --check-controls
+  --play-time-machine --check-render-stall --check-controls --check-room-placement
 ```
 
-The Simulator test uses a fixed cabinet placement and can run with a single compositor view. The stall check holds VPX's first render for three seconds. The compositor should keep submitting frames during the pause, then report a completed table frame and continue showing newly rendered VPX frames. The control check waits for ROM startup, then checks coin, Start, and both flippers in the input manager and checks the half-pull and rest positions in the native plunger handler. Check the VPX log for `tmac_a24`, `Startup done`, and the control check, and inspect a Simulator screenshot for the actual table.
+The Simulator test uses a fixed cabinet placement and can run with a single compositor view. The stall check holds VPX's first render for three seconds. The compositor should keep submitting frames during the pause, then report a completed table frame and continue showing newly rendered VPX frames. The control check waits for ROM startup, then checks coin, Start, and both flippers in the input manager and checks the half-pull and rest positions in the native plunger handler. Check the VPX log for `tmac_a24`, `Startup done`, and the control check, and inspect a Simulator screenshot for the actual table. The room check sends paired synthetic hand samples through the placement adapter. Look for `Simulator verified mixed reality translation, yaw and release at fixed floor height`, and compare the cabinet against the background before and after the grab. Pass `--check-virtual-room` in place of `--check-room-placement` to check the original environment.
 
-On visionOS Simulator 26.5, the compositor submitted 180 frames during the three-second stall and recovered to a rendered table. A normal launch with fresh Time Machine NVRAM completed 720 compositor frames and queued 719 VPX frames by the final sample. The input check passed, and the backglass showed Ball 01 after the ROM accepted credit and Start.
+On visionOS Simulator 26.5, both modes loaded the supplied Time Machine table and the `tmac_a24` ROM and reached Ball 01. During the mixed-reality stall, the compositor submitted 180 frames in three seconds and recovered. The final sample showed 960 compositor frames and 954 VPX submissions. The room capture showed the cabinet and playfield against the Simulator room before and after a 20-degree turn. The test injected hand samples and used a fixed Simulator floor. The engine measured a 1.088 m cabinet origin and corrected the original 36 mm front-to-back difference in foot height.
 
 ### Build the pinned libraries
 
@@ -84,7 +84,7 @@ cmake -S "$bgfx_cmake" -B "$bgfx_cmake/build-xros" -G Ninja \
 cmake --build "$bgfx_cmake/build-xros" --target bgfx --parallel 2
 ```
 
-Use the same SDK, deployment and architecture flags for the other dependencies. For PinMAME, copy `cmake/libpinmame/CMakeLists.txt` to the unpacked source root, then configure it and libwinevbs with `-DPLATFORM=visionos -DARCH=arm64 -DBUILD_SHARED=OFF -DBUILD_STATIC=ON`. Libwinevbs needs Bison 3.8.2 or newer. For SDL, configure with `-DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_OPENGLES=OFF -DSDL_CAMERA=OFF` and build `SDL3-static`. The libraries stay in their scratch build directories.
+Use the same SDK, deployment and architecture flags for the other dependencies. For PinMAME, apply `platforms/visionos-arm64/pinmame-time-fence.patch` to the unpacked source to synchronize semaphore creation, signaling and teardown, then copy `cmake/libpinmame/CMakeLists.txt` to the unpacked source root. Configure it and libwinevbs with `-DPLATFORM=visionos -DARCH=arm64 -DBUILD_SHARED=OFF -DBUILD_STATIC=ON`. Libwinevbs needs Bison 3.8.2 or newer. For SDL, configure with `-DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_OPENGLES=OFF -DSDL_CAMERA=OFF` and build `SDL3-static`. The libraries stay in their scratch build directories.
 
 ### Verify the Metal handoff
 

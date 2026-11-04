@@ -72,6 +72,7 @@ struct HandControlChecks {
         print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
         checkWristTurns()
         checkPlacement()
+        checkRoomGrab()
         checkPlunger()
     }
 
@@ -176,5 +177,52 @@ struct HandControlChecks {
         }
         precondition(placement.sample(settled, at: 2.5) == nil)
         print("Placement passed: rejected a low and 10° off-heading opening pose; settled lockbar at 1.35 m, zero heading error and roll")
+    }
+
+    static func checkRoomGrab() {
+        let width: Float = 0.6
+        var initial = matrix_identity_float4x4
+        initial.columns.3 = [0.2, 1.08, -0.53, 1]
+        var room = CabinetRoomPlacement(width: width, pose: initial)
+        var time = 0.0
+        let left: SIMD3<Float> = [-0.1, 1.03, -0.65]
+        let right: SIMD3<Float> = [0.5, 1.03, -0.65]
+        func feed(_ side: CabinetHandSide, _ center: SIMD3<Float>, gap: Float) {
+            time += 0.012
+            let offset = SIMD3(0, gap * 0.5, 0)
+            room.update(side, index: center + offset, thumb: center - offset, at: time)
+        }
+
+        feed(.left, left, gap: 0.015)
+        feed(.right, right, gap: 0.015)
+        precondition(!room.isMoving)
+        feed(.left, left, gap: 0.065)
+        feed(.right, right, gap: 0.065)
+        feed(.left, left, gap: 0.015)
+        precondition(!room.isMoving)
+        feed(.right, right, gap: 0.015)
+        precondition(room.isMoving && room.pose == initial)
+
+        // Move the grip center 30 cm right, lift both hands, and turn 30 degrees.
+        let center: SIMD3<Float> = [0.5, 1.40, -0.65]
+        let angle: Float = .pi / 6
+        let grip = SIMD3(width * 0.5 * cos(angle), 0, -width * 0.5 * sin(angle))
+        feed(.left, center - grip, gap: 0.015)
+        precondition(room.pose == initial)
+        feed(.right, center + grip, gap: 0.015)
+        let moved = room.pose
+        precondition(abs(moved.columns.3.x - (0.5 + 0.12 * sin(angle))) < 0.0001)
+        precondition(moved.columns.3.y == initial.columns.3.y)
+        precondition(moved.columns.1 == initial.columns.1)
+        precondition(abs(moved.columns.0.z + sin(angle)) < 0.0001)
+        precondition(abs(simd_length(moved.columns.0) - 1) < 0.0001)
+
+        room.expire(at: time + 0.13)
+        precondition(!room.isMoving && room.pose == moved)
+        time += 0.13
+        feed(.left, center - grip, gap: 0.015)
+        feed(.right, center + grip, gap: 0.015)
+        precondition(!room.isMoving && room.pose == moved)
+        print("Room placement passed: two-hand arming, yaw, translation, fixed scale and height, and tracking-loss lock")
     }
 }

@@ -39,6 +39,7 @@ typedef struct {
    void* color[2];
    void* depth[2];
    unsigned int width, height;
+   int mixedReality;
    // Called on VPX's render thread. Return 1 for an eye pose and a writable buffer.
    int (*beginFrame)(void* user, VPINBALL_VISION_FRAME* frame);
    void (*endFrame)(void* user, int rendered);
@@ -50,6 +51,8 @@ VPINBALLAPI VPINBALL_STATUS VPinballVisionConfigure(const VPINBALL_VISION_HOST* 
 // Call from the visionOS app's main thread. The host owns the event loop.
 VPINBALLAPI VPINBALL_STATUS VPinballVisionInit(VPinballEventCallback eventCallback);
 VPINBALLAPI void VPinballVisionTick(void);
+// Physical distance from the floor to the cabinet pose origin. Read after PLAYER_READY.
+VPINBALLAPI float VPinballVisionCabinetHeight(void);
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed);
 // Pull is measured from the resting position (0) to fully pulled back (1).
 VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);

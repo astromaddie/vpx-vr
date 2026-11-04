@@ -368,6 +368,9 @@ VRDevice::VRDevice(const Settings& settings)
          m_orientation = 0.f;
          m_headsetPos = {0.f, 0.f, 0.f};
          m_tableOffset = {0.f, 0.f, 0.f};
+         m_visionCabinetHeight = m_lockbarHeight * 0.01f;
+         if (IsVisionMixedReality())
+            ConfigureVisionRoom(table);
       }
    #endif
 }

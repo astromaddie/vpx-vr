@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>NSHandsTrackingUsageDescription</key>
-    <string>Use your hands to flip, insert coins, and press Start on the pinball cabinet.</string>
+    <string>Use your hands to move the pinball cabinet and operate its controls.</string>
+    <key>NSWorldSensingUsageDescription</key>
+    <string>Find your floor so the pinball cabinet can stand in your room.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>

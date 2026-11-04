@@ -2117,6 +2117,11 @@ void Renderer::RenderItem(IEditable* const editable, bool isNoBackdrop)
       return;
 
    const PartGroupData::SpaceReference spaceReference = editable->GetPartGroup() ? editable->GetPartGroup()->GetReferenceSpace() : PartGroupData::SpaceReference::SR_PLAYFIELD;
+   #if defined(VPX_VISIONOS_HEADSET)
+   if (!m_desktopScenePass && g_pplayer->m_vrDevice && g_pplayer->m_vrDevice->IsVisionMixedReality()
+      && (spaceReference == PartGroupData::SpaceReference::SR_ROOM || g_pplayer->m_vrDevice->IsVisionLegacyRoomPart(editable)))
+      return;
+   #endif
    SetSpaceReference(spaceReference, false);
 
    // Skip parts entirely outside of the active camera, before Render() requests probes or records any draw. UI wireframes, the
@@ -3533,7 +3538,14 @@ void Renderer::Render3DScene()
    m_noBackdrop = !g_pplayer->m_liveUI->IsEditorBackdropViewMode() // Force backdrop rendering if its being edited
       && ((g_pplayer->m_vrDevice != nullptr) || (m_table->GetViewMode() == BG_FULLSCREEN)  || g_pplayer->m_liveUI->IsEditorViewMode());
    if (g_pplayer->m_vrDevice)
-      m_visibilityMask = m_vrApplyColorKey ? PartGroupData::PlayerModeVisibilityMask::PMVM_MIXED_REALITY : PartGroupData::PlayerModeVisibilityMask::PMVM_VIRTUAL_REALITY;
+   {
+      const bool mixed = m_vrApplyColorKey
+         #if defined(VPX_VISIONOS_HEADSET)
+         || g_pplayer->m_vrDevice->IsVisionMixedReality()
+         #endif
+         ;
+      m_visibilityMask = mixed ? PartGroupData::PlayerModeVisibilityMask::PMVM_MIXED_REALITY : PartGroupData::PlayerModeVisibilityMask::PMVM_VIRTUAL_REALITY;
+   }
    else if (m_table->GetViewMode() == BG_FULLSCREEN)
       m_visibilityMask = PartGroupData::PlayerModeVisibilityMask::PMVM_CABINET;
    else if (m_table->GetViewMode() == BG_FSS)

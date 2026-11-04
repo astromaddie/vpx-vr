@@ -4,9 +4,62 @@
 
 #include "VRDevice.h"
 #include "renderer/RenderTarget.h"
+#include "parts/pintable.h"
+#include "parts/primitive.h"
 
 #include <chrono>
 #include <thread>
+
+void VRDevice::ConfigureVisionRoom(const PinTable* table)
+{
+   // Time Machine predates VR space references. Recognize its room by the four
+   // authored room parts and the cabinet's metal mesh, which contains the legs.
+   constexpr std::array<std::string_view, 4> roomNames = { "VR_Floor", "VR_Roof", "VR_Wall_Left", "VR_Wall_Right" };
+   std::array<const IEditable*, roomNames.size()> room{};
+   Primitive* legs = nullptr;
+   for (IEditable* part : table->GetParts())
+   {
+      const auto* group = part->GetPartGroup();
+      if (group && group->GetReferenceSpace() != PartGroupData::SpaceReference::SR_PLAYFIELD)
+         continue;
+      for (size_t i = 0; i < room.size(); ++i)
+         if (part->GetName() == roomNames[i])
+            room[i] = part;
+      if (part->GetItemType() == eItemPrimitive && part->GetName() == "PinCab_Metal_L+R+F")
+         legs = static_cast<Primitive*>(part);
+   }
+   if (!legs || std::ranges::find(room, nullptr) != room.end())
+      return;
+
+   m_visionLegacyRoomParts = room;
+   UpdateWorldTransforms();
+   const Matrix3D worldFromMesh = legs->RecalculateMatrices() * m_pfWorld.m_toWorld;
+   Vertex3Ds front { 0.f, FLT_MAX, 0.f };
+   Vertex3Ds back = front;
+   const float split = -(table->m_bottom - table->m_top) * 0.5f;
+   for (const auto& vertex : legs->m_mesh.m_vertices)
+   {
+      const Vertex3Ds point = worldFromMesh * Vertex3Ds { vertex.x, vertex.y, vertex.z };
+      auto& foot = point.z > split ? front : back;
+      if (point.y < foot.y)
+         foot = point;
+   }
+   if (front.y == FLT_MAX || back.y == FLT_MAX || front.z - back.z < -split)
+      return;
+
+   // Old VR rooms were modelled in inclined playfield space. Level the floor
+   // defined by the front and rear feet around the lockbar, at authored scale.
+   const float height = CMTOVPU(m_lockbarHeight);
+   const float pitch = atan2f(front.y - back.y, front.z - back.z);
+   m_visionPlayfieldLevel = Matrix3D::MatrixTranslate(0.f, -height, 0.f)
+      * Matrix3D::MatrixRotateX(pitch) * Matrix3D::MatrixTranslate(0.f, height, 0.f);
+   const Vertex3Ds levelFront = m_visionPlayfieldLevel * front;
+   const Vertex3Ds levelBack = m_visionPlayfieldLevel * back;
+   m_visionCabinetHeight = VPUTOCM(height - min(levelFront.y, levelBack.y)) * 0.01f;
+   PLOGI << "Vision Pro legacy mixed reality cabinet height " << m_visionCabinetHeight
+      << " m; rear foot rise " << VPUTOCM(back.y - front.y) * 0.01f
+      << " m before levelling, " << VPUTOCM(levelBack.y - levelFront.y) * 0.01f << " m after";
+}
 
 void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(RenderTarget*)>& submit)
 {
@@ -74,7 +127,7 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
       memcpy(projection.m, projections[eye], sizeof projection.m);
       const Matrix3D view = vpuScale * floorToCabinet * eyeFromCabinet * invVpuScale;
       const Matrix3D viewInvSceneScale = view * invSceneScale;
-      m_pfWorld.m_view[eye] = m_pfWorld.m_toWorld * viewInvSceneScale;
+      m_pfWorld.m_view[eye] = m_pfWorld.m_toWorld * m_visionPlayfieldLevel * viewInvSceneScale;
       m_cabWorld.m_view[eye] = m_cabWorld.m_toWorld * viewInvSceneScale;
       m_feetWorld.m_view[eye] = m_feetWorld.m_toWorld * viewInvSceneScale;
       m_roomWorld.m_view[eye] = m_roomWorld.m_toWorld * view;

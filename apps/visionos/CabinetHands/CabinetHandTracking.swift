@@ -10,20 +10,37 @@ import simd
 final class CabinetHandTracking {
     private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
     private var controls: CabinetHandControls
-    private let layoutHasPlunger: Bool
+    private let layout: CabinetControlsLayout
+    private let moveCabinet: ((simd_float4x4) -> Void)?
+    private var roomPlacement: CabinetRoomPlacement?
+    private var floorY: Float?
     private let send: (CabinetInput) -> Void
     let world = WorldTrackingProvider()
     private var cabinetFromOrigin: simd_float4x4?
 
-    init(layout: CabinetControlsLayout, send: @escaping (CabinetInput) -> Void) {
+    init(layout: CabinetControlsLayout, moveCabinet: ((simd_float4x4) -> Void)? = nil,
+         send: @escaping (CabinetInput) -> Void) {
         controls = CabinetHandControls(layout: layout)
-        layoutHasPlunger = layout.plunger != nil
+        self.layout = layout
+        self.moveCabinet = moveCabinet
         self.send = send
     }
 
     func place(originFromCabinet: simd_float4x4) {
         reset()
         cabinetFromOrigin = originFromCabinet.inverse
+    }
+
+    func placeOnFloor(_ initial: simd_float4x4, height: Float, simulatedFloor: Float? = nil) -> simd_float4x4 {
+        var pose = initial
+        // The immersive origin is at floor level until a local floor is detected.
+        let floor = simulatedFloor ?? floorY ?? 0
+        pose.columns.3.y = floor + height
+        let source = simulatedFloor != nil ? "simulated" : (floorY != nil ? "detected" : "immersive origin")
+        Self.log.info("Cabinet floor: \(floor) m (\(source, privacy: .public)); cabinet height: \(height) m")
+        roomPlacement = CabinetRoomPlacement(width: layout.width, pose: pose)
+        place(originFromCabinet: pose)
+        return pose
     }
 
     func reset() {
@@ -38,7 +55,11 @@ final class CabinetHandTracking {
     ) async {
         let session = ARKitSession()
         let hands = HandTrackingProvider()
+        let planes = PlaneDetectionProvider(alignments: [.horizontal])
+        var floors: [UUID: simd_float4x4] = [:]
+        var planeUpdates: Task<Void, Never>?
         defer {
+            planeUpdates?.cancel()
             session.stop()
             reset()
             cabinetFromOrigin = nil
@@ -51,27 +72,61 @@ final class CabinetHandTracking {
         }
         guard !Task.isCancelled else { return }
 
+        var providers: [any DataProvider] = [world]
+        if canTrackHands { providers.append(hands) }
+        let canDetectFloor: Bool
+        if moveCabinet != nil && PlaneDetectionProvider.isSupported {
+            let authorization = await session.requestAuthorization(for: [.worldSensing])
+            canDetectFloor = authorization[.worldSensing] == .allowed
+        } else {
+            canDetectFloor = false
+        }
+        guard !Task.isCancelled else { return }
+        if canDetectFloor { providers.append(planes) }
         do {
-            if canTrackHands {
-                try await session.run([world, hands])
-            } else if WorldTrackingProvider.isSupported {
-                try await session.run([world])
-            }
+            try await session.run(providers)
         } catch {
             guard !Task.isCancelled else { return }
             report("Couldn’t start hand tracking.")
             return
         }
         guard !Task.isCancelled else { return }
+        if canDetectFloor {
+            planeUpdates = Task { @MainActor in
+                for await change in planes.anchorUpdates {
+                    guard !Task.isCancelled else { return }
+                    let anchor = change.anchor
+                    if change.event == .removed || !Self.isFloor(anchor) {
+                        floors.removeValue(forKey: anchor.id)
+                    } else {
+                        let center = anchor.originFromAnchorTransform * anchor.geometry.extent.anchorFromExtentTransform
+                        floors[anchor.id] = center
+                    }
+                }
+            }
+        }
         report("Look toward where you want the cabinet and hold steady.")
         if WorldTrackingProvider.isSupported {
             var placement = CabinetPlacement()
+            var floorWaitStart: Double?
             for _ in 0 ..< 250 {
                 guard !Task.isCancelled else { return }
                 let now = CACurrentMediaTime()
                 let anchor = world.queryDeviceAnchor(atTimestamp: now)
                 let head = acceptsInput() ? Self.trackedPose(anchor) : nil
                 if let transform = placement.sample(head, at: now), let head {
+                    floorWaitStart = floorWaitStart ?? now
+                    if canDetectFloor {
+                        let eye = head.columns.3.xyz
+                        let target = transform.columns.3.xyz
+                        floorY = floors.values.map { $0.columns.3.xyz }
+                            .filter { (0.45...2.5).contains(eye.y - $0.y) }
+                            .min { simd_distance_squared($0, target) < simd_distance_squared($1, target) }?.y
+                        if floorY == nil, now - (floorWaitStart ?? now) < 1.5 {
+                            try? await Task.sleep(for: .milliseconds(20))
+                            continue
+                        }
+                    }
                     let rendered = placeCabinet(transform)
                     place(originFromCabinet: rendered)
                     let eyeDrop = head.columns.3.y - rendered.columns.3.y
@@ -95,12 +150,17 @@ final class CabinetHandTracking {
             return
         }
         report(canTrackHands ? "Place your hands by the cabinet." : "Hand tracking is unavailable.")
-        guard canTrackHands else { return }
+        guard canTrackHands else {
+            // The compositor still needs the world provider for its eye poses.
+            while !Task.isCancelled { try? await Task.sleep(for: .seconds(1)) }
+            return
+        }
 
         let watchdog = Task { @MainActor in
             while !Task.isCancelled {
                 let now = CACurrentMediaTime()
-                if acceptsInput() {
+                roomPlacement?.expire(at: acceptsInput() ? now : .infinity)
+                if acceptsInput() && roomPlacement?.isMoving != true {
                     controls.expire(at: now).forEach(send)
                 } else {
                     reset()
@@ -118,6 +178,31 @@ final class CabinetHandTracking {
         }
     }
 
+    @discardableResult
+    func updateRoomContact(_ side: CabinetHandSide, index: SIMD3<Float>?, thumb: SIMD3<Float>?, at time: Double) -> Bool {
+        let wasMoving = roomPlacement?.isMoving == true
+        let oldPose = roomPlacement?.pose
+        roomPlacement?.update(side, index: index, thumb: thumb, at: time)
+        guard let roomPlacement, roomPlacement.isMoving else { return false }
+        if !wasMoving { reset() }
+        if roomPlacement.pose != oldPose {
+            cabinetFromOrigin = roomPlacement.pose.inverse
+            moveCabinet?(roomPlacement.pose)
+        }
+        return true
+    }
+
+    #if targetEnvironment(simulator)
+    var simulatorRoomPose: simd_float4x4? { roomPlacement?.pose }
+    #endif
+
+    private static func isFloor(_ anchor: PlaneAnchor) -> Bool {
+        if #available(visionOS 26.0, *) {
+            return anchor.surfaceClassification == .floor
+        }
+        return false
+    }
+
     private static func trackedPose(_ anchor: DeviceAnchor?) -> simd_float4x4? {
         guard let anchor, anchor.isTracked else { return nil }
         if #available(visionOS 26.0, *), anchor.trackingState != .tracked { return nil }
@@ -126,7 +211,18 @@ final class CabinetHandTracking {
 
     private func update(_ anchor: HandAnchor, removed: Bool, at time: Double) {
         let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
-        guard !removed, let cabinetFromOrigin, anchor.isTracked, let skeleton = anchor.handSkeleton else {
+        let trackedSkeleton = !removed && anchor.isTracked ? anchor.handSkeleton : nil
+        if roomPlacement != nil {
+            func originJoint(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
+                guard let joint = trackedSkeleton?.joint(name), joint.isTracked else { return nil }
+                let point = (anchor.originFromAnchorTransform * joint.anchorFromJointTransform).columns.3.xyz
+                return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
+            }
+            if updateRoomContact(side, index: originJoint(.indexFingerTip), thumb: originJoint(.thumbTip), at: time) {
+                return
+            }
+        }
+        guard let cabinetFromOrigin, let skeleton = trackedSkeleton else {
             controls.update(side, sample: nil, at: time).forEach(send)
             return
         }
@@ -153,7 +249,7 @@ final class CabinetHandTracking {
         }
         let sample = CabinetHandSample(
             palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
-            thumb: layoutHasPlunger ? joint(.thumbTip) : nil
+            thumb: layout.plunger != nil ? joint(.thumbTip) : nil
         )
         controls.update(side, sample: sample, at: time).forEach(send)
     }

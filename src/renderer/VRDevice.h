@@ -137,7 +137,9 @@
 #include <bgfx/bgfx.h>
 #endif
 
+class IEditable;
 class MeshBuffer;
+class PinTable;
 class RenderTarget;
 
 class VRDevice final
@@ -238,6 +240,9 @@ private:
 public:
    bool IsVisionReady() const { return m_visionHost.metalDevice != nullptr; }
    const VPINBALL_VISION_HOST& GetVisionHost() const { return m_visionHost; }
+   bool IsVisionMixedReality() const { return m_visionHost.mixedReality != 0; }
+   bool IsVisionLegacyRoomPart(const IEditable* part) const { return std::ranges::find(m_visionLegacyRoomParts, part) != m_visionLegacyRoomParts.end(); }
+   float GetVisionCabinetHeight() const { return m_visionCabinetHeight; }
    bool UseDepthBuffer() const { return true; }
    bgfx::TextureFormat::Enum GetDepthFormat() const { return bgfx::TextureFormat::D32F; }
    RenderTarget* GetUIRenderTarget() const { return nullptr; }
@@ -245,7 +250,11 @@ public:
    void ReleaseVisionTarget();
 
 private:
+   void ConfigureVisionRoom(const PinTable* table);
    VPINBALL_VISION_HOST m_visionHost{};
+   std::array<const IEditable*, 4> m_visionLegacyRoomParts{};
+   Matrix3D m_visionPlayfieldLevel = Matrix3D::MatrixTranslate(0.f, 0.f, 0.f);
+   float m_visionCabinetHeight = 0.f;
    std::array<std::unique_ptr<RenderTarget>, 2> m_visionTargets;
 #endif
 
