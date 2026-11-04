@@ -72,6 +72,8 @@ struct HandControlChecks {
         print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
         checkWristTurns()
         checkMappedFlippers()
+        checkGestureFlippers()
+        checkFistNudges()
         checkPlacement()
         checkRoomGrab()
         checkWristMenu()
@@ -195,6 +197,85 @@ struct HandControlChecks {
         precondition(feed(.right, -0.008, nil) == [.flipper(.right, pressed: true)])
         precondition(feed(.right, 0.014, nil) == [.flipper(.right, pressed: false)])
         print("Mapped flippers passed: wider reach, wrist arming at the cap, and a shorter inward press")
+    }
+
+    static func checkGestureFlippers() {
+        let layout = CabinetControlsLayout(usesWristGestures: true)
+        var controls = CabinetHandControls(layout: layout)
+        var time = 0.0
+        let straight: SIMD3<Float> = [0, 0, -1]
+        func feed(_ side: CabinetHandSide, _ direction: SIMD3<Float>, arm: SIMD3<Float>? = [0, 0, -1],
+                  roll: Bool = false, fist: Bool = false) -> [CabinetInput] {
+            time += 0.016
+            let sample = CabinetHandSample(palm: [side.sign * 0.75, 0.35, 0.42], fingerDirection: direction,
+                                           palmNormal: roll ? [side.sign, 0, 0] : [0, -1, 0],
+                                           forearmDirection: arm, fist: fist)
+            return controls.update(side, sample: sample, at: time)
+        }
+        precondition(feed(.left, straight).isEmpty)
+        precondition(feed(.right, straight, roll: true).isEmpty)
+        // Moving the entire arm inward or rolling the palm leaves the wrist straight.
+        precondition(feed(.left, [0.28, 0, -1], arm: [0.28, 0, -1]).isEmpty)
+        precondition(feed(.left, straight, roll: true).isEmpty)
+        precondition(feed(.left, [0.18, 0, -1], roll: true) == [.flipper(.left, pressed: true)])
+        precondition(feed(.right, [0.18, 0, -1], roll: true).isEmpty)
+        precondition(feed(.right, [-0.18, 0, -1], roll: true) == [.flipper(.right, pressed: true)])
+        precondition(feed(.left, [0.12, 0, -1], arm: nil, roll: true).isEmpty)
+        precondition(feed(.left, straight) == [.flipper(.left, pressed: false)])
+        precondition(feed(.right, [-0.18, 0, -1], fist: true) == [.flipper(.right, pressed: false)])
+        precondition(controls.reset().isEmpty)
+        precondition(feed(.left, straight, arm: nil).isEmpty)
+        precondition(feed(.left, [0.18, 0, -1], arm: nil) == [.flipper(.left, pressed: true)])
+        precondition(controls.expire(at: time + 0.13) == [.flipper(.left, pressed: false)])
+
+        let knob: SIMD3<Float> = [0.24, -0.15, 0.109]
+        controls = CabinetHandControls(layout: CabinetControlsLayout(plunger: knob, usesWristGestures: true))
+        func grip(_ pull: Float, direction: SIMD3<Float>) -> [CabinetInput] {
+            time += 0.016
+            return controls.update(.right, sample: .init(palm: knob + [0, 0, 0.05 + pull],
+                                                         index: knob + [0.01, 0, pull],
+                                                         fingerDirection: direction, thumb: knob + [-0.01, 0, pull],
+                                                         forearmDirection: straight), at: time)
+        }
+        precondition(grip(0, direction: straight) == [.pullPlunger(0)])
+        precondition(grip(0.07, direction: [-0.20, 0, -1]) == [.pullPlunger(1)])
+        precondition(controls.reset() == [.cancelPlunger])
+        print("Gesture flippers passed: distance-independent bends, palm roll, arm motion rejection, independent holds and forearm fallback")
+    }
+
+    static func checkFistNudges() {
+        let knuckle: SIMD3<Float> = [0, 0, 0]
+        let bend: SIMD3<Float> = [0, 0, -0.03]
+        precondition(CabinetHandSample.fingerIsCurled(knuckle: knuckle, bend: bend, next: [0, -0.024, -0.028]))
+        precondition(!CabinetHandSample.fingerIsCurled(knuckle: knuckle, bend: bend, next: [0, 0, -0.054]))
+        precondition(!CabinetHandSample.fingerIsCurled(knuckle: knuckle, bend: bend, next: nil))
+
+        let directions: [(CabinetNudgeDirection, SIMD3<Float>)] = [
+            (.left, [-0.085, 0, 0]), (.right, [0.085, 0, 0]), (.up, [0, 0.085, 0]), (.down, [0, -0.085, 0])
+        ]
+        for (direction, offset) in directions {
+            var controls = CabinetHandControls(layout: CabinetControlsLayout(usesWristGestures: true))
+            var time = 0.0
+            func pair(_ left: SIMD3<Float> = .zero, _ right: SIMD3<Float> = .zero, rightClosed: Bool = true) -> [CabinetInput] {
+                time += 0.016
+                let first = controls.update(.left, sample: .init(palm: [-0.4, 0, 0.3] + left, fist: true), at: time)
+                time += 0.016
+                return first + controls.update(.right, sample: .init(palm: [0.4, 0, 0.3] + right, fist: rightClosed), at: time)
+            }
+            for _ in 0..<9 { precondition(pair(offset, offset, rightClosed: false).isEmpty) }
+            for _ in 0..<9 { precondition(pair().isEmpty) }
+            precondition(pair(offset, -offset).isEmpty)
+            precondition(pair(offset * 2, .zero).isEmpty)
+            precondition(pair(offset, offset) == [.nudge(direction)])
+            for _ in 0..<16 { precondition(pair(offset, offset).isEmpty) }
+            precondition(pair().isEmpty)
+            precondition(pair(offset, offset) == [.nudge(direction)])
+            precondition(controls.expire(at: time + 0.15).isEmpty)
+            time += 0.15
+            precondition(pair().isEmpty)
+            precondition(pair(offset, offset).isEmpty)
+        }
+        print("Nudges passed: closed-finger evidence, two-fist dwell, shared movement, four directions, re-arm and tracking loss")
     }
 
     static func checkPlacement() {

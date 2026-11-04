@@ -478,7 +478,8 @@ private final class NativePlayer {
                         plunger: dimensions.hasPlunger == 0 ? nil : SIMD3(dimensions.plungerX, dimensions.plungerY, dimensions.plungerZ),
                         startFace: face(dimensions.start), coinFace: face(dimensions.coin),
                         leftFlipperCap: dimensions.leftFlipper.x < 0 ? SIMD3(dimensions.leftFlipper.x, dimensions.leftFlipper.y, dimensions.leftFlipper.z) : nil,
-                        rightFlipperCap: dimensions.rightFlipper.x > 0 ? SIMD3(dimensions.rightFlipper.x, dimensions.rightFlipper.y, dimensions.rightFlipper.z) : nil))
+                        rightFlipperCap: dimensions.rightFlipper.x > 0 ? SIMD3(dimensions.rightFlipper.x, dimensions.rightFlipper.y, dimensions.rightFlipper.z) : nil,
+                        usesWristGestures: true))
                     let height = dimensions.height
                     #if targetEnvironment(simulator)
                     pose = tracker.placeForPlay(cabinetTransform, height: height, trackFloor: mixedReality, simulatedFloor: -1.60)
@@ -545,9 +546,7 @@ private final class NativePlayer {
         // The ROM can still be starting when the first frame reaches the GPU.
         try? await Task.sleep(for: .seconds(4))
         guard let tracker, let start = tracker.layout.startFace, let coin = tracker.layout.coinFace,
-              start.halfSize.x > 0, coin.halfSize.x > 0,
-              let leftCap = tracker.layout.flipperCap(.left),
-              let rightCap = tracker.layout.flipperCap(.right) else {
+              start.halfSize.x > 0, coin.halfSize.x > 0, tracker.layout.usesWristGestures else {
             VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator found missing cabinet button geometry")
             return
         }
@@ -578,14 +577,16 @@ private final class NativePlayer {
             (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
             (VPINBALL_VISION_START, .seconds(2), { poke(start.position) }),
             (VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150), {
-                let palm = leftCap + [0.018, 0.075, 0.12]
-                send(.left, .init(palm: palm, fingerDirection: [0, 0, -1]))
-                send(.left, .init(palm: palm, fingerDirection: [0.18, 0, -1]))
+                let palm: SIMD3<Float> = [-0.65, 0.30, 0.35]
+                send(.left, .init(palm: palm, fingerDirection: [0, 0, -1], forearmDirection: [0, 0, -1]))
+                send(.left, .init(palm: palm, fingerDirection: [0.18, 0, -1], palmNormal: [-1, 0, 0],
+                                  forearmDirection: [0, 0, -1]))
             }),
             (VPINBALL_VISION_RIGHT_FLIPPER, .milliseconds(150), {
-                let palm = rightCap + [-0.018, 0.075, 0.12]
-                send(.right, .init(palm: palm, fingerDirection: [0, 0, -1]))
-                send(.right, .init(palm: palm, fingerDirection: [-0.18, 0, -1]))
+                let palm: SIMD3<Float> = [0.65, 0.30, 0.35]
+                send(.right, .init(palm: palm, fingerDirection: [0, 0, -1], forearmDirection: [0, 0, -1]))
+                send(.right, .init(palm: palm, fingerDirection: [-0.18, 0, -1], palmNormal: [1, 0, 0],
+                                   forearmDirection: [0, 0, -1]))
             })
         ]
         for (button, delay, gesture) in inputs {
@@ -676,6 +677,33 @@ private final class NativePlayer {
             VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native plunger travel and release after lost tracking")
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
+        if CommandLine.arguments.contains("--check-nudges") {
+            let offsets: [(SIMD3<Float>, VPINBALL_VISION_INPUT)] = [
+                ([-0.085, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.085, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
+                ([0, 0.085, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.085, 0], VPINBALL_VISION_NUDGE_BACK)
+            ]
+            func fists(_ offset: SIMD3<Float>) {
+                send(.left, .init(palm: [-0.4, 0, 0.3] + offset, fist: true))
+                send(.right, .init(palm: [0.4, 0, 0.3] + offset, fist: true))
+            }
+            for (offset, button) in offsets {
+                time += 0.42
+                let before = VPinballVisionNudgeCount()
+                for _ in 0..<9 { fists(.zero) }
+                fists(offset)
+                try? await Task.sleep(for: .milliseconds(30))
+                guard VPinballVisionNudgeCount() == before + 1,
+                      button == VPINBALL_VISION_NUDGE_BACK || pressed(button),
+                      !pressed(VPINBALL_VISION_LEFT_FLIPPER), !pressed(VPINBALL_VISION_RIGHT_FLIPPER) else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator two-fist nudge failed for button \(button.rawValue)")
+                    return
+                }
+                send(.left, nil)
+                send(.right, nil)
+                try? await Task.sleep(for: .milliseconds(410))
+            }
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified four two-fist nudges in the native cabinet model")
+        }
         if CommandLine.arguments.contains("--check-room-placement") {
             VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator ready for cabinet grab")
             try? await Task.sleep(for: .seconds(3))
@@ -755,6 +783,14 @@ private final class NativePlayer {
             pulse(VPINBALL_VISION_ADD_CREDIT)
         case .pressStart:
             pulse(VPINBALL_VISION_START)
+        case let .nudge(direction):
+            let button = switch direction {
+            case .left: VPINBALL_VISION_NUDGE_LEFT
+            case .right: VPINBALL_VISION_NUDGE_RIGHT
+            case .up: VPINBALL_VISION_NUDGE_FORWARD
+            case .down: VPINBALL_VISION_NUDGE_BACK
+            }
+            pulse(button)
         case let .pullPlunger(amount):
             VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_HOLD, amount)
         case let .releasePlunger(amount):

@@ -8,6 +8,7 @@
 #include "parts/ball.h"
 #include "parts/pintable.h"
 #include "parts/plunger.h"
+#include "physics/cabinet/NudgeHandler.h"
 #include "renderer/VRDevice.h"
 #include "pinmame/libpinmame.h"
 #include "VPinballLib.h"
@@ -73,8 +74,17 @@ VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void)
 
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed)
 {
-   if (SDL_IsMainThread() && button >= 0 && button < VPINBALL_VISION_INPUT_COUNT)
-      VPinballLib::VPinballLib::Instance().SetVisionButton(button, pressed != 0);
+   if (!SDL_IsMainThread() || button < 0 || button >= VPINBALL_VISION_INPUT_COUNT)
+      return;
+   if (button == VPINBALL_VISION_NUDGE_BACK)
+   {
+      // VPX has digital actions for left, right and forward. A backward
+      // gesture goes through the same cabinet model and simulated tilt.
+      if (pressed && g_pplayer && g_pplayer->IsPlaying(false))
+         g_pplayer->m_pininput.m_nudgeHandler->ApplyKeyboardImpulse(180.f, 2.f);
+      return;
+   }
+   VPinballLib::VPinballLib::Instance().SetVisionButton(button, pressed != 0);
 }
 
 VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull)
@@ -120,13 +130,19 @@ VPINBALLAPI unsigned int VPinballVisionPressedButtons(void)
    const auto& input = g_pplayer->m_pininput;
    const unsigned int actions[] = {
       input.GetLeftFlipperActionId(), input.GetRightFlipperActionId(),
-      input.GetAddCreditActionId(0), input.GetStartActionId()
+      input.GetAddCreditActionId(0), input.GetStartActionId(),
+      input.GetLeftNudgeActionId(), input.GetRightNudgeActionId(), input.GetCenterNudgeActionId()
    };
    unsigned int pressed = 0;
-   for (unsigned int button = 0; button < VPINBALL_VISION_INPUT_COUNT; ++button)
+   for (unsigned int button = 0; button < std::size(actions); ++button)
       if (input.IsPressed(actions[button]))
          pressed |= 1u << button;
    return pressed;
+}
+
+VPINBALLAPI int VPinballVisionNudgeCount(void)
+{
+   return SDL_IsMainThread() && g_pplayer ? g_pplayer->m_pininput.m_nudgeHandler->GetKeyboardNudgeIndex() : 0;
 }
 
 VPINBALLAPI float VPinballVisionPlungerPosition(void)

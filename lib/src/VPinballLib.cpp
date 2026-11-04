@@ -218,6 +218,14 @@ void VPinballLib::OnPlayerCreated()
       map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_ADD_CREDIT), input.GetAddCreditActionId(0));
       map.MapAction(ButtonMapping::Create(device, VPINBALL_VISION_START), input.GetStartActionId());
    }, true);
+   // Keep the nudge gestures available with an existing VisionHands layout
+   // and preserve the table's normal nudge key callbacks.
+   const unsigned int nudgeActions[] = { input.GetLeftNudgeActionId(), input.GetRightNudgeActionId(), input.GetCenterNudgeActionId() };
+   for (size_t i = 0; i < m_visionNudges.size(); ++i)
+   {
+      const unsigned int action = nudgeActions[i];
+      m_visionNudges[i] = { action, input.GetInputActions()[action]->NewDirectStateSlot() };
+   }
 #endif
 
    g_pplayer->GameLoop();
@@ -230,8 +238,16 @@ void VPinballLib::OnPlayerCreated()
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
 void VPinballLib::SetVisionButton(VPINBALL_VISION_INPUT button, bool pressed)
 {
-   if (m_visionHands && g_pplayer)
-      g_pplayer->m_pininput.PushButtonEvent(*m_visionHands, static_cast<uint16_t>(button), SDL_GetTicksNS(), pressed);
+   if (!m_visionHands || !g_pplayer)
+      return;
+   auto& input = g_pplayer->m_pininput;
+   if (button >= VPINBALL_VISION_NUDGE_LEFT && button <= VPINBALL_VISION_NUDGE_FORWARD)
+   {
+      const auto [action, slot] = m_visionNudges[button - VPINBALL_VISION_NUDGE_LEFT];
+      input.GetInputActions()[action]->SetDirectState(slot, pressed);
+      return;
+   }
+   input.PushButtonEvent(*m_visionHands, static_cast<uint16_t>(button), SDL_GetTicksNS(), pressed);
 }
 #endif
 

@@ -11,7 +11,9 @@
 #include "../include/vpinball/VPinballLib_C.h"
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
 #include "../include/vpinball/VPinballVision.h"
+#include <array>
 #include <optional>
+#include <utility>
 #endif
 #include "WebServer.h"
 #include "core/vpversion.h"
@@ -94,6 +96,7 @@ private:
 
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
    std::optional<uint16_t> m_visionHands;
+   std::array<std::pair<unsigned int, int>, 3> m_visionNudges{};
 #endif
    SDL_Window* m_pWindow = nullptr;
 #ifdef __APPLE__

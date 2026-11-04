@@ -12,6 +12,10 @@ typedef enum {
    VPINBALL_VISION_RIGHT_FLIPPER,
    VPINBALL_VISION_ADD_CREDIT,
    VPINBALL_VISION_START,
+   VPINBALL_VISION_NUDGE_LEFT,
+   VPINBALL_VISION_NUDGE_RIGHT,
+   VPINBALL_VISION_NUDGE_FORWARD,
+   VPINBALL_VISION_NUDGE_BACK,
    VPINBALL_VISION_INPUT_COUNT
 } VPINBALL_VISION_INPUT;
 
@@ -79,6 +83,7 @@ VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action,
 // Read resolved native input, on the player thread, for the Simulator check.
 VPINBALLAPI int VPinballVisionRomRunning(void);
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
+VPINBALLAPI int VPinballVisionNudgeCount(void);
 VPINBALLAPI float VPinballVisionPlungerPosition(void);
 typedef struct {
    int id;

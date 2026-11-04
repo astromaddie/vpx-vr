@@ -9,6 +9,12 @@ import simd
 @MainActor
 final class CabinetHandTracking {
     private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
+    private static let fistJoints: [(HandSkeleton.JointName, HandSkeleton.JointName, HandSkeleton.JointName)] = [
+        (.indexFingerKnuckle, .indexFingerIntermediateBase, .indexFingerIntermediateTip),
+        (.middleFingerKnuckle, .middleFingerIntermediateBase, .middleFingerIntermediateTip),
+        (.ringFingerKnuckle, .ringFingerIntermediateBase, .ringFingerIntermediateTip),
+        (.littleFingerKnuckle, .littleFingerIntermediateBase, .littleFingerIntermediateTip)
+    ]
     private var controls: CabinetHandControls
     private(set) var layout: CabinetControlsLayout
     private let moveCabinet: ((simd_float4x4) -> Void)?
@@ -326,9 +332,19 @@ final class CabinetHandTracking {
         } else {
             palmNormal = nil
         }
+        var forearmDirection: SIMD3<Float>?
+        var fist = false
+        if layout.usesWristGestures {
+            if let arm = joint(.forearmArm), let wrist = joint(.forearmWrist) ?? joint(.wrist) {
+                forearmDirection = wrist - arm
+            }
+            fist = Self.fistJoints.filter { knuckle, bend, next in
+                CabinetHandSample.fingerIsCurled(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
+            }.count >= 3
+        }
         let sample = CabinetHandSample(
             palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
-            thumb: layout.plunger != nil ? joint(.thumbTip) : nil
+            thumb: layout.plunger != nil ? joint(.thumbTip) : nil, forearmDirection: forearmDirection, fist: fist
         )
         sendControlSample(side, sample: sample, at: time)
     }
