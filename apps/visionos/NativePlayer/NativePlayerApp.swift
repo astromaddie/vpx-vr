@@ -1,6 +1,7 @@
 // license:GPLv3+
 
 import CompositorServices
+import simd
 import SwiftUI
 
 @main
@@ -81,6 +82,7 @@ private final class NativePlayer {
 
     private var compositor: NativeCompositor?
     private var selectedTable: URL?
+    private var cabinetTransform: simd_float4x4?
     private var pump: Task<Void, Never>?
     private var tracking: Task<Void, Never>?
     private var loading = false
@@ -122,14 +124,14 @@ private final class NativePlayer {
             }
             tracking = Task {
                 await tracker.run(placeCabinet: { transform in
-                    let placed = compositor.place(transform)
+                    cabinetTransform = transform
                     status = "Loading Time Machine..."
                     loading = VPinballPlay(table.path) == VPINBALL_STATUS_SUCCESS
                     if !loading {
                         status = "Couldn’t start loading Time Machine."
                         needsDismissal = true
                     }
-                    return placed
+                    return transform
                 }, report: { message in
                     if !loading { status = message }
                 }, acceptsInput: { compositor.isRunning }, tick: { _ in })
@@ -158,6 +160,7 @@ private final class NativePlayer {
     fileprivate func receive(_ event: VPINBALL_EVENT) {
         switch event {
         case VPINBALL_EVENT_PLAYER_READY:
+            if let cabinetTransform { compositor?.place(cabinetTransform) }
             loading = false
             ready = true
             status = "Poke the coin box and Start. Grab, pull, and release the plunger. Turn your wrists to flip."
@@ -184,6 +187,7 @@ private final class NativePlayer {
         stopping = false
         isOpen = false
         compositor = nil
+        cabinetTransform = nil
     }
 
     private func handle(_ input: CabinetInput) {

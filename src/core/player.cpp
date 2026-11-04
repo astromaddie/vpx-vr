@@ -432,13 +432,17 @@ Player::Player(PinTable *const table, const PlayMode playMode, LoadProgress &loa
    m_loadProgress->SetProgress("Starting..."s, 100);
    m_loadProgress = &m_defaultLoadProgress; // The caller's reporter only lives during construction, later session reloads (table switches) log
 
-   // Perform a quick render to avoid displaying a blank screen while starting
-   m_renderer->DisableStaticPrePass(true);
-   PrepareFrame();
-   SubmitFrame();
-   FinishFrame();
-   LockRenderThread();
-   m_renderer->DisableStaticPrePass(false);
+   // The visionOS renderer requests the first frame once its compositor target is available.
+   if (!g_isVisionOS || !IsVR())
+   {
+      // Perform a quick render to avoid displaying a blank screen while starting.
+      m_renderer->DisableStaticPrePass(true);
+      PrepareFrame();
+      SubmitFrame();
+      FinishFrame();
+      LockRenderThread();
+      m_renderer->DisableStaticPrePass(false);
+   }
 
    // Show the window (before rendering static part to avoid delaying too long)
    m_playfieldWnd->Show();

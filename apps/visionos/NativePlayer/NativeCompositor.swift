@@ -80,9 +80,9 @@ final class NativeCompositor: @unchecked Sendable {
         self.depthState = depthState
     }
 
-    func place(_ transform: simd_float4x4) -> simd_float4x4 {
+    // Called after the player can service a frame request without blocking on table load.
+    func place(_ transform: simd_float4x4) {
         placement.withLock { $0 = transform }
-        return transform
     }
 
     func configurePlayer() -> Bool {

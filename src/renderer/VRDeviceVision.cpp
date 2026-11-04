@@ -34,8 +34,8 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
          return;
       }
       bgfx::Attachment attachments[2];
-      attachments[0].init(color, bgfx::Access::Write, 0, 2);
-      attachments[1].init(depth, bgfx::Access::Write, 0, 2);
+      attachments[0].init(color, bgfx::Access::Write, 0, 2, 0, BGFX_ATTACHMENT_NONE);
+      attachments[1].init(depth, bgfx::Access::Write, 0, 2, 0, BGFX_ATTACHMENT_NONE);
       const auto buffer = bgfx::createFrameBuffer(2, attachments);
       if (!bgfx::isValid(buffer))
       {
@@ -48,6 +48,7 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
       m_visionTarget = std::make_unique<RenderTarget>(rd, SurfaceType::RT_STEREO, buffer,
          color, bgfx::TextureFormat::BGRA8, depth, bgfx::TextureFormat::D32F,
          "Vision Pro Eyes", width, height, colorFormat::RGBA8);
+      PLOGI << "Vision Pro stereo eye framebuffer ready";
    }
 
    UpdateWorldTransforms();
