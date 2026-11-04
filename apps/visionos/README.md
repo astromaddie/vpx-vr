@@ -2,7 +2,7 @@
 
 This visionOS preview is for trying hand controls on a room-locked cabinet. It reports gesture events against a standalone model. Live tables and PinMAME require the native VPX player.
 
-Open `CabinetHands.xcodeproj`, select the **CabinetHands** scheme, and run on a visionOS destination. Choose **Open Cabinet**. The preview asks for hand tracking on a supported device. Look toward the space in front of you when opening it. Close and reopen it to place it again.
+Open `CabinetHands.xcodeproj`, select the **CabinetHands** scheme, and run on a visionOS destination. Choose **Open Cabinet**. The preview asks for hand tracking on a supported device. Look toward the space in front of you and hold steady for placement. The cabinet appears 25 cm below that tracked eye level with its front edge level. Close and reopen it to place it again.
 
 - Put a hand by each red side button. Move a hand inward and back out to flip. Keeping it in holds the flipper.
 - Poke the gold coin box with your index finger. It flashes and **Coins** increases once. Pull back before poking it again.
@@ -17,11 +17,11 @@ To check the recognizer on the Mac from this directory:
 ```sh
 check_dir=$(mktemp -d)
 trap 'rm -rf "$check_dir"' EXIT
-xcrun swiftc CabinetHands/CabinetHandControls.swift Checks/HandControlChecks.swift -o "$check_dir/check"
+xcrun swiftc CabinetHands/CabinetHandControls.swift CabinetHands/CabinetPlacement.swift Checks/HandControlChecks.swift -o "$check_dir/check"
 "$check_dir/check"
 ```
 
-The checks cover independent flippers, jitter around a held position, release on tracking loss, re-arming, and one action per coin or Start gesture.
+The checks cover independent flippers, jitter around a held position, release on tracking loss, re-arming, one action per coin or Start poke, and placement after head tracking settles. The app logs the vertical offset from the tracked head, heading error and the rise along the rendered front edge.
 
 ## Cabinet fit
 

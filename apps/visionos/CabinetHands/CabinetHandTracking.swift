@@ -1,12 +1,14 @@
 // license:GPLv3+
 
 import ARKit
+import OSLog
 import QuartzCore
 import simd
 
 /// A preview and the eventual player can both use this adapter. Its action sink runs on the main actor.
 @MainActor
 final class CabinetHandTracking {
+    private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
     private var controls: CabinetHandControls
     private let send: (CabinetInput) -> Void
     private var cabinetFromOrigin: simd_float4x4?
@@ -26,7 +28,7 @@ final class CabinetHandTracking {
     }
 
     func run(
-        placeCabinet: @escaping (simd_float4x4) -> Void,
+        placeCabinet: (simd_float4x4) -> simd_float4x4,
         report: (String) -> Void,
         acceptsInput: @escaping () -> Bool,
         tick: @escaping (Double) -> Void
@@ -59,38 +61,39 @@ final class CabinetHandTracking {
             return
         }
         guard !Task.isCancelled else { return }
-        report(canTrackHands ? "Place your hands by the cabinet." : "Hand tracking is unavailable.")
-
-        // Start in front of the wearer, then keep the cabinet fixed in world space.
-        // When the simulator has no device pose, the preview scene supplies its own placement.
+        report("Look toward where you want the cabinet and hold steady.")
         if WorldTrackingProvider.isSupported {
-            for _ in 0 ..< 90 {
+            var placement = CabinetPlacement()
+            for _ in 0 ..< 250 {
                 guard !Task.isCancelled else { return }
-                if let anchor = world.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()), anchor.isTracked {
-                    let head = anchor.originFromAnchorTransform
-                    let forward = SIMD3(-head.columns.2.x, 0, -head.columns.2.z)
-                    if simd_length_squared(forward) > 0.05 {
-                        let towardPlayer = -simd_normalize(forward)
-                        let up = SIMD3<Float>(0, 1, 0)
-                        let right = simd_cross(up, towardPlayer)
-                        let position = head.columns.3.xyz - towardPlayer * 0.53 - up * 0.35
-                        let transform = simd_float4x4(
-                            SIMD4(right, 0), SIMD4(up, 0), SIMD4(towardPlayer, 0), SIMD4(position, 1)
-                        )
-                        place(originFromCabinet: transform)
-                        placeCabinet(transform)
-                        break
-                    }
+                let now = CACurrentMediaTime()
+                let anchor = world.queryDeviceAnchor(atTimestamp: now)
+                let head = acceptsInput() ? Self.trackedPose(anchor) : nil
+                if let transform = placement.sample(head, at: now), let head {
+                    let rendered = placeCabinet(transform)
+                    place(originFromCabinet: rendered)
+                    let eyeDrop = head.columns.3.y - rendered.columns.3.y
+                    let edgeRise = rendered.columns.0.y
+                    let gaze = atan2(head.columns.2.x, head.columns.2.z)
+                    let heading = atan2(rendered.columns.2.x, rendered.columns.2.z)
+                    let headingError = atan2(sin(heading - gaze), cos(heading - gaze)) * 180 / .pi
+                    Self.log.info("Cabinet placement: \(eyeDrop) m below head; heading error \(headingError) degrees; front edge rise \(edgeRise) m per metre")
+                    break
                 }
                 try? await Task.sleep(for: .milliseconds(20))
             }
         }
         guard !Task.isCancelled else { return }
-        guard canTrackHands else { return }
         guard cabinetFromOrigin != nil else {
-            report("Couldn’t place the cabinet.")
+            #if targetEnvironment(simulator)
+            report("Hand tracking is unavailable in this preview.")
+            #else
+            report("Couldn’t place the cabinet. Close it and try again while looking ahead.")
+            #endif
             return
         }
+        report(canTrackHands ? "Place your hands by the cabinet." : "Hand tracking is unavailable.")
+        guard canTrackHands else { return }
 
         let watchdog = Task { @MainActor in
             while !Task.isCancelled {
@@ -111,6 +114,12 @@ final class CabinetHandTracking {
                 update(change.anchor, removed: change.event == .removed, at: CACurrentMediaTime())
             }
         }
+    }
+
+    private static func trackedPose(_ anchor: DeviceAnchor?) -> simd_float4x4? {
+        guard let anchor, anchor.isTracked else { return nil }
+        if #available(visionOS 26.0, *), anchor.trackingState != .tracked { return nil }
+        return anchor.originFromAnchorTransform
     }
 
     private func update(_ anchor: HandAnchor, removed: Bool, at time: Double) {

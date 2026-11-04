@@ -70,5 +70,51 @@ struct HandControlChecks {
         precondition(feed(.right, coin(0.04)).isEmpty)
         precondition(feed(.right, coin(0), after: 0.16).isEmpty)
         print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
+        checkPlacement()
+    }
+
+    static func checkPlacement() {
+        func head(y: Float, yaw: Float, pitch: Float = 0, roll: Float = 0) -> simd_float4x4 {
+            let rotation = simd_quatf(angle: yaw, axis: [0, 1, 0])
+                * simd_quatf(angle: pitch, axis: [1, 0, 0])
+                * simd_quatf(angle: roll, axis: [0, 0, 1])
+            var transform = simd_float4x4(rotation)
+            transform.columns.3 = [0.35, y, 0.2, 1]
+            return transform
+        }
+
+        let early = head(y: 1.32, yaw: .pi / 6 + .pi / 18)
+        let settled = head(y: 1.60, yaw: .pi / 6, pitch: -.pi / 5, roll: -.pi / 18)
+        var placement = CabinetPlacement()
+        for step in 0 ..< 5 {
+            precondition(placement.sample(early, at: Double(step) / 10) == nil)
+        }
+        for step in 5 ..< 10 {
+            precondition(placement.sample(settled, at: Double(step) / 10) == nil)
+        }
+        guard let cabinet = placement.sample(settled, at: 1) else {
+            preconditionFailure("A stable, fully tracked pose should place the cabinet")
+        }
+
+        // The lockbar is in front of the head and horizontal in room space,
+        // with a pure heading rotation despite the pitched and rolled test pose.
+        let close = { (a: Float, b: Float) in abs(a - b) < 0.0001 }
+        precondition(close(cabinet.columns.3.y, 1.35))
+        precondition(close(cabinet.columns.3.x, 0.35 - 0.53 * 0.5))
+        precondition(close(cabinet.columns.3.z, 0.2 - 0.53 * cos(.pi / 6)))
+        precondition(close(cabinet.columns.0.y, 0) && close(cabinet.columns.2.y, 0))
+        precondition(cabinet.columns.1 == SIMD4<Float>(0, 1, 0, 0))
+        precondition(close(cabinet.columns.2.x, 0.5))
+
+        precondition(placement.sample(nil, at: 1.1) == nil)
+        precondition(placement.sample(settled, at: 1.2) == nil)
+        precondition(placement.sample(settled, at: 1.9) == nil)
+        // A ten-degree heading change alone is enough to discard the old window.
+        placement = CabinetPlacement()
+        for step in 20 ..< 25 {
+            precondition(placement.sample(head(y: 1.60, yaw: .pi / 6 + .pi / 18), at: Double(step) / 10) == nil)
+        }
+        precondition(placement.sample(settled, at: 2.5) == nil)
+        print("Placement passed: rejected a low and 10° off-heading opening pose; settled lockbar at 1.35 m, zero heading error and roll")
     }
 }

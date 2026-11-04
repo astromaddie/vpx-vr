@@ -122,9 +122,17 @@ private struct CabinetSpace: View {
         }
         .task(id: scenePhase == .background) {
             guard scenePhase != .background else { return }
+            let root = preview.cabinet.root
+            #if !targetEnvironment(simulator)
+            root.isEnabled = false
+            #endif
             let tracking = CabinetHandTracking(layout: preview.layout, send: preview.handle)
             await tracking.run(
-                placeCabinet: { preview.cabinet.root.transform = Transform(matrix: $0) },
+                placeCabinet: {
+                    root.setTransformMatrix($0, relativeTo: nil)
+                    root.isEnabled = true
+                    return root.transformMatrix(relativeTo: nil)
+                },
                 report: { preview.status = $0 },
                 acceptsInput: { preview.acceptsInput },
                 tick: preview.tick

@@ -60,7 +60,11 @@ final class CabinetModel {
             root.addChild(button)
             root.addChild(pivot)
         }
-        root.position = [0, -0.32, -0.72]
+        #if targetEnvironment(simulator)
+        root.position = [0, -CabinetPlacement.eyeDrop, -0.72]
+        #else
+        root.isEnabled = false
+        #endif
         show([])
     }
 
