@@ -78,7 +78,7 @@ private struct ControlsWindow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("VPX Hand Controls").font(.largeTitle)
-            Label("Wiggle your hands inward at the red side buttons.", systemImage: "hand.raised")
+            Label("Turn your hands inward beside the red flipper buttons.", systemImage: "hand.raised")
             Label("Poke the gold coin box with your index finger.", systemImage: "circle.circle")
             Label("Push the green Start button with your index finger.", systemImage: "play.circle")
             HStack(spacing: 16) {

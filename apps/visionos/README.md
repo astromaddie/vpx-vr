@@ -4,7 +4,7 @@ This visionOS preview is for trying hand controls on a room-locked cabinet. It r
 
 Open `CabinetHands.xcodeproj`, select the **CabinetHands** scheme, and run on a visionOS destination. Choose **Open Cabinet**. The preview asks for hand tracking on a supported device. Look toward the space in front of you and hold steady for placement. The cabinet appears 25 cm below that tracked eye level with its front edge level. Close and reopen it to place it again.
 
-- Put a hand by each red side button. Move a hand inward and back out to flip. Keeping it in holds the flipper.
+- Put a hand by each red side button. Turn or move a hand inward to flip. Hold that pose to keep the flipper up, and relax the hand to release it.
 - Poke the gold coin box with your index finger. It flashes and **Coins** increases once. Pull back before poking it again.
 - Push the green Start button with your index finger. It flashes and **Start Presses** increases once. Pull back before pressing it again.
 
@@ -21,7 +21,7 @@ xcrun swiftc CabinetHands/CabinetHandControls.swift CabinetHands/CabinetPlacemen
 "$check_dir/check"
 ```
 
-The checks cover independent flippers, jitter around a held position, release on tracking loss, re-arming, one action per coin or Start poke, and placement after head tracking settles. The app logs the vertical offset from the tracked head, heading error and the rise along the rendered front edge.
+The checks cover independent flippers, wrist turns with the palm held still, jitter around a held position, release on tracking loss, re-arming, one action per coin or Start poke, and placement after head tracking settles. The app logs the vertical offset from the tracked head, heading error and the rise along the rendered front edge.
 
 ## Cabinet fit
 

@@ -70,7 +70,43 @@ struct HandControlChecks {
         precondition(feed(.right, coin(0.04)).isEmpty)
         precondition(feed(.right, coin(0), after: 0.16).isEmpty)
         print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
+        checkWristTurns()
         checkPlacement()
+    }
+
+    static func checkWristTurns() {
+        let layout = CabinetControlsLayout()
+        var controls = CabinetHandControls(layout: layout)
+        var time = 0.0
+
+        func turn(_ side: CabinetHandSide, _ degrees: Float, roll: Bool = false, far: Bool = false) -> [CabinetInput] {
+            time += 0.016
+            let radians = degrees * .pi / 180
+            let inward = -side.sign * sin(radians)
+            let palm = layout.flipper(side) + [side.sign * 0.035, 0, far ? 0.25 : 0]
+            return controls.update(side, sample: .init(
+                palm: palm,
+                fingerDirection: roll ? [0, 0, -1] : [inward, 0, -cos(radians)],
+                palmNormal: roll ? [inward, -cos(radians), 0] : nil
+            ), at: time)
+        }
+
+        // The palm stays outside the cabinet. Only the angle changes.
+        precondition(turn(.left, 0).isEmpty)
+        precondition(turn(.left, -11).isEmpty)
+        precondition(turn(.left, 0).isEmpty)
+        precondition(turn(.left, 6).isEmpty)
+        precondition(turn(.left, 9) == [.flipper(.left, pressed: true)])
+        precondition(turn(.left, 5).isEmpty)
+        precondition(turn(.right, 0, roll: true).isEmpty)
+        precondition(turn(.right, 9, roll: true) == [.flipper(.right, pressed: true)])
+        precondition(turn(.left, 2) == [.flipper(.left, pressed: false)])
+        precondition(turn(.right, 9, roll: true, far: true) == [.flipper(.right, pressed: false)])
+        precondition(turn(.right, 9, roll: true, far: true).isEmpty)
+        precondition(turn(.right, 0, roll: true).isEmpty)
+        precondition(turn(.right, 9, roll: true) == [.flipper(.right, pressed: true)])
+        precondition(controls.expire(at: time + 0.13) == [.flipper(.right, pressed: false)])
+        print("Wrist turns passed: stationary palm, mirrored inward turns, hold and release")
     }
 
     static func checkPlacement() {

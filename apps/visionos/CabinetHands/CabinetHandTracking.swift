@@ -135,8 +135,22 @@ final class CabinetHandTracking {
             let point = (cabinetFromHand * joint.anchorFromJointTransform).columns.3.xyz
             return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
         }
+        let palm = joint(.middleFingerKnuckle)
+        let fingerDirection: SIMD3<Float>?
+        if let palm, let wrist = joint(.wrist) {
+            fingerDirection = palm - wrist
+        } else {
+            fingerDirection = nil
+        }
+        let palmNormal: SIMD3<Float>?
+        if let fingerDirection, let index = joint(.indexFingerKnuckle), let little = joint(.littleFingerKnuckle) {
+            // This order gives both palms the same outward-facing normal relative to their joints.
+            palmNormal = side.sign * simd_cross(index - little, fingerDirection)
+        } else {
+            palmNormal = nil
+        }
         let sample = CabinetHandSample(
-            palm: joint(.middleFingerKnuckle), index: joint(.indexFingerTip)
+            palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal
         )
         controls.update(side, sample: sample, at: time).forEach(send)
     }
