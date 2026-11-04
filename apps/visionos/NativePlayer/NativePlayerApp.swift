@@ -10,7 +10,7 @@ struct NativePlayerApp: App {
     @State private var immersion: ImmersionStyle = .full
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: TableWindow.id) {
             TableWindow(player: player)
         }
         .defaultSize(width: 440, height: 340)
@@ -26,9 +26,12 @@ struct NativePlayerApp: App {
 }
 
 private struct TableWindow: View {
+    static let id = "TimeMachineLauncher"
     let player: NativePlayer
     @Environment(\.openImmersiveSpace) private var openSpace
     @Environment(\.dismissImmersiveSpace) private var dismissSpace
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var transitioning = false
 
     var body: some View {
@@ -50,7 +53,22 @@ private struct TableWindow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(28)
-        .onChange(of: player.needsDismissal) { _, dismiss in
+        .onAppear {
+            player.setLauncherActions(
+                hide: { dismissWindow(id: Self.id) },
+                show: { openWindow(id: Self.id) }
+            )
+        }
+        #if targetEnvironment(simulator)
+        .task {
+            if player.prepareSimulatorLaunch() {
+                if case .error = await openSpace(id: "Table") {
+                    player.status = "Couldn’t open the table."
+                }
+            }
+        }
+        #endif
+        .onChange(of: player.needsDismissal, initial: true) { _, dismiss in
             if dismiss {
                 Task {
                     await dismissSpace()
@@ -81,14 +99,32 @@ private final class NativePlayer {
     var needsDismissal = false
 
     private var compositor: NativeCompositor?
+    private var hideLauncher: (() -> Void)?
+    private var showLauncher: (() -> Void)?
+    private var launcherHidden = false
     private var selectedTable: URL?
     private var cabinetTransform: simd_float4x4?
     private var pump: Task<Void, Never>?
+    #if targetEnvironment(simulator)
+    private var inputCheck: Task<Void, Never>?
+    private var simulatorLaunchPending = CommandLine.arguments.contains("--play-time-machine")
+
+    func prepareSimulatorLaunch() -> Bool {
+        guard simulatorLaunchPending else { return false }
+        simulatorLaunchPending = false
+        return prepareTable()
+    }
+    #endif
     private var tracking: Task<Void, Never>?
     private var loading = false
     private var ready = false
     private var stopping = false
     private var pulses: [VPINBALL_VISION_INPUT: Task<Void, Never>] = [:]
+
+    func setLauncherActions(hide: @escaping () -> Void, show: @escaping () -> Void) {
+        hideLauncher = hide
+        showLauncher = show
+    }
 
     func prepareTable() -> Bool {
         do {
@@ -122,15 +158,21 @@ private final class NativePlayer {
                     try? await Task.sleep(for: .milliseconds(2))
                 }
             }
+            compositor.start()
+            #if targetEnvironment(simulator)
+            // Simulator may expose only one view and no device or hand anchor.
+            var placement = CabinetPlacement()
+            _ = placement.sample(matrix_identity_float4x4, at: 0)
+            for sample in 1...6 {
+                if let transform = placement.sample(matrix_identity_float4x4, at: Double(sample) * 0.1) {
+                    loadTable(table, at: transform)
+                    break
+                }
+            }
+            #else
             tracking = Task {
                 await tracker.run(placeCabinet: { transform in
-                    cabinetTransform = transform
-                    status = "Loading Time Machine..."
-                    loading = VPinballPlay(table.path) == VPINBALL_STATUS_SUCCESS
-                    if !loading {
-                        status = "Couldn’t start loading Time Machine."
-                        needsDismissal = true
-                    }
+                    loadTable(table, at: transform)
                     return transform
                 }, report: { message in
                     if !loading { status = message }
@@ -139,14 +181,32 @@ private final class NativePlayer {
                     needsDismissal = true
                 }
             }
+            #endif
         } catch {
             status = error.localizedDescription
             needsDismissal = true
         }
     }
 
+    private func loadTable(_ table: URL, at transform: simd_float4x4) {
+        cabinetTransform = transform
+        status = "Loading Time Machine..."
+        loading = VPinballPlay(table.path) == VPINBALL_STATUS_SUCCESS
+        if !loading {
+            status = "Couldn’t start loading Time Machine."
+            needsDismissal = true
+        }
+    }
+
     private func step() {
-        guard let compositor, compositor.isClosed else { return }
+        guard let compositor else { return }
+        if !compositor.isClosed {
+            if !launcherHidden, compositor.hasPresentedTable {
+                launcherHidden = true
+                hideLauncher?()
+            }
+            return
+        }
         tracking?.cancel()
         tracking = nil
         if ready, !stopping {
@@ -163,6 +223,11 @@ private final class NativePlayer {
             if let cabinetTransform { compositor?.place(cabinetTransform) }
             loading = false
             ready = true
+            #if targetEnvironment(simulator)
+            if CommandLine.arguments.contains("--check-controls"), inputCheck == nil {
+                inputCheck = Task { await checkControls() }
+            }
+            #endif
             status = "Poke the coin box and Start. Grab, pull, and release the plunger. Turn your wrists to flip."
         case VPINBALL_EVENT_PLAYER_FAILED:
             loading = false
@@ -181,6 +246,10 @@ private final class NativePlayer {
         tracking = nil
         pump?.cancel()
         pump = nil
+        #if targetEnvironment(simulator)
+        inputCheck?.cancel()
+        inputCheck = nil
+        #endif
         clearButtons()
         ready = false
         loading = false
@@ -188,7 +257,61 @@ private final class NativePlayer {
         isOpen = false
         compositor = nil
         cabinetTransform = nil
+        if launcherHidden {
+            launcherHidden = false
+            showLauncher?()
+        }
     }
+
+    #if targetEnvironment(simulator)
+    private func checkControls() async {
+        while !Task.isCancelled && compositor?.hasPresentedTable == false {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !Task.isCancelled, ready else { return }
+
+        // The ROM can still be starting when the first frame reaches the GPU.
+        try? await Task.sleep(for: .seconds(4))
+        // The Data East script delays the ROM's coin-switch pulse by 750 ms.
+        let inputs: [(CabinetInput, VPINBALL_VISION_INPUT, Duration)] = [
+            (.insertCoin, VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100)),
+            (.insertCoin, VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100)),
+            (.pressStart, VPINBALL_VISION_START, .seconds(2)),
+            (.flipper(.left, pressed: true), VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150)),
+            (.flipper(.right, pressed: true), VPINBALL_VISION_RIGHT_FLIPPER, .milliseconds(150))
+        ]
+        for (event, button, delay) in inputs {
+            guard !Task.isCancelled, ready else { return }
+            handle(event)
+            try? await Task.sleep(for: .milliseconds(30))
+            let mask = UInt32(1) << button.rawValue
+            guard VPinballVisionPressedButtons() & mask != 0 else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator button \(button.rawValue) never reached the input manager")
+                return
+            }
+            if case let .flipper(side, _) = event { handle(.flipper(side, pressed: false)) }
+            try? await Task.sleep(for: delay)
+            guard VPinballVisionPressedButtons() & mask == 0 else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator button \(button.rawValue) stayed pressed")
+                return
+            }
+        }
+
+        handle(.pullPlunger(0.5))
+        try? await Task.sleep(for: .milliseconds(350))
+        guard abs(VPinballVisionPlungerPosition() - 0.5) < 0.02 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator half pull never reached the plunger handler")
+            return
+        }
+        handle(.releasePlunger(0.5))
+        try? await Task.sleep(for: .milliseconds(500))
+        guard abs(VPinballVisionPlungerPosition()) < 0.02 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator plunger failed to return to rest")
+            return
+        }
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, start, both flippers and half pull in the native input manager")
+    }
+    #endif
 
     private func handle(_ input: CabinetInput) {
         guard ready, !stopping else { return }

@@ -31,7 +31,7 @@ The player can keep a table's authored cabinet and resolve control locations fro
 
 ## Native VPX bring-up
 
-The native player builds VPX and its plugins for ARM64 visionOS. Its Compositor Services host supplies the two predicted eye poses and submits color and depth from BGFX on a shared Metal queue. The standalone hand-control preview remains a separate Xcode scheme.
+The native player builds VPX and its plugins for ARM64 visionOS. Its Compositor Services thread requests eye poses and presents the most recent picture VPX has queued. VPX alternates between two stereo color and depth buffers. Both threads use the same Metal queue, so a buffer can be reused as soon as its compositor copy is queued. Table loading and Metal shader compilation happen on the engine's threads, outside compositor submissions. The standalone hand-control preview remains a separate Xcode scheme.
 
 Build the dependencies with CMake, Ninja, and Bison 3.8.2 or newer on the path, using the full Xcode SDK.
 
@@ -46,6 +46,28 @@ Open `CabinetHands.xcodeproj`, select the **VPXVision** scheme and the Vision Pr
 The Vision Pro path uses VPX's shared stereo culling, texture budget, and spatial audio code. Set `VPX_VR_PERF=5` in the launch environment to log the same timing breakdown as the Frame. Packed HDR can be compared with `VPX_PACKED_HDR=0|1`.
 
 
+### Run Time Machine in Simulator
+
+Build the pinned Simulator dependencies and the same VPX framework against the Simulator SDK.
+
+```sh
+BUILD_TYPE=Release CMAKE_GENERATOR=Ninja VPX_VISIONOS_SDK=xrsimulator platforms/visionos-arm64/external.sh
+cmake -S . -B build-visionos-sim -G Ninja -DPLATFORM=visionos -DARCH=arm64 \
+  -DCMAKE_OSX_SYSROOT=xrsimulator -DCMAKE_BUILD_TYPE=Release
+cmake --build build-visionos-sim --target vpinball --parallel 2
+```
+
+Build **VPXVision** for a visionOS Simulator destination with `VPX_NATIVE_BUILD_DIR` pointing to that build directory. Install the app in a test simulator and put the same table and ROM in its Documents folder as above. With the test simulator booted, run:
+
+```sh
+xcrun simctl launch booted org.vpinball.vpxvision.player \
+  --play-time-machine --check-render-stall --check-controls
+```
+
+The Simulator test uses a fixed cabinet placement and can run with a single compositor view. The stall check holds VPX's first render for three seconds. The compositor should keep submitting frames during the pause, then report a completed table frame and continue showing newly rendered VPX frames. The control check waits for ROM startup, then checks coin, Start, and both flippers in the input manager and checks the half-pull and rest positions in the native plunger handler. Check the VPX log for `tmac_a24`, `Startup done`, and the control check, and inspect a Simulator screenshot for the actual table.
+
+On visionOS Simulator 26.5, the compositor submitted 180 frames during the three-second stall and recovered to a rendered table. A normal launch with fresh Time Machine NVRAM completed 720 compositor frames and queued 719 VPX frames by the final sample. The input check passed, and the backglass showed Ball 01 after the ROM accepted credit and Start.
+
 ### Build the pinned libraries
 
 Use the versions in `platforms/config.sh`. Unpack the `bgfx.cmake` release and replace its `bgfx` directory with the pinned VPX fork, as in the iOS dependency script. From the VPX checkout, set `bgfx_cmake` to the path of that unpacked directory.
@@ -53,6 +75,7 @@ Use the versions in `platforms/config.sh`. Unpack the `bgfx.cmake` release and r
 ```sh
 patch -p1 -d "$bgfx_cmake" < platforms/visionos-arm64/bgfx-cmake-visionos.patch
 patch -p1 -d "$bgfx_cmake/bgfx" < platforms/visionos-arm64/bgfx-metal-command-queue.patch
+patch -p1 -d "$bgfx_cmake/bgfx" < platforms/visionos-arm64/bgfx-metal-layer-topology.patch
 cmake -S "$bgfx_cmake" -B "$bgfx_cmake/build-xros" -G Ninja \
   -DCMAKE_SYSTEM_NAME=visionOS -DCMAKE_OSX_SYSROOT=xros \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=2.0 -DCMAKE_OSX_ARCHITECTURES=arm64 \

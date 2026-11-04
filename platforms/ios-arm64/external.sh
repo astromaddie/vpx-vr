@@ -157,6 +157,9 @@ fi
 #
 
 BGFX_EXPECTED_SHA="${BGFX_CMAKE_VERSION}-${BGFX_PATCH_SHA}-001"
+if [[ "$APPLE_TARGET" == visionos-*-arm64 || "$APPLE_TARGET" == visionos-arm64 ]]; then
+   BGFX_EXPECTED_SHA+=".visionos2"
+fi
 BGFX_FOUND_SHA="$([ -f bgfx/cache.txt ] && cat bgfx/cache.txt || echo "")"
 
 if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
@@ -173,9 +176,10 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    cd bgfx.cmake
    rm -rf bgfx
    mv ../bgfx-${BGFX_PATCH_SHA} bgfx
-   if [ "$APPLE_TARGET" = visionos-arm64 ]; then
+   if [[ "$APPLE_TARGET" == visionos-*-arm64 || "$APPLE_TARGET" == visionos-arm64 ]]; then
       patch -p1 < "$REPO_ROOT/platforms/visionos-arm64/bgfx-cmake-visionos.patch"
       patch -d bgfx -p1 < "$REPO_ROOT/platforms/visionos-arm64/bgfx-metal-command-queue.patch"
+      patch -d bgfx -p1 < "$REPO_ROOT/platforms/visionos-arm64/bgfx-metal-layer-topology.patch"
    fi
    cmake -S. \
       -DBGFX_BUILD_EXAMPLES=OFF \
@@ -192,16 +196,21 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    # Build shaderc as a host tool (always Release: it only runs at build time to
    # compile the embedded shaders, see src/shaders/bgfx/shaders.cmake). The main
    # build targets iOS, so the tool needs a separate host (macOS) configure.
-   cmake -S. \
-      -DBGFX_BUILD_TOOLS=ON \
-      -DBGFX_BUILD_TOOLS_SHADER=ON \
-      -DBGFX_BUILD_TOOLS_BIN2C=OFF \
-      -DBGFX_BUILD_TOOLS_GEOMETRY=OFF \
-      -DBGFX_BUILD_TOOLS_TEXTURE=OFF \
-      -DBGFX_BUILD_EXAMPLES=OFF \
-      -DCMAKE_BUILD_TYPE=Release \
-      -B build-tools
-   cmake --build build-tools --target shaderc -- -j${NUM_PROCS}
+   if [ -n "${VPX_HOST_SHADERC:-}" ]; then
+      mkdir -p build-tools/cmake/bgfx
+      cp "$VPX_HOST_SHADERC" build-tools/cmake/bgfx/shaderc
+   else
+      cmake -S. \
+         -DBGFX_BUILD_TOOLS=ON \
+         -DBGFX_BUILD_TOOLS_SHADER=ON \
+         -DBGFX_BUILD_TOOLS_BIN2C=OFF \
+         -DBGFX_BUILD_TOOLS_GEOMETRY=OFF \
+         -DBGFX_BUILD_TOOLS_TEXTURE=OFF \
+         -DBGFX_BUILD_EXAMPLES=OFF \
+         -DCMAKE_BUILD_TYPE=Release \
+         -B build-tools
+      cmake --build build-tools --target shaderc -- -j${NUM_PROCS}
+   fi
    cd ..
 
    echo "$BGFX_EXPECTED_SHA" > cache.txt
@@ -521,10 +530,14 @@ if [ "${FFMPEG_EXPECTED_SHA}" != "${FFMPEG_FOUND_SHA}" ]; then
    tar xzf FFmpeg-${FFMPEG_SHA}.tar.gz
    mv FFmpeg-${FFMPEG_SHA} ffmpeg
    cd ffmpeg
-   if [ "$APPLE_TARGET" = visionos-arm64 ]; then
+   if [[ "$APPLE_TARGET" == visionos-*-arm64 || "$APPLE_TARGET" == visionos-arm64 ]]; then
       patch -p1 < "$REPO_ROOT/platforms/visionos-arm64/ffmpeg-videotoolbox.patch"
-      FFMPEG_SDK=$(xcrun --sdk xros --show-sdk-path)
-      FFMPEG_FLAGS="-isysroot ${FFMPEG_SDK} -target arm64-apple-xros2.0"
+      FFMPEG_SDK=$(xcrun --sdk "$VPX_VISIONOS_SDK" --show-sdk-path)
+      FFMPEG_TARGET=arm64-apple-xros2.0
+      if [ "$VPX_VISIONOS_SDK" = xrsimulator ]; then
+         FFMPEG_TARGET+=-simulator
+      fi
+      FFMPEG_FLAGS="-isysroot ${FFMPEG_SDK} -target $FFMPEG_TARGET"
       FFMPEG_LDFLAGS="$FFMPEG_FLAGS"
    else
       FFMPEG_SDK=$(xcrun --sdk iphoneos --show-sdk-path)

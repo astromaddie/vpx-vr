@@ -100,6 +100,21 @@ RenderTarget::RenderTarget(RenderDevice* const rd, const SurfaceType type, bgfx:
       m_color_sampler = std::make_shared<Sampler>(rd, name + ".Color", type, colorTex, colFormat, width, height, false);
    if (bgfx::isValid(depthTex))
       m_depth_sampler = std::make_shared<Sampler>(rd, name + ".Depth", type, depthTex, depthFormat, width, height, false);
+#ifdef VPX_VISIONOS_HEADSET
+   if (type == SurfaceType::RT_STEREO)
+   {
+      // The compositor textures are arrays, but VPX also records passes
+      // that target just one eye.
+      for (uint16_t layer = 0; layer < m_nLayers; ++layer)
+      {
+         bgfx::Attachment attachments[2];
+         attachments[0].init(colorTex, bgfx::Access::Write, layer, 1, 0, BGFX_ATTACHMENT_NONE);
+         if (m_has_depth)
+            attachments[1].init(depthTex, bgfx::Access::Write, layer, 1, 0, BGFX_ATTACHMENT_NONE);
+         m_framebuffer_layers[layer] = bgfx::createFrameBuffer(m_has_depth ? 2 : 1, attachments);
+      }
+   }
+#endif
 }
 #endif
 
@@ -754,7 +769,12 @@ void RenderTarget::Activate(const int layer)
    bgfx::setViewName(m_rd->m_activeViewId, m_name.c_str());
    #endif
    // Either bind all layers for instanced rendering or the only requested one for normal rendering (one pass per layer)
-   bgfx::setViewFrameBuffer(m_rd->m_activeViewId, (layer == -1 || m_nLayers == 1) ? m_framebuffer : m_framebuffer_layers[layer]);
+   const auto framebuffer = (layer == -1 || m_nLayers == 1) ? m_framebuffer : m_framebuffer_layers[layer];
+#ifdef VPX_VISIONOS_HEADSET
+   if (m_type == SurfaceType::RT_STEREO && !bgfx::isValid(framebuffer))
+      PLOGE << "Invalid stereo framebuffer for " << m_name << " layer " << layer;
+#endif
+   bgfx::setViewFrameBuffer(m_rd->m_activeViewId, framebuffer);
    bgfx::setViewRect(m_rd->m_activeViewId, 0, 0, m_width, m_height);
    m_needResolve = true;
 

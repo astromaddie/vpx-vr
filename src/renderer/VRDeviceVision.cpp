@@ -17,14 +17,21 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
       return;
    }
 
-   if (!m_visionTarget)
+   if (frame.eyeBuffer >= m_visionTargets.size())
+   {
+      m_visionHost.endFrame(m_visionHost.user, 0);
+      return;
+   }
+
+   auto& target = m_visionTargets[frame.eyeBuffer];
+   if (!target)
    {
       const auto width = static_cast<uint16_t>(m_eyeWidth);
       const auto height = static_cast<uint16_t>(m_eyeHeight);
       const auto color = bgfx::createTexture2D(width, height, false, 2, bgfx::TextureFormat::BGRA8,
-         BGFX_TEXTURE_RT, nullptr, reinterpret_cast<uint64_t>(m_visionHost.color));
+         BGFX_TEXTURE_RT, nullptr, reinterpret_cast<uint64_t>(m_visionHost.color[frame.eyeBuffer]));
       const auto depth = bgfx::createTexture2D(width, height, false, 2, bgfx::TextureFormat::D32F,
-         BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST, nullptr, reinterpret_cast<uint64_t>(m_visionHost.depth));
+         BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST, nullptr, reinterpret_cast<uint64_t>(m_visionHost.depth[frame.eyeBuffer]));
       if (!bgfx::isValid(color) || !bgfx::isValid(depth))
       {
          if (bgfx::isValid(color)) bgfx::destroy(color);
@@ -45,7 +52,7 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
          m_visionHost.endFrame(m_visionHost.user, 0);
          return;
       }
-      m_visionTarget = std::make_unique<RenderTarget>(rd, SurfaceType::RT_STEREO, buffer,
+      target = std::make_unique<RenderTarget>(rd, SurfaceType::RT_STEREO, buffer,
          color, bgfx::TextureFormat::BGRA8, depth, bgfx::TextureFormat::D32F,
          "Vision Pro Eyes", width, height, colorFormat::RGBA8);
       PLOGI << "Vision Pro stereo eye framebuffer ready";
@@ -76,11 +83,12 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
    }
    UpdateSpatialAudio(true);
    m_predictedDisplayTimestamp = static_cast<float>(usec() / 1e6) + frame.secondsUntilPresentation;
-   const bool rendered = submit(m_visionTarget.get());
+   const bool rendered = submit(target.get());
    m_visionHost.endFrame(m_visionHost.user, rendered);
 }
 
 void VRDevice::ReleaseVisionTarget()
 {
-   m_visionTarget.reset();
+   for (auto& target : m_visionTargets)
+      target.reset();
 }

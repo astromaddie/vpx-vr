@@ -1,0 +1,21 @@
+--- a/src/renderer_mtl.cpp
++++ b/src/renderer_mtl.cpp
+@@ -3359,14 +3359,2 @@
+-				bool layeredTarget = false;
+-				if (isValid(_fbh) )
+-				{
+-					const FrameBufferMtl& frameBuffer = m_frameBuffers[_fbh.idx];
+-					for (uint32_t ii = 0; ii < frameBuffer.m_num; ++ii)
+-					{
+-						layeredTarget |= frameBuffer.m_colorAttachment[ii].numLayers > 1;
+-					}
+-					if (isValid(frameBuffer.m_depthHandle) )
+-					{
+-						layeredTarget |= frameBuffer.m_depthAttachment.numLayers > 1;
+-					}
+-				}
+-
++				// Metal requires a topology class when the vertex shader writes
++				// render_target_array_index, even for a single-layer attachment.
+@@ -3376 +3363,0 @@
+-					: !layeredTarget            ? MTL::PrimitiveTopologyClassUnspecified

@@ -246,7 +246,7 @@ public:
 
 private:
    VPINBALL_VISION_HOST m_visionHost{};
-   std::unique_ptr<RenderTarget> m_visionTarget;
+   std::array<std::unique_ptr<RenderTarget>, 2> m_visionTargets;
 #endif
 
 #ifdef ENABLE_XR

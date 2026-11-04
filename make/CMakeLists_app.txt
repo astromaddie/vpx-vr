@@ -790,7 +790,14 @@ elseif(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM 
       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-changes-meaning>
    )
 
-   set(BUILD_LIBS_DIR "${CMAKE_SOURCE_DIR}/third-party/build-libs/${PLATFORM}-${ARCH}")
+   set(BUILD_LIBS_PLATFORM "${PLATFORM}")
+   if(PLATFORM STREQUAL "visionos" AND CMAKE_OSX_SYSROOT MATCHES "xrsimulator|XRSimulator")
+      set(BUILD_LIBS_PLATFORM "visionos-simulator")
+   endif()
+   set(BUILD_LIBS_DIR "${CMAKE_SOURCE_DIR}/third-party/build-libs/${BUILD_LIBS_PLATFORM}-${ARCH}")
+   if(PLATFORM STREQUAL "visionos")
+      set_property(TARGET vpinball APPEND PROPERTY LINK_DEPENDS "${BUILD_LIBS_DIR}/libbgfx.a")
+   endif()
    set(RUNTIME_LIBS_DIR "${CMAKE_SOURCE_DIR}/third-party/runtime-libs/${PLATFORM}-${ARCH}")
 
    target_link_directories(vpinball PUBLIC

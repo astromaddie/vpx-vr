@@ -30,21 +30,55 @@ struct NativeLayerConfiguration: CompositorLayerConfiguration {
     }
 }
 
-/// The player owns the frame loop. Only the cabinet transform crosses from the
-/// main actor after initialization. All Metal commands use one command queue.
+/// Compositor Services frames live only on the presentation thread. VPX's
+/// render thread receives the latest eye poses and publishes a GPU submission.
 final class NativeCompositor: @unchecked Sendable {
+    private struct Picture {
+        let color: MTLTexture
+        let depth: MTLTexture
+    }
+
+    private struct Request {
+        let packet: VPINBALL_VISION_FRAME
+        let anchor: DeviceAnchor?
+        let presentationTime: Double
+    }
+
+    private struct Submission {
+        let buffer: Int
+        let anchor: DeviceAnchor?
+    }
+
+    private struct Handoff {
+        var originFromCabinet: simd_float4x4?
+        var request: Request?
+        var drawing: Submission?
+        var latest: Submission?
+        var presentedPicture = false
+        var renderedFrames = 0
+        #if targetEnvironment(simulator)
+        var submittedFrames = 0
+        #endif
+    }
+
+    private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
     private let layer: LayerRenderer
     private let world: WorldTrackingProvider
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
-    private let color: MTLTexture
-    private let depth: MTLTexture
-    private let placement = OSAllocatedUnfairLock<simd_float4x4?>(initialState: nil)
-    private var current: (LayerRenderer.Frame, [LayerRenderer.Drawable], Int)?
+    private let pictures: [Picture]
+    private let handoff = OSAllocatedUnfairLock(uncheckedState: Handoff())
+    // Only touched by the presentation thread.
+    private var pictureCount = 0
+    #if targetEnvironment(simulator)
+    // Only accessed by VPX's render thread.
+    private var checkFirstRenderStall = CommandLine.arguments.contains("--check-render-stall")
+    #endif
 
     var isRunning: Bool { layer.state == .running }
     var isClosed: Bool { layer.state == .invalidated }
+    var hasPresentedTable: Bool { handoff.withLock { $0.presentedPicture } }
 
     init(layer: LayerRenderer, world: WorldTrackingProvider) throws {
         self.layer = layer
@@ -60,12 +94,15 @@ final class NativeCompositor: @unchecked Sendable {
         descriptor.arrayLength = 2
         descriptor.storageMode = .private
         descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
-        descriptor.pixelFormat = .bgra8Unorm
-        guard let color = device.makeTexture(descriptor: descriptor) else { throw SetupError.metal }
-        self.color = color
-        descriptor.pixelFormat = .depth32Float
-        guard let depth = device.makeTexture(descriptor: descriptor) else { throw SetupError.metal }
-        self.depth = depth
+        pictures = try (0..<2).map { index in
+            descriptor.pixelFormat = .bgra8Unorm
+            guard let color = device.makeTexture(descriptor: descriptor) else { throw SetupError.metal }
+            descriptor.pixelFormat = .depth32Float
+            guard let depth = device.makeTexture(descriptor: descriptor) else { throw SetupError.metal }
+            color.label = "VPX Eyes \(index) Color"
+            depth.label = "VPX Eyes \(index) Depth"
+            return Picture(color: color, depth: depth)
+        }
 
         let library = try device.makeLibrary(source: Self.blitSource, options: nil)
         let pass = MTLRenderPipelineDescriptor()
@@ -82,7 +119,7 @@ final class NativeCompositor: @unchecked Sendable {
 
     // Called after the player can service a frame request without blocking on table load.
     func place(_ transform: simd_float4x4) {
-        placement.withLock { $0 = transform }
+        handoff.withLock { $0.originFromCabinet = transform }
     }
 
     func configurePlayer() -> Bool {
@@ -90,10 +127,12 @@ final class NativeCompositor: @unchecked Sendable {
         host.user = Unmanaged.passUnretained(self).toOpaque()
         host.metalDevice = Unmanaged.passUnretained(layer.device as AnyObject).toOpaque()
         host.metalQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
-        host.color = Unmanaged.passUnretained(color as AnyObject).toOpaque()
-        host.depth = Unmanaged.passUnretained(depth as AnyObject).toOpaque()
-        host.width = UInt32(color.width)
-        host.height = UInt32(color.height)
+        host.color = (Unmanaged.passUnretained(pictures[0].color as AnyObject).toOpaque(),
+                      Unmanaged.passUnretained(pictures[1].color as AnyObject).toOpaque())
+        host.depth = (Unmanaged.passUnretained(pictures[0].depth as AnyObject).toOpaque(),
+                      Unmanaged.passUnretained(pictures[1].depth as AnyObject).toOpaque())
+        host.width = UInt32(pictures[0].color.width)
+        host.height = UInt32(pictures[0].color.height)
         host.beginFrame = { user, frame in
             guard let user, let frame else { return 0 }
             let renderer = Unmanaged<NativeCompositor>.fromOpaque(user).takeUnretainedValue()
@@ -107,31 +146,130 @@ final class NativeCompositor: @unchecked Sendable {
         return VPinballVisionConfigure(&host) == VPINBALL_STATUS_SUCCESS
     }
 
+    func start() {
+        let thread = Thread { [self] in
+            while !isClosed {
+                if isRunning {
+                    autoreleasepool { present() }
+                } else {
+                    handoff.withLock { $0.request = nil }
+                    layer.waitUntilRunning()
+                }
+            }
+        }
+        thread.name = "VPX Compositor"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+    }
+
     private func begin(_ packet: inout VPINBALL_VISION_FRAME) -> Bool {
-        guard isRunning, let frame = layer.queryNextFrame() else { return false }
+        guard isRunning else { return false }
+        let acquired: VPINBALL_VISION_FRAME? = handoff.withLock { state in
+            guard let request = state.request else { return nil }
+            state.request = nil
+            let buffer = state.latest?.buffer == 0 ? 1 : 0
+            var result = request.packet
+            result.eyeBuffer = UInt32(buffer)
+            result.secondsUntilPresentation = Float(max(0, request.presentationTime - CACurrentMediaTime()))
+            state.drawing = Submission(buffer: buffer, anchor: request.anchor)
+            return result
+        }
+        guard let acquired else { return false }
+        packet = acquired
+        #if targetEnvironment(simulator)
+        if checkFirstRenderStall {
+            checkFirstRenderStall = false
+            let before = handoff.withLock { $0.submittedFrames }
+            Thread.sleep(forTimeInterval: 3)
+            let submitted = handoff.withLock { $0.submittedFrames - before }
+            if submitted > 0 {
+                Self.log.info("Simulator submitted \(submitted) frames during a three-second VPX render stall")
+            } else {
+                Self.log.error("Simulator compositor stalled with VPX")
+            }
+        }
+        #endif
+        return true
+    }
+
+    private func end(rendered: Bool) {
+        handoff.withLock { state in
+            if rendered, let drawing = state.drawing {
+                state.latest = drawing
+                state.renderedFrames += 1
+            }
+            state.drawing = nil
+        }
+    }
+
+    private func present() {
+        guard let frame = layer.queryNextFrame() else {
+            Thread.sleep(forTimeInterval: 0.001)
+            return
+        }
         frame.startUpdate()
         frame.endUpdate()
-        guard let timing = frame.predictTiming() else { return false }
+        guard let timing = frame.predictTiming() else { return }
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
+        guard let command = queue.makeCommandBuffer() else { return }
         frame.startSubmission()
 
         let drawables = frame.queryDrawables()
-        guard let chosen = drawables.firstIndex(where: { $0.target == .builtIn }) ?? drawables.indices.first else {
-            return false
-        }
+        guard let chosen = drawables.firstIndex(where: { $0.target == .builtIn }) ?? drawables.indices.first else { return }
+        defer { frame.endSubmission() }
+
         let drawable = drawables[chosen]
         let time = Self.seconds(LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.presentationTime))
-        let anchor = world.queryDeviceAnchor(atTimestamp: time)
-        for target in drawables { target.deviceAnchor = anchor }
-        current = (frame, drawables, chosen)
-        guard let anchor, anchor.isTracked, drawable.views.count == 2,
-              let originFromCabinet = placement.withLock({ $0 }) else {
-            end(rendered: false)
-            return false
+        let anchor = world.state == .running ? world.queryDeviceAnchor(atTimestamp: time) : nil
+        let request = makeRequest(drawable, anchor: anchor, presentationTime: time)
+        // Hold the slot until the copy is queued. VPX can then reuse it on
+        // the same queue even if this copy has not finished on the GPU.
+        handoff.withLockUnchecked { state in
+            state.request = request
+            let completed = state.latest
+            let drewTable = encode(drawables, chosen: chosen, anchor: anchor, completed: completed, command: command)
+            if drewTable {
+                pictureCount += 1
+                #if targetEnvironment(simulator)
+                let report = pictureCount == 1 || pictureCount.isMultiple(of: 120)
+                #else
+                let report = pictureCount == 1
+                #endif
+                if report {
+                    let count = pictureCount
+                    let rendered = state.renderedFrames
+                    command.addCompletedHandler { [self] buffer in
+                        if let error = buffer.error {
+                            Self.log.error("Table frame \(count) failed: \(error.localizedDescription, privacy: .public)")
+                        } else {
+                            if count == 1 { handoff.withLock { $0.presentedPicture = true } }
+                            Self.log.info("Table frame \(count) completed, \(rendered) VPX frames submitted")
+                        }
+                    }
+                }
+            }
+            command.commit()
+            #if targetEnvironment(simulator)
+            state.submittedFrames += 1
+            #endif
         }
+    }
+
+    private func makeRequest(
+        _ drawable: LayerRenderer.Drawable, anchor: DeviceAnchor?, presentationTime: Double
+    ) -> Request? {
+        guard let originFromCabinet = handoff.withLock({ $0.originFromCabinet }), !drawable.views.isEmpty else {
+            return nil
+        }
+        #if targetEnvironment(simulator)
+        let originFromHead = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
+        #else
+        guard let anchor, anchor.isTracked, drawable.views.count == 2 else { return nil }
+        let originFromHead = anchor.originFromAnchorTransform
+        #endif
 
         func view(_ eye: Int) -> simd_float4x4 {
-            (anchor.originFromAnchorTransform * drawable.views[eye].transform).inverse * originFromCabinet
+            (originFromHead * drawable.views[eye].transform).inverse * originFromCabinet
         }
         func projection(_ eye: Int) -> simd_float4x4 {
             var matrix = drawable.computeProjection(convention: .rightUpBack, viewIndex: eye)
@@ -140,21 +278,22 @@ final class NativeCompositor: @unchecked Sendable {
             }
             return matrix
         }
+        var packet = VPINBALL_VISION_FRAME()
+        let right = drawable.views.count == 2 ? 1 : 0
         Self.copy(view(0), to: &packet.leftView)
-        Self.copy(view(1), to: &packet.rightView)
+        Self.copy(view(right), to: &packet.rightView)
         Self.copy(projection(0), to: &packet.leftProjection)
-        Self.copy(projection(1), to: &packet.rightProjection)
-        packet.secondsUntilPresentation = Float(max(0, time - CACurrentMediaTime()))
-        return true
+        Self.copy(projection(right), to: &packet.rightProjection)
+        return Request(packet: packet, anchor: anchor, presentationTime: presentationTime)
     }
 
-    private func end(rendered: Bool) {
-        guard let (frame, drawables, chosen) = current else { return }
-        current = nil
-        defer { frame.endSubmission() }
-
-        guard let command = queue.makeCommandBuffer() else { return }
+    private func encode(
+        _ drawables: [LayerRenderer.Drawable], chosen: Int, anchor: DeviceAnchor?,
+        completed: Submission?, command: MTLCommandBuffer
+    ) -> Bool {
+        var drewTable = false
         for (index, drawable) in drawables.enumerated() {
+            drawable.deviceAnchor = index == chosen ? completed?.anchor ?? anchor : anchor
             if index == chosen {
                 for (eye, view) in drawable.views.enumerated() {
                     let map = view.textureMap
@@ -174,22 +313,24 @@ final class NativeCompositor: @unchecked Sendable {
                     pass.depthAttachment.clearDepth = 0
 
                     guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { continue }
-                    if rendered {
+                    if let completed {
+                        let picture = pictures[completed.buffer]
                         var slice = UInt32(eye)
                         encoder.setViewport(map.viewport)
                         encoder.setRenderPipelineState(pipeline)
                         encoder.setDepthStencilState(depthState)
-                        encoder.setFragmentTexture(color, index: 0)
-                        encoder.setFragmentTexture(depth, index: 1)
+                        encoder.setFragmentTexture(picture.color, index: 0)
+                        encoder.setFragmentTexture(picture.depth, index: 1)
                         encoder.setFragmentBytes(&slice, length: MemoryLayout<UInt32>.size, index: 0)
                         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                        drewTable = true
                     }
                     encoder.endEncoding()
                 }
             }
             drawable.encodePresent(commandBuffer: command)
         }
-        command.commit()
+        return drewTable
     }
 
     private static func seconds(_ duration: Duration) -> Double {
@@ -223,10 +364,8 @@ final class NativeCompositor: @unchecked Sendable {
                               constant uint& eye [[buffer(0)]]) {
         constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
         constexpr sampler depthSampler(coord::normalized, address::clamp_to_edge, filter::nearest);
-        // VPX's RGBA8 tonemap output is encoded for a display. Undo that
-        // encoding before writing to the compositor's sRGB attachment.
-        half3 srgb = color.sample(colorSampler, v.uv, eye).rgb;
-        half3 linear = select(srgb / 12.92h, pow((srgb + 0.055h) / 1.055h, half3(2.4h)), srgb > 0.04045h);
+        // VPX tone maps stereo frames to linear RGB.
+        half3 linear = color.sample(colorSampler, v.uv, eye).rgb;
         return { half4(linear, 1), 1.0 - depth.sample(depthSampler, v.uv, eye) };
     }
     """
