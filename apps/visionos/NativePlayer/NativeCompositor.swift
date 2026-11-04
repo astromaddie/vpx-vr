@@ -82,7 +82,7 @@ final class NativeCompositor: @unchecked Sendable {
     var isClosed: Bool { layer.state == .invalidated }
     var hasPresentedTable: Bool { handoff.withLock { $0.presentedPicture } }
 
-    init(layer: LayerRenderer, world: WorldTrackingProvider, mixedReality: Bool) throws {
+    init(layer: LayerRenderer, world: WorldTrackingProvider, mixedReality: Bool, eyeSize: Int) throws {
         self.layer = layer
         self.world = world
         self.mixedReality = mixedReality
@@ -92,8 +92,9 @@ final class NativeCompositor: @unchecked Sendable {
 
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type2DArray
-        descriptor.width = 1536
-        descriptor.height = 1536
+        descriptor.width = eyeSize
+        descriptor.height = eyeSize
+        Self.log.info("VPX eye targets: \(eyeSize) × \(eyeSize)")
         descriptor.arrayLength = 2
         descriptor.storageMode = .private
         descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
@@ -237,6 +238,9 @@ final class NativeCompositor: @unchecked Sendable {
             let drewTable = encode(drawables, chosen: chosen, anchor: anchor, completed: completed, command: command)
             if drewTable {
                 pictureCount += 1
+                if pictureCount == 1, let viewport = drawable.views.first?.textureMap.viewport {
+                    Self.log.info("Compositor eye viewport: \(Int(viewport.width)) × \(Int(viewport.height)), \(drawable.views.count) views")
+                }
                 #if targetEnvironment(simulator)
                 let report = pictureCount == 1 || pictureCount.isMultiple(of: 120)
                 #else

@@ -47,102 +47,81 @@ struct CabinetPlacement {
     }
 }
 
-/// Both pinches must start at the cabinet sides. Only their horizontal
-/// midpoint and heading can move the cabinet, so it stays on the floor.
+/// Placement uses a paired wrist sample only while the editing panel is open.
 struct CabinetRoomPlacement {
     private struct Contact {
         let point: SIMD3<Float>
-        let gap: Float
         let time: Double
     }
 
-    private struct Grab {
+    private struct Hold {
         let pose: simd_float4x4
         let center: SIMD3<Float>
         let heading: SIMD2<Float>
     }
 
-    private static let pinchDistance: Float = 0.024
-    private static let releaseDistance: Float = 0.041
-    private static let sampleLifetime = 0.12
-
-    let width: Float
-    var pose: simd_float4x4
+    let original: simd_float4x4
+    private(set) var pose: simd_float4x4
     private var contacts: [CabinetHandSide: Contact] = [:]
-    private var grab: Grab?
-    private var needsRelease = false
-    private var armed: Set<CabinetHandSide> = []
-    private var lastMove: Double = -.infinity
-    var isMoving: Bool { grab != nil }
+    private var hold: Hold?
+    private var readySince: Double?
+    private var lastPair: Double = -.infinity
+    var isMoving: Bool { hold != nil }
 
-    init(width: Float, pose: simd_float4x4) {
-        self.width = width
+    init(pose: simd_float4x4) {
+        original = pose
         self.pose = pose
     }
 
-    mutating func update(_ side: CabinetHandSide, index: SIMD3<Float>?, thumb: SIMD3<Float>?, at time: Double) {
-        if let index, let thumb {
-            contacts[side] = Contact(point: (index + thumb) * 0.5, gap: simd_distance(index, thumb), time: time)
+    mutating func update(_ side: CabinetHandSide, wrist: SIMD3<Float>?, at time: Double) {
+        let minimumY = pose.columns.3.y + (isMoving ? 0.015 : 0.075)
+        if let wrist, wrist.y >= minimumY {
+            contacts[side] = Contact(point: wrist, time: time)
         } else {
             contacts.removeValue(forKey: side)
         }
-
         expire(at: time)
-        if !isMoving {
-            if let contact = contacts[side], nearEdge(contact, side) {
-                if contact.gap >= Self.releaseDistance { armed.insert(side) }
-            } else {
-                armed.remove(side)
-            }
-        }
         guard let left = contacts[.left], let right = contacts[.right],
-              time - min(left.time, right.time) <= Self.sampleLifetime else { return }
-        if needsRelease {
-            if left.gap >= Self.releaseDistance && right.gap >= Self.releaseDistance {
-                needsRelease = false
-            }
-            return
-        }
+              min(left.time, right.time) > lastPair else { return }
+        // Apply one pose per pair of new samples to avoid alternating hand jitter.
+        lastPair = max(left.time, right.time)
 
         let center = (left.point + right.point) * 0.5
         let axis = SIMD2(right.point.x - left.point.x, right.point.z - left.point.z)
         let span = simd_length(axis)
-        guard span >= 0.22 else { return }
+        guard (0.23...1.15).contains(span) else {
+            hold = nil
+            readySince = nil
+            return
+        }
         let heading = axis / span
-        if let grab {
-            // Apply one pose per pair of new samples to avoid alternating hand jitter.
-            guard min(left.time, right.time) > lastMove else { return }
-            lastMove = max(left.time, right.time)
-            let cosine = simd_dot(grab.heading, heading)
-            let sine = grab.heading.y * heading.x - grab.heading.x * heading.y
+        if let hold {
+            let cosine = simd_dot(hold.heading, heading)
+            let sine = hold.heading.y * heading.x - hold.heading.x * heading.y
             let rotation = simd_float4x4(
                 SIMD4(cosine, 0, -sine, 0), SIMD4(0, 1, 0, 0),
                 SIMD4(sine, 0, cosine, 0), SIMD4(0, 0, 0, 1))
-            var moved = rotation * grab.pose
-            let pivot = rotation * (grab.pose.columns.3 - SIMD4(grab.center, 1)) + SIMD4(center, 1)
-            moved.columns.3 = SIMD4(pivot.x, grab.pose.columns.3.y, pivot.z, 1)
+            var moved = rotation * hold.pose
+            let pivot = rotation * (hold.pose.columns.3 - SIMD4(hold.center, 1)) + SIMD4(center, 1)
+            moved.columns.3 = SIMD4(pivot.x, hold.pose.columns.3.y, pivot.z, 1)
             pose = moved
-        } else if armed.count == 2 && left.gap <= Self.pinchDistance && right.gap <= Self.pinchDistance {
-            grab = Grab(pose: pose, center: center, heading: heading)
-            lastMove = max(left.time, right.time)
+        } else {
+            readySince = readySince ?? time
+            if time - (readySince ?? time) >= 0.28 {
+                hold = Hold(pose: pose, center: center, heading: heading)
+            }
         }
     }
 
-    private func nearEdge(_ contact: Contact, _ side: CabinetHandSide) -> Bool {
-        let local = pose.inverse * SIMD4(contact.point, 1)
-        let edge = SIMD3(side.sign * width * 0.5, -0.05, -0.12)
-        return simd_distance(SIMD3(local.x, local.y, local.z), edge) <= 0.13
-    }
-
     mutating func expire(at time: Double) {
-        guard isMoving else { return }
-        if CabinetHandSide.allCases.contains(where: { side in
-            guard let contact = contacts[side] else { return true }
-            return time - contact.time > Self.sampleLifetime || contact.gap >= Self.releaseDistance
-        }) {
-            grab = nil
-            needsRelease = true
-            armed.removeAll()
+        for side in CabinetHandSide.allCases {
+            if let contact = contacts[side], time - contact.time > 0.18 {
+                contacts.removeValue(forKey: side)
+            }
+        }
+        if contacts.count != 2 {
+            hold = nil
+            readySince = nil
         }
     }
 }

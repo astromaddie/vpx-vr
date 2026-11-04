@@ -2,6 +2,15 @@
 
 import simd
 
+struct CabinetButtonFace {
+    let position: SIMD3<Float>
+    let halfSize: SIMD2<Float>
+
+    func contains(_ offset: SIMD2<Float>) -> Bool {
+        halfSize.x > 0 && abs(offset.x) <= halfSize.x && abs(offset.y) <= halfSize.y
+    }
+}
+
 /// Metres in cabinet space: x to the player's right, y up, z toward the player.
 /// The origin is at the top centre of the front panel.
 struct CabinetControlsLayout {
@@ -10,13 +19,14 @@ struct CabinetControlsLayout {
     var playfieldWidth: Float = 0.53975
     var playfieldLength: Float = 1.0309225
     var plunger: SIMD3<Float>? = nil
-    var stockCabinet = false
+    var startFace: CabinetButtonFace? = nil
+    var coinFace: CabinetButtonFace? = nil
 
     // VPX's lockbar calculation leaves 2 1/4 inches around the playfield.
     var width: Float { playfieldWidth + 0.05715 }
     var depth: Float { playfieldLength + 0.09 }
-    var start: SIMD3<Float> { stockCabinet ? SIMD3(-playfieldWidth * 0.435, -0.102, 0.014) : SIMD3(-width * 0.30, -0.13, 0.025) }
-    var coin: SIMD3<Float> { stockCabinet ? SIMD3(0, -0.19, 0.03) : SIMD3(width * 0.22, -0.19, 0.025) }
+    var start: SIMD3<Float> { startFace?.position ?? SIMD3(-width * 0.30, -0.13, 0.025) }
+    var coin: SIMD3<Float> { coinFace?.position ?? SIMD3(width * 0.22, -0.19, 0.025) }
 
     func flipper(_ side: CabinetHandSide) -> SIMD3<Float> {
         SIMD3(side.sign * width / 2, -0.065, -0.055)
@@ -112,7 +122,7 @@ struct CabinetHandControls {
             let center = (thumb + index) * 0.5
             let offset = center - handle
             if hand == nil {
-                guard gap <= 0.024, simd_length_squared(offset) <= 0.047 * 0.047 else { return expired }
+                guard gap <= 0.032, simd_length_squared(offset) <= 0.060 * 0.060 else { return expired }
                 hand = side
                 grabDepth = center.z
                 lastSample = time
@@ -120,7 +130,7 @@ struct CabinetHandControls {
             }
 
             lastSample = time
-            if gap >= 0.042 {
+            if gap >= 0.048 {
                 let released = pull
                 self = PlungerGrip()
                 return released >= 0.04 ? [.releasePlunger(released)] : [.cancelPlunger]
@@ -169,14 +179,14 @@ struct CabinetHandControls {
                 events.append(.flipper(side, pressed: flipperDown))
             }
 
-            if Self.poke(sample.index, at: layout.start, armed: &startArmed, contains: {
-                simd_length_squared($0) <= 0.034 * 0.034
+            if Self.poke(sample.index, at: layout.start, contactDepth: layout.startFace == nil ? 0.003 : 0.012, armed: &startArmed, contains: {
+                layout.startFace?.contains($0) ?? (simd_length_squared($0) <= 0.034 * 0.034)
             }) {
                 events.append(.pressStart)
             }
-            if Self.poke(sample.index, at: layout.coin, armed: &coinArmed, contains: {
-                let halfSize = CabinetControlsLayout.coinFaceSize / 2
-                return abs($0.x) <= halfSize.x && abs($0.y) <= halfSize.y
+            if Self.poke(sample.index, at: layout.coin, contactDepth: layout.coinFace == nil ? 0.003 : 0.012, armed: &coinArmed, contains: {
+                let face = layout.coinFace ?? CabinetButtonFace(position: layout.coin, halfSize: CabinetControlsLayout.coinFaceSize / 2)
+                return face.contains($0)
             }) {
                 events.append(.insertCoin)
             }
@@ -238,6 +248,7 @@ struct CabinetHandControls {
         private static func poke(
             _ tip: SIMD3<Float>?,
             at button: SIMD3<Float>,
+            contactDepth: Float,
             armed: inout Bool,
             contains: (SIMD2<Float>) -> Bool
         ) -> Bool {
@@ -249,7 +260,7 @@ struct CabinetHandControls {
             }
             if offset.z >= 0.025 {
                 armed = true
-            } else if offset.z <= 0.003 && armed {
+            } else if offset.z <= contactDepth && armed {
                 armed = false
                 return true
             }

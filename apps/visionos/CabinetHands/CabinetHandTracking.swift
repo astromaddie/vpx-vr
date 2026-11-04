@@ -12,6 +12,8 @@ final class CabinetHandTracking {
     private var controls: CabinetHandControls
     private(set) var layout: CabinetControlsLayout
     private let moveCabinet: ((simd_float4x4) -> Void)?
+    private let placementMoving: (Bool) -> Void
+    private var placementIsMoving = false
     private var roomPlacement: CabinetRoomPlacement?
     private var floorY: Float?
     private var watchSide: CabinetHandSide?
@@ -22,11 +24,13 @@ final class CabinetHandTracking {
     private var cabinetFromOrigin: simd_float4x4?
 
     init(layout: CabinetControlsLayout, moveCabinet: ((simd_float4x4) -> Void)? = nil,
+         placementMoving: @escaping (Bool) -> Void = { _ in },
          watchSide: CabinetHandSide? = nil, showMenu: (() -> Void)? = nil,
          send: @escaping (CabinetInput) -> Void) {
         controls = CabinetHandControls(layout: layout)
         self.layout = layout
         self.moveCabinet = moveCabinet
+        self.placementMoving = placementMoving
         self.watchSide = watchSide
         self.showMenu = showMenu
         self.send = send
@@ -55,9 +59,32 @@ final class CabinetHandTracking {
         if trackFloor { pose.columns.3.y = floor + height }
         let source = simulatedFloor != nil ? "simulated" : (floorY != nil ? "detected" : "immersive origin")
         Self.log.info("Cabinet floor: \(floor) m (\(source, privacy: .public)); cabinet height: \(height) m")
-        roomPlacement = CabinetRoomPlacement(width: layout.width, pose: pose)
         place(originFromCabinet: pose)
         return pose
+    }
+
+    func beginEditing() -> Bool {
+        guard roomPlacement == nil, let cabinetFromOrigin, moveCabinet != nil else { return false }
+        roomPlacement = CabinetRoomPlacement(pose: cabinetFromOrigin.inverse)
+        reset()
+        return true
+    }
+
+    func finishEditing(keepPlacement: Bool) {
+        if let edit = roomPlacement, !keepPlacement {
+            place(originFromCabinet: edit.original)
+            moveCabinet?(edit.original)
+        }
+        roomPlacement = nil
+        reportMovement()
+    }
+
+    private func reportMovement() {
+        let moving = roomPlacement?.isMoving == true
+        if moving != placementIsMoving {
+            placementIsMoving = moving
+            placementMoving(moving)
+        }
     }
 
     func reset() {
@@ -179,8 +206,9 @@ final class CabinetHandTracking {
             while !Task.isCancelled {
                 let now = CACurrentMediaTime()
                 let play = acceptsInput() && allowsControls()
-                roomPlacement?.expire(at: play ? now : .infinity)
-                if play && roomPlacement?.isMoving != true {
+                roomPlacement?.expire(at: acceptsInput() ? now : .infinity)
+                reportMovement()
+                if play && roomPlacement == nil {
                     controls.expire(at: now).forEach(send)
                 } else {
                     reset()
@@ -194,30 +222,39 @@ final class CabinetHandTracking {
             guard !Task.isCancelled else { return }
             if acceptsInput() {
                 let now = CACurrentMediaTime()
-                checkWrist(change.anchor, removed: change.event == .removed, at: now)
-                if allowsControls() {
-                    update(change.anchor, removed: change.event == .removed, at: now)
+                if roomPlacement != nil {
+                    let anchor = change.anchor
+                    let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
+                    let joint = anchor.handSkeleton?.joint(.wrist)
+                    let wrist = change.event != .removed && anchor.isTracked && joint?.isTracked == true
+                        ? joint.map { (anchor.originFromAnchorTransform * $0.anchorFromJointTransform).columns.3.xyz } : nil
+                    updatePlacement(side, wrist: wrist, at: now)
+                } else {
+                    checkWrist(change.anchor, removed: change.event == .removed, at: now)
+                    if allowsControls() {
+                        update(change.anchor, removed: change.event == .removed, at: now)
+                    }
                 }
             }
         }
     }
 
-    @discardableResult
-    func updateRoomContact(_ side: CabinetHandSide, index: SIMD3<Float>?, thumb: SIMD3<Float>?, at time: Double) -> Bool {
-        let wasMoving = roomPlacement?.isMoving == true
-        let oldPose = roomPlacement?.pose
-        roomPlacement?.update(side, index: index, thumb: thumb, at: time)
-        guard let roomPlacement, roomPlacement.isMoving else { return false }
-        if !wasMoving { reset() }
-        if roomPlacement.pose != oldPose {
-            cabinetFromOrigin = roomPlacement.pose.inverse
-            moveCabinet?(roomPlacement.pose)
+    func updatePlacement(_ side: CabinetHandSide, wrist: SIMD3<Float>?, at time: Double) {
+        let previous = roomPlacement?.pose
+        roomPlacement?.update(side, wrist: wrist, at: time)
+        reportMovement()
+        if let pose = roomPlacement?.pose, pose != previous {
+            cabinetFromOrigin = pose.inverse
+            moveCabinet?(pose)
         }
-        return true
     }
 
     #if targetEnvironment(simulator)
-    var simulatorRoomPose: simd_float4x4? { roomPlacement?.pose }
+    var simulatorRoomPose: simd_float4x4? { cabinetFromOrigin?.inverse }
+
+    func simulateControl(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) {
+        if roomPlacement == nil { sendControlSample(side, sample: sample, at: time) }
+    }
     #endif
 
     private static func isFloor(_ anchor: PlaneAnchor) -> Bool {
@@ -235,7 +272,7 @@ final class CabinetHandTracking {
 
     private func checkWrist(_ anchor: HandAnchor, removed: Bool, at time: Double) {
         let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
-        guard side == watchSide, roomPlacement?.isMoving != true, let showMenu else { return }
+        guard side == watchSide, let showMenu else { return }
         func joint(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
             guard !removed, anchor.isTracked, let joint = anchor.handSkeleton?.joint(name), joint.isTracked else { return nil }
             return (anchor.originFromAnchorTransform * joint.anchorFromJointTransform).columns.3.xyz
@@ -256,18 +293,8 @@ final class CabinetHandTracking {
     private func update(_ anchor: HandAnchor, removed: Bool, at time: Double) {
         let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
         let trackedSkeleton = !removed && anchor.isTracked ? anchor.handSkeleton : nil
-        if roomPlacement != nil {
-            func originJoint(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
-                guard let joint = trackedSkeleton?.joint(name), joint.isTracked else { return nil }
-                let point = (anchor.originFromAnchorTransform * joint.anchorFromJointTransform).columns.3.xyz
-                return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
-            }
-            if updateRoomContact(side, index: originJoint(.indexFingerTip), thumb: originJoint(.thumbTip), at: time) {
-                return
-            }
-        }
         guard let cabinetFromOrigin, let skeleton = trackedSkeleton else {
-            controls.update(side, sample: nil, at: time).forEach(send)
+            sendControlSample(side, sample: nil, at: time)
             return
         }
         let cabinetFromHand = cabinetFromOrigin * anchor.originFromAnchorTransform
@@ -295,6 +322,10 @@ final class CabinetHandTracking {
             palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
             thumb: layout.plunger != nil ? joint(.thumbTip) : nil
         )
+        sendControlSample(side, sample: sample, at: time)
+    }
+
+    private func sendControlSample(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) {
         controls.update(side, sample: sample, at: time).forEach(send)
     }
 }

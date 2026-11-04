@@ -184,47 +184,60 @@ struct HandControlChecks {
         let width: Float = 0.6
         var initial = matrix_identity_float4x4
         initial.columns.3 = [0.2, 1.08, -0.53, 1]
-        var room = CabinetRoomPlacement(width: width, pose: initial)
+        var room = CabinetRoomPlacement(pose: initial)
         var time = 0.0
-        let left: SIMD3<Float> = [-0.1, 1.03, -0.65]
-        let right: SIMD3<Float> = [0.5, 1.03, -0.65]
-        func feed(_ side: CabinetHandSide, _ center: SIMD3<Float>, gap: Float) {
-            time += 0.012
-            let offset = SIMD3(0, gap * 0.5, 0)
-            room.update(side, index: center + offset, thumb: center - offset, at: time)
+        let left: SIMD3<Float> = [-0.1, 1.19, -0.65]
+        let right: SIMD3<Float> = [0.5, 1.19, -0.65]
+        func feed(_ side: CabinetHandSide, _ wrist: SIMD3<Float>) {
+            time += 0.015
+            room.update(side, wrist: wrist, at: time)
         }
 
-        feed(.left, left, gap: 0.015)
-        feed(.right, right, gap: 0.015)
+        for _ in 0..<12 {
+            feed(.left, left - [0, 0.15, 0])
+            feed(.right, right - [0, 0.15, 0])
+        }
         precondition(!room.isMoving)
-        feed(.left, left, gap: 0.065)
-        feed(.right, right, gap: 0.065)
-        feed(.left, left, gap: 0.015)
-        precondition(!room.isMoving)
-        feed(.right, right, gap: 0.015)
+        for _ in 0..<9 {
+            feed(.left, left)
+            feed(.right, right)
+            precondition(!room.isMoving)
+        }
+        for _ in 0..<3 {
+            feed(.left, left)
+            feed(.right, right)
+        }
         precondition(room.isMoving && room.pose == initial)
 
-        // Move the grip center 30 cm right, lift both hands, and turn 30 degrees.
+        // Move the wrist center 30 cm right, lift both hands, and turn 30 degrees.
         let center: SIMD3<Float> = [0.5, 1.40, -0.65]
         let angle: Float = .pi / 6
-        let grip = SIMD3(width * 0.5 * cos(angle), 0, -width * 0.5 * sin(angle))
-        feed(.left, center - grip, gap: 0.015)
+        let span = SIMD3(width * 0.5 * cos(angle), 0, -width * 0.5 * sin(angle))
+        feed(.left, center - span)
         precondition(room.pose == initial)
-        feed(.right, center + grip, gap: 0.015)
+        feed(.right, center + span)
         let moved = room.pose
         precondition(abs(moved.columns.3.x - (0.5 + 0.12 * sin(angle))) < 0.0001)
         precondition(moved.columns.3.y == initial.columns.3.y)
         precondition(moved.columns.1 == initial.columns.1)
         precondition(abs(moved.columns.0.z + sin(angle)) < 0.0001)
         precondition(abs(simd_length(moved.columns.0) - 1) < 0.0001)
+        precondition(room.original == initial)
 
-        room.expire(at: time + 0.13)
+        feed(.left, center - span - [0, 0.4, 0])
         precondition(!room.isMoving && room.pose == moved)
-        time += 0.13
-        feed(.left, center - grip, gap: 0.015)
-        feed(.right, center + grip, gap: 0.015)
+        feed(.left, center - span)
+        feed(.right, center + span)
         precondition(!room.isMoving && room.pose == moved)
-        print("Room placement passed: two-hand arming, yaw, translation, fixed scale and height, and tracking-loss lock")
+        for _ in 0..<12 {
+            feed(.left, center - span)
+            feed(.right, center + span)
+        }
+        precondition(room.isMoving)
+        let beforeLoss = room.pose
+        room.expire(at: time + 0.19)
+        precondition(!room.isMoving && room.pose == beforeLoss)
+        print("Room placement passed: paired wrist dwell, yaw, translation, fixed scale and height, and tracking-loss lock")
     }
 
     static func checkWristMenu() {

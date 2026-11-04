@@ -5,6 +5,7 @@
 #include "core/extern.h"
 #include "core/player.h"
 #include "input/PlungerHandler.h"
+#include "parts/ball.h"
 #include "parts/pintable.h"
 #include "parts/plunger.h"
 #include "renderer/VRDevice.h"
@@ -66,7 +67,7 @@ VPINBALLAPI void VPinballVisionTick(void)
 VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void)
 {
    if (!SDL_IsMainThread() || !g_pplayer || !g_pplayer->m_vrDevice)
-      return { 0.53975f, 1.0309225f, 0.91f, 0.24f, -0.095f, 0.040f, 0 };
+      return {};
    return g_pplayer->m_vrDevice->GetVisionLayout();
 }
 
@@ -123,5 +124,26 @@ VPINBALLAPI unsigned int VPinballVisionPressedButtons(void)
 VPINBALLAPI float VPinballVisionPlungerPosition(void)
 {
    return SDL_IsMainThread() && g_pplayer ? g_pplayer->m_pininput.m_plungerHandler->GetRawPosition() : 0.f;
+}
+
+VPINBALLAPI float VPinballVisionShooterBallY(void)
+{
+   if (!SDL_IsMainThread() || !g_pplayer)
+      return -1.f;
+
+   for (const auto* part : g_pplayer->m_ptable->GetParts())
+      if (part->GetItemType() == eItemPlunger)
+      {
+         const auto& plunger = static_cast<const Plunger*>(part)->m_d;
+         if (plunger.m_mechPlunger && !plunger.m_autoPlunger)
+            for (const auto* ball : g_pplayer->m_vball)
+            {
+               const auto& position = ball->GetPosition();
+               if (abs(position.x - plunger.m_v.x) <= plunger.m_width
+                   && position.y <= plunger.m_v.y && position.y >= plunger.m_v.y - 380.f)
+                  return position.y;
+            }
+      }
+   return -1.f;
 }
 #endif

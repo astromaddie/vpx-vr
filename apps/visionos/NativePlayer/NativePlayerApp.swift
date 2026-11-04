@@ -12,6 +12,13 @@ private enum TableEnvironment: String, CaseIterable {
     var style: ImmersionStyle { self == .physical ? .mixed : .full }
 }
 
+private enum EyeResolution: Int, CaseIterable {
+    case standard = 1536
+    case high = 1792
+
+    var title: String { self == .standard ? "Standard · 1536 px" : "High · 1792 px" }
+}
+
 @main
 struct NativePlayerApp: App {
     @State private var player = NativePlayer.shared
@@ -23,6 +30,12 @@ struct NativePlayerApp: App {
             TableWindow(player: player, environment: $environment)
         }
         .defaultSize(width: 460, height: 680)
+
+        WindowGroup(id: PlacementWindow.id) {
+            PlacementWindow(player: player)
+        }
+        .defaultSize(width: 400, height: 230)
+        .windowResizability(.contentSize)
 
         ImmersiveSpace(id: "Table") {
             CompositorLayer(configuration: NativeLayerConfiguration()) { layer in
@@ -43,6 +56,7 @@ private struct TableWindow: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("LeftHandDominant") private var leftHandDominant = false
+    @AppStorage("EyeResolution") private var resolution = EyeResolution.high
     @State private var selection: LibraryTable?
     @State private var transitioning = false
     @State private var importing = false
@@ -58,11 +72,16 @@ private struct TableWindow: View {
                         Text("Right").tag(false)
                         Text("Left").tag(true)
                     }
+                    Picker("Eye Resolution", selection: $resolution) {
+                        ForEach(EyeResolution.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
                 } label: {
-                    Label("Dominant Hand", systemImage: "hand.raised")
+                    Label("Table Settings", systemImage: "gearshape")
                         .labelStyle(.iconOnly)
                 }
-                .accessibilityLabel("Dominant Hand")
+                .accessibilityLabel("Table Settings")
             }
             Picker("Environment", selection: $environment) {
                 ForEach(TableEnvironment.allCases, id: \.self) { option in
@@ -85,9 +104,9 @@ private struct TableWindow: View {
             if let message = player.status {
                 Text(message).font(.footnote).foregroundStyle(.secondary)
             } else if player.isOpen {
-                Text("Choose another table or resume this game.").font(.footnote).foregroundStyle(.secondary)
+                Button("Edit Placement", systemImage: "move.3d") { player.beginEditing() }
             } else {
-                Text("Pinch both front sides to move a table. Look toward your non-dominant wrist like a watch to reopen the picker.")
+                Text("Look toward your non-dominant wrist during play to switch tables or edit placement.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             HStack {
@@ -130,7 +149,9 @@ private struct TableWindow: View {
             selection = player.currentTable ?? selection ?? player.tables.first
             player.setLauncherActions(
                 hide: { dismissWindow(id: Self.id) },
-                show: { openWindow(id: Self.id) }
+                show: { openWindow(id: Self.id) },
+                showPlacement: { openWindow(id: PlacementWindow.id) },
+                hidePlacement: { dismissWindow(id: PlacementWindow.id) }
             )
         }
         .onChange(of: player.tables) { _, tables in
@@ -166,9 +187,40 @@ private struct TableWindow: View {
             await dismissSpace()
             guard await player.waitUntilClosed() else { return }
         }
-        player.prepareTable(table, environment: environment, leftHandDominant: leftHandDominant)
+        let renderResolution: EyeResolution
+        #if targetEnvironment(simulator)
+        renderResolution = CommandLine.arguments.contains("--check-standard-resolution") ? .standard : resolution
+        #else
+        renderResolution = resolution
+        #endif
+        player.prepareTable(table, environment: environment, leftHandDominant: leftHandDominant, resolution: renderResolution)
         if case .opened = await openSpace(id: "Table") { return }
         player.status = "Couldn’t open the table."
+    }
+}
+
+private struct PlacementWindow: View {
+    static let id = "CabinetPlacement"
+    let player: NativePlayer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit Placement").font(.title2)
+            Label(player.isMovingCabinet ? "Moving Cabinet" : "Ready to Move",
+                  systemImage: player.isMovingCabinet ? "move.3d" : "hand.raised")
+                .foregroundStyle(.secondary)
+            Text("Raise both hands above the lockbar and hold them apart. Move or turn your hands, then lower either hand to stop.")
+                .font(.callout)
+            HStack {
+                Button("Cancel") { player.finishEditing(keepPlacement: false) }
+                Spacer()
+                Button("Done") { player.finishEditing(keepPlacement: true) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 400)
+        .onDisappear { player.finishEditing(keepPlacement: false, closeWindow: false) }
     }
 }
 
@@ -192,6 +244,9 @@ private final class NativePlayer {
     var activeEnvironment: TableEnvironment = .physical
     var currentTable: LibraryTable? { selectedTable }
     private var menuVisible = false
+    var isEditingPlacement = false
+    var isMovingCabinet = false
+    private var resolution = EyeResolution.high
     private var watchSide: CabinetHandSide = .left
     var isOpen = false
     var needsDismissal = false
@@ -199,6 +254,8 @@ private final class NativePlayer {
     private var compositor: NativeCompositor?
     private var hideLauncher: (() -> Void)?
     private var showLauncher: (() -> Void)?
+    private var showPlacement: (() -> Void)?
+    private var hidePlacement: (() -> Void)?
     private var launcherHidden = false
     private var selectedTable: LibraryTable?
     private var cabinetTransform: simd_float4x4?
@@ -241,17 +298,21 @@ private final class NativePlayer {
     private var stopping = false
     private var pulses: [VPINBALL_VISION_INPUT: Task<Void, Never>] = [:]
 
-    func setLauncherActions(hide: @escaping () -> Void, show: @escaping () -> Void) {
+    func setLauncherActions(hide: @escaping () -> Void, show: @escaping () -> Void,
+                            showPlacement: @escaping () -> Void, hidePlacement: @escaping () -> Void) {
         hideLauncher = hide
         showLauncher = show
+        self.showPlacement = showPlacement
+        self.hidePlacement = hidePlacement
     }
 
     func refreshLibrary() {
         tables = TableLibrary.tables(in: .documentsDirectory)
     }
 
-    func prepareTable(_ table: LibraryTable, environment: TableEnvironment, leftHandDominant: Bool) {
+    func prepareTable(_ table: LibraryTable, environment: TableEnvironment, leftHandDominant: Bool, resolution: EyeResolution) {
         selectedTable = table
+        self.resolution = resolution
         activeEnvironment = environment
         setDominantHand(leftHandDominant)
         status = "Look ahead and hold steady to place the cabinet."
@@ -272,7 +333,7 @@ private final class NativePlayer {
     }
 
     private func showMenu() {
-        guard ready, !stopping, launcherHidden, !menuVisible else { return }
+        guard ready, !stopping, launcherHidden, !menuVisible, !isEditingPlacement else { return }
         menuVisible = true
         tracker?.reset()
         clearButtons()
@@ -288,6 +349,21 @@ private final class NativePlayer {
         hideLauncher?()
     }
 
+    func beginEditing() {
+        guard ready, !stopping, !isEditingPlacement, tracker?.beginEditing() == true else { return }
+        isEditingPlacement = true
+        clearButtons()
+        showPlacement?()
+        hideMenu()
+    }
+
+    func finishEditing(keepPlacement: Bool, closeWindow: Bool = true) {
+        guard isEditingPlacement else { return }
+        isEditingPlacement = false
+        tracker?.finishEditing(keepPlacement: keepPlacement)
+        if closeWindow { hidePlacement?() }
+    }
+
     func menuDidClose() {
         if menuVisible {
             menuVisible = false
@@ -298,12 +374,13 @@ private final class NativePlayer {
     func open(_ layer: LayerRenderer) {
         guard compositor == nil, let table = selectedTable else { return }
         do {
-            // The Time Machine plunger is to the right of the coin door.
-            let layout = CabinetControlsLayout(plunger: SIMD3(0.24, -0.095, 0.040))
-            let tracker = CabinetHandTracking(layout: layout, moveCabinet: { [weak self] pose in
+            let tracker = CabinetHandTracking(layout: .init(), moveCabinet: { [weak self] pose in
                 self?.compositor?.place(pose)
+            }, placementMoving: { [weak self] moving in
+                self?.isMovingCabinet = moving
             }, watchSide: watchSide, showMenu: { [weak self] in self?.showMenu() }, send: handle)
-            let compositor = try NativeCompositor(layer: layer, world: tracker.world, mixedReality: mixedReality)
+            let compositor = try NativeCompositor(layer: layer, world: tracker.world, mixedReality: mixedReality,
+                                                  eyeSize: resolution.rawValue)
             guard compositor.configurePlayer(), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
                 status = "Couldn’t initialize VPX."
                 needsDismissal = true
@@ -344,7 +421,7 @@ private final class NativePlayer {
                 }, report: { message in
                     if !loading { status = message }
                 }, acceptsInput: { compositor.isRunning }, tick: { _ in },
-                   trackFloor: mixedReality, allowsControls: { !self.menuVisible })
+                   trackFloor: mixedReality, allowsControls: { !self.menuVisible && !self.isEditingPlacement })
                 if !Task.isCancelled && !loading && !ready {
                     needsDismissal = true
                 }
@@ -392,10 +469,14 @@ private final class NativePlayer {
                 let pose: simd_float4x4
                 if let tracker {
                     let dimensions = VPinballVisionGetLayout()
+                    func face(_ button: VPINBALL_VISION_BUTTON_FACE) -> CabinetButtonFace {
+                        CabinetButtonFace(position: SIMD3(button.x, button.y, button.z),
+                                          halfSize: SIMD2(button.halfWidth, button.halfHeight))
+                    }
                     tracker.setLayout(CabinetControlsLayout(
                         playfieldWidth: dimensions.width, playfieldLength: dimensions.length,
-                        plunger: SIMD3(dimensions.plungerX, dimensions.plungerY, dimensions.plungerZ),
-                        stockCabinet: dimensions.stockCabinet != 0))
+                        plunger: dimensions.hasPlunger == 0 ? nil : SIMD3(dimensions.plungerX, dimensions.plungerY, dimensions.plungerZ),
+                        startFace: face(dimensions.start), coinFace: face(dimensions.coin)))
                     let height = dimensions.height
                     #if targetEnvironment(simulator)
                     pose = tracker.placeForPlay(cabinetTransform, height: height, trackFloor: mixedReality, simulatedFloor: -1.60)
@@ -441,6 +522,7 @@ private final class NativePlayer {
         loading = false
         stopping = false
         isOpen = false
+        finishEditing(keepPlacement: true)
         menuVisible = false
         compositor = nil
         tracker = nil
@@ -460,49 +542,110 @@ private final class NativePlayer {
 
         // The ROM can still be starting when the first frame reaches the GPU.
         try? await Task.sleep(for: .seconds(4))
+        guard let tracker, let start = tracker.layout.startFace, let coin = tracker.layout.coinFace,
+              start.halfSize.x > 0, coin.halfSize.x > 0 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator found missing cabinet button geometry")
+            return
+        }
+        var time = 0.0
+        func send(_ side: CabinetHandSide, _ sample: CabinetHandSample?) {
+            time += 0.016
+            tracker.simulateControl(side, sample: sample, at: time)
+        }
+        func poke(_ position: SIMD3<Float>) {
+            send(.right, .init(index: position + [0, 0, 0.045]))
+            send(.right, .init(index: position + [0, 0, 0.006]))
+            send(.right, nil)
+        }
+        func pressed(_ button: VPINBALL_VISION_INPUT) -> Bool {
+            VPinballVisionPressedButtons() & (UInt32(1) << button.rawValue) != 0
+        }
+        // Move down from the visible coin slots to the door's blank panel.
+        poke(coin.position - [0, coin.halfSize.y + 0.04, 0])
+        try? await Task.sleep(for: .milliseconds(30))
+        guard !pressed(VPINBALL_VISION_ADD_CREDIT), !pressed(VPINBALL_VISION_START) else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator registered a poke outside the button faces")
+            return
+        }
+
         // The Data East script delays the ROM's coin-switch pulse by 750 ms.
-        let inputs: [(CabinetInput, VPINBALL_VISION_INPUT, Duration)] = [
-            (.insertCoin, VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100)),
-            (.insertCoin, VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100)),
-            (.pressStart, VPINBALL_VISION_START, .seconds(2)),
-            (.flipper(.left, pressed: true), VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150)),
-            (.flipper(.right, pressed: true), VPINBALL_VISION_RIGHT_FLIPPER, .milliseconds(150))
+        let inputs: [(VPINBALL_VISION_INPUT, Duration, () -> Void)] = [
+            (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
+            (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
+            (VPINBALL_VISION_START, .seconds(2), { poke(start.position) }),
+            (VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150), {
+                let palm = tracker.layout.flipper(.left) + [-0.025, 0, 0]
+                send(.left, .init(palm: palm, fingerDirection: [0, 0, -1]))
+                send(.left, .init(palm: palm, fingerDirection: [0.18, 0, -1]))
+            }),
+            (VPINBALL_VISION_RIGHT_FLIPPER, .milliseconds(150), {
+                let palm = tracker.layout.flipper(.right) + [0.025, 0, 0]
+                send(.right, .init(palm: palm, fingerDirection: [0, 0, -1]))
+                send(.right, .init(palm: palm, fingerDirection: [-0.18, 0, -1]))
+            })
         ]
-        for (event, button, delay) in inputs {
+        for (button, delay, gesture) in inputs {
             guard !Task.isCancelled, ready else { return }
-            handle(event)
+            gesture()
             try? await Task.sleep(for: .milliseconds(30))
-            let mask = UInt32(1) << button.rawValue
-            guard VPinballVisionPressedButtons() & mask != 0 else {
-                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator button \(button.rawValue) never reached the input manager")
+            guard pressed(button) else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator gesture for button \(button.rawValue) never reached the input manager")
                 return
             }
-            if case let .flipper(side, _) = event { handle(.flipper(side, pressed: false)) }
+            if button == VPINBALL_VISION_LEFT_FLIPPER { send(.left, nil) }
+            if button == VPINBALL_VISION_RIGHT_FLIPPER { send(.right, nil) }
             try? await Task.sleep(for: delay)
-            guard VPinballVisionPressedButtons() & mask == 0 else {
+            guard !pressed(button) else {
                 VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator button \(button.rawValue) stayed pressed")
                 return
             }
         }
 
-        handle(.pullPlunger(0.5))
-        try? await Task.sleep(for: .milliseconds(350))
-        guard abs(VPinballVisionPlungerPosition() - 0.5) < 0.02 else {
-            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator half pull never reached the plunger handler")
-            return
+        if let handle = tracker.layout.plunger {
+            func grip(depth: Float, gap: Float) {
+                send(.right, .init(index: handle + [gap / 2, 0, depth],
+                                   thumb: handle + [-gap / 2, 0, depth]))
+            }
+            let pulls: [(Float, Float)] = [(0.0381, 0.5), (0.0762, 1)]
+            for (distance, expected) in pulls {
+                grip(depth: 0, gap: 0.030)
+                grip(depth: distance, gap: 0.030)
+                try? await Task.sleep(for: .milliseconds(350))
+                guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator pull \(expected) never reached the plunger handler")
+                    return
+                }
+                let checkBall = expected == 0.5 && CommandLine.arguments.contains("--check-ball-launch")
+                let startY = checkBall ? VPinballVisionShooterBallY() : 0
+                grip(depth: distance, gap: 0.056)
+                if checkBall {
+                    var travel: Float = 0
+                    for _ in 0..<60 {
+                        try? await Task.sleep(for: .milliseconds(8))
+                        let y = VPinballVisionShooterBallY()
+                        if y >= 0 { travel = max(travel, startY - y) }
+                    }
+                    guard startY >= 0, travel > 80 else {
+                        VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator half pull did not move a ball up the shooter lane (start: \(startY), travel: \(travel))")
+                        return
+                    }
+                    VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator half pull moved the ball \(travel) VP units up the shooter lane")
+                } else {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                guard abs(VPinballVisionPlungerPosition()) < 0.02 else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator plunger failed to return to rest")
+                    return
+                }
+            }
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified 50% and 100% grip travel and release in the native plunger")
         }
-        handle(.releasePlunger(0.5))
-        try? await Task.sleep(for: .milliseconds(500))
-        guard abs(VPinballVisionPlungerPosition()) < 0.02 else {
-            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator plunger failed to return to rest")
-            return
-        }
-        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, start, both flippers and half pull in the native input manager")
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-room-placement") {
             VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator ready for cabinet grab")
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, ready else { return }
-            checkRoomPlacement()
+            await checkRoomPlacement()
         }
         if simulatorSequence, let selectedTable {
             guard VPinballVisionRomRunning() != 0 else {
@@ -519,38 +662,51 @@ private final class NativePlayer {
         }
     }
 
-    private func checkRoomPlacement() {
+    private func checkRoomPlacement() async {
         guard let tracker, let initial = tracker.simulatorRoomPose else { return }
-        let layout = tracker.layout
-        let center = initial * SIMD4<Float>(0, -0.05, -0.12, 1)
+        let center = initial * SIMD4<Float>(0, 0.22, 0.12, 1)
         var time = 0.0
-        func feed(_ side: CabinetHandSide, at point: SIMD4<Float>, gap: Float) {
-            time += 0.015
-            let p = SIMD3(point.x, point.y, point.z)
-            let offset = SIMD3(0, gap * 0.5, 0)
-            tracker.updateRoomContact(side, index: p + offset, thumb: p - offset, at: time)
-        }
-        for gap: Float in [0.06, 0.016] {
+        func feed(_ midpoint: SIMD4<Float>, right: SIMD4<Float>) {
             for side in CabinetHandSide.allCases {
-                feed(side, at: center + initial.columns.0 * (side.sign * layout.width * 0.5), gap: gap)
+                time += 0.015
+                let point = midpoint + right * (side.sign * 0.25)
+                tracker.updatePlacement(side, wrist: SIMD3(point.x, point.y, point.z), at: time)
             }
         }
-
         let turn = simd_float4x4(simd_quatf(angle: .pi / 9, axis: [0, 1, 0]))
         let target = center + SIMD4<Float>(0.25, 0.15, -0.25, 0)
-        for side in CabinetHandSide.allCases {
-            feed(side, at: target + turn * initial.columns.0 * (side.sign * layout.width * 0.5), gap: 0.016)
-        }
-        let moved = tracker.simulatorRoomPose
-        feed(.left, at: target, gap: 0.065)
-        feed(.right, at: target, gap: 0.065)
-        guard let moved, moved == tracker.simulatorRoomPose, moved.columns.3.y == initial.columns.3.y,
-              abs(moved.columns.0.z + sin(.pi / 9)) < 0.001,
-              moved.columns.3.x - initial.columns.3.x > 0.25 else {
-            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator cabinet movement or release failed")
+        for _ in 0..<12 { feed(center, right: initial.columns.0) }
+        feed(target, right: turn * initial.columns.0)
+        guard tracker.simulatorRoomPose == initial else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator moved the cabinet while playing")
             return
         }
-        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified \(mixedReality ? "mixed" : "virtual") reality translation, yaw and release at fixed height")
+        beginEditing()
+        guard isEditingPlacement else { return }
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator placement panel open")
+        try? await Task.sleep(for: .seconds(3))
+        guard !Task.isCancelled, isEditingPlacement else { return }
+        for _ in 0..<12 { feed(center, right: initial.columns.0) }
+        feed(target, right: turn * initial.columns.0)
+        let moved = tracker.simulatorRoomPose
+        finishEditing(keepPlacement: false)
+        guard let moved, let restored = tracker.simulatorRoomPose,
+              abs(moved.columns.3.y - initial.columns.3.y) < 0.001,
+              abs(moved.columns.0.z + sin(.pi / 9)) < 0.001,
+              moved.columns.3.x - initial.columns.3.x > 0.20,
+              simd_distance(restored.columns.3, initial.columns.3) < 0.001 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator cabinet movement or cancel failed")
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(750))
+        guard !Task.isCancelled, ready else { return }
+        beginEditing()
+        for _ in 0..<12 { feed(center, right: initial.columns.0) }
+        feed(target, right: turn * initial.columns.0)
+        let preview = tracker.simulatorRoomPose
+        finishEditing(keepPlacement: true)
+        guard preview == tracker.simulatorRoomPose, preview != initial else { return }
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified edit-only translation, yaw, cancel and lock at fixed height")
     }
     #endif
 

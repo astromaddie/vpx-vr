@@ -253,7 +253,7 @@ public:
 
 private:
    void ConfigureVisionRoom(PinTable* table);
-   void AddVisionStockGeometry(PinTable* table, bool cabinet, bool room);
+   void AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, bool gorgarCoinDoor);
    VPINBALL_VISION_HOST m_visionHost{};
    std::unordered_set<const IEditable*> m_visionLegacyRoomParts;
    Matrix3D m_visionLegacyRoomView[2];

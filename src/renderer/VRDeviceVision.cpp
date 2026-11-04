@@ -7,7 +7,7 @@
 #include "core/FileLocator.h"
 #include "core/VPApp.h"
 #include "parts/Material.h"
-#include "parts/collection.h"
+#include "parts/Collection.h"
 #include "parts/flasher.h"
 #include "parts/pintable.h"
 #include "parts/primitive.h"
@@ -21,6 +21,13 @@ namespace
 constexpr float stockWidth = 0.51435f;
 constexpr float stockLength = 1.1684f;
 constexpr float stockHeight = 0.9093f;
+// The centre and outer extents of the three slots in the stock coin door.
+const Vertex3Ds stockCoinCenter { MTOVPU(0.25428f), MTOVPU(1.24361f), MTOVPU(0.81072f) };
+const Vertex3Ds stockCoinHalfExtent { MTOVPU(0.07313f), 0.f, MTOVPU(0.02169f) };
+const Vertex3Ds gorgarCoinScale { 1.f, 1.f, 0.65f };
+// Seat the base of the stock door on the visible front of PinCab_Bottom.
+const Vertex3Ds gorgarCoinOffset { 476.f - stockCoinCenter.x, 2065.71f - MTOVPU(1.21147f),
+   -190.f - stockCoinCenter.z * gorgarCoinScale.z };
 }
 
 void VRDevice::ConfigureVisionRoom(PinTable* table)
@@ -28,7 +35,7 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    const auto width = VPUTOCM(table->m_right - table->m_left) * 0.01f;
    const auto length = VPUTOCM(table->m_bottom - table->m_top) * 0.01f;
    const auto height = m_lockbarHeight * 0.01f;
-   m_visionLayout = { width, length, height, width * 0.44f, -0.095f, 0.040f, 0 };
+   m_visionLayout = { width, length, height };
 
    // Older VR tables put the room and cabinet in the playfield space.
    const auto getPrimitive = [table](std::string_view name) -> Primitive*
@@ -89,12 +96,8 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    }
 
    const bool stock = !legacyCabinet && !modernCabinet;
-   m_visionLayout.stockCabinet = stock;
    if (stock)
    {
-      m_visionLayout.plungerX = width * 0.434f;
-      m_visionLayout.plungerY = -0.057f * height / stockHeight;
-      m_visionLayout.plungerZ = length * (1.296f / stockLength - 1.f) - 0.05f;
       if (auto* sides = getPrimitive("CABINETSIDES_GIOFF");
           sides && getPrimitive("SIDEWALL_GIOFF") && sides->m_d.m_vSize.y == 42.f)
       {
@@ -103,7 +106,7 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
          sides->m_d.m_visible = false;
       }
    }
-   AddVisionStockGeometry(table, stock, !IsVisionMixedReality() && !modernRoom && m_visionLegacyRoomParts.empty());
+   AddVisionStockGeometry(table, stock, !IsVisionMixedReality() && !modernRoom && m_visionLegacyRoomParts.empty(), gorgar);
 
    vector<Primitive*> legs;
    if (timeMachineLegs)
@@ -148,15 +151,108 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
       }
    }
 
+   UpdateWorldTransforms();
+   const float lockbar = CMTOVPU(m_lockbarHeight);
+   const auto cabinetPoint = [lockbar](const Matrix3D& worldFromMesh, const Vertex3Ds& local)
+   {
+      auto point = worldFromMesh * local;
+      point.y -= lockbar;
+      return point * (VPUTOCM(1.f) * 0.01f);
+   };
+   const auto face = [&cabinetPoint](const Matrix3D& transform, const Vertex3Ds& center,
+                                    const Vertex3Ds& halfExtent)
+   {
+      const auto point = cabinetPoint(transform, center);
+      const auto edgeX = cabinetPoint(transform, center + Vertex3Ds{halfExtent.x, 0.f, 0.f}) - point;
+      const auto edgeY = cabinetPoint(transform, center + Vertex3Ds{0.f, halfExtent.y, 0.f}) - point;
+      const auto edgeZ = cabinetPoint(transform, center + Vertex3Ds{0.f, 0.f, halfExtent.z}) - point;
+      constexpr float fingertipTolerance = 0.017f;
+      return VPINBALL_VISION_BUTTON_FACE { point.x, point.y, point.z,
+         abs(edgeX.x) + abs(edgeY.x) + abs(edgeZ.x) + fingertipTolerance,
+         abs(edgeX.y) + abs(edgeY.y) + abs(edgeZ.y) + fingertipTolerance };
+   };
+   const auto plunger = [this, &cabinetPoint](const Matrix3D& transform, const Vertex3Ds& center)
+   {
+      const auto point = cabinetPoint(transform, center);
+      m_visionLayout.plungerX = point.x;
+      m_visionLayout.plungerY = point.y;
+      m_visionLayout.plungerZ = point.z;
+      m_visionLayout.hasPlunger = 1;
+   };
+
+   if (stock)
+   {
+      const auto scale = Matrix3D::MatrixScale(width / stockWidth, length / stockLength, height / stockHeight);
+      const auto worldFromStock = scale * m_cabWorld.m_toWorld;
+      // Centre and extents of the button, three coin slots and plunger cap
+      // in blankTable.vpz. GLB (right, up, front) becomes VPX (x, y, height).
+      m_visionLayout.start = face(worldFromStock,
+         { MTOVPU(0.03287f), MTOVPU(1.22739f), MTOVPU(0.80861f) },
+         { MTOVPU(0.01267f), 0.f, MTOVPU(0.01268f) });
+      m_visionLayout.coin = face(worldFromStock, stockCoinCenter, stockCoinHalfExtent);
+      plunger(worldFromStock, { MTOVPU(0.48053f), MTOVPU(1.28027f), MTOVPU(0.85304f) });
+   }
+   // Legacy cabinet controls use the same playfield space as their meshes.
+   const Matrix3D worldFromLegacyCabinet = m_pfWorld.m_toWorld * m_visionPlayfieldLevel;
+   const auto legacyButton = [&face, &worldFromLegacyCabinet](Primitive* part)
+   {
+      if (!part || part->m_mesh.m_vertices.empty())
+         return VPINBALL_VISION_BUTTON_FACE{};
+      const auto& playfieldFromMesh = part->RecalculateMatrices();
+      Vertex3Ds low { FLT_MAX, FLT_MAX, FLT_MAX };
+      Vertex3Ds high { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+      for (const auto& vertex : part->m_mesh.m_vertices)
+      {
+         const auto point = playfieldFromMesh * Vertex3Ds { vertex.x, vertex.y, vertex.z };
+         low.Set(min(low.x, point.x), min(low.y, point.y), min(low.z, point.z));
+         high.Set(max(high.x, point.x), max(high.y, point.y), max(high.z, point.z));
+      }
+      const auto center = (low + high) * 0.5f;
+      return face(worldFromLegacyCabinet, { center.x, high.y, center.z },
+         { (high.x - low.x) * 0.5f, 0.f, (high.z - low.z) * 0.5f });
+   };
    if (timeMachineLegs)
-      m_visionLayout.plungerX = 0.24f; // Keep the verified Time Machine hand profile.
+   {
+      // The separate cap in PinCab_Cabinet and the three slot faces in
+      // PinCab_Metal_Coindoor, measured in the table's playfield units.
+      m_visionLayout.start = face(worldFromLegacyCabinet, { 69.93f, 2093.54f, -119.37f }, { 25.13f, 0.f, 25.19f });
+      m_visionLayout.coin = face(worldFromLegacyCabinet, { 491.4f, 2119.57f, -113.62f }, { 129.3f, 0.f, 29.54f });
+      plunger(worldFromLegacyCabinet, { 946.8f, 2200.f, -14.6f });
+   }
+   else if (meteor)
+   {
+      m_visionLayout.start = legacyButton(getPrimitive("VR_Cab_StartButton"));
+      // Slot artwork mapped through the three UV panels of VR_Cab_Coindoor_Graphics.
+      m_visionLayout.coin = face(worldFromLegacyCabinet, { 467.f, 2115.2f, -51.5f }, { 125.f, 0.f, 12.f });
+      plunger(worldFromLegacyCabinet, { 893.f, 2164.f, 19.f });
+   }
+   else if (gorgar)
+   {
+      m_visionLayout.start = legacyButton(getPrimitive("PinCab_Button1i"));
+      const auto worldFromDoor = Matrix3D::MatrixScale(gorgarCoinScale.x, gorgarCoinScale.y, gorgarCoinScale.z)
+         * Matrix3D::MatrixTranslate(gorgarCoinOffset) * worldFromLegacyCabinet;
+      m_visionLayout.coin = face(worldFromDoor, stockCoinCenter, stockCoinHalfExtent);
+      plunger(worldFromLegacyCabinet, { 896.8f, 2199.f, -1.f });
+   }
    PLOGI << "Vision Pro cabinet: " << (stock ? "stock" : "authored")
       << ", playfield " << width << " x " << length << " m, placement height " << m_visionLayout.height << " m";
+   const auto logFace = [](const char* name, const VPINBALL_VISION_BUTTON_FACE& button)
+   {
+      PLOGI << "Vision Pro " << name << " face: " << button.x << ", " << button.y << ", " << button.z
+         << " m; half extents " << button.halfWidth << ", " << button.halfHeight << " m";
+   };
+   logFace("Start", m_visionLayout.start);
+   logFace("coin", m_visionLayout.coin);
+   if (m_visionLayout.hasPlunger)
+   {
+      PLOGI << "Vision Pro plunger grip: " << m_visionLayout.plungerX << ", "
+         << m_visionLayout.plungerY << ", " << m_visionLayout.plungerZ << " m";
+   }
 }
 
-void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room)
+void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, bool gorgarCoinDoor)
 {
-   if (!cabinet && !room)
+   if (!cabinet && !room && !gorgarCoinDoor)
       return;
 
    using enum PartGroupData::SpaceReference;
@@ -184,7 +280,7 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room)
    };
 
    const auto assets = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets, "blankTable.vpz/meshes");
-   const auto addMesh = [table, &assets](PartGroup* group, const char* name, const Material* mat, const Vertex3Ds& scale)
+   const auto addMesh = [table, &assets](PartGroup* group, const char* name, const Material* mat, const Vertex3Ds& scale, const Vertex3Ds& position = {})
    {
       std::ifstream file(assets / (string(name) + ".glb"), std::ios::binary);
       vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -194,7 +290,7 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room)
       {
          part->SetName(table->GetUniqueName("Vision" + string(name)));
          part->SetPartGroup(group);
-         part->m_d.m_vPosition = { 0.f, 0.f, 0.f };
+         part->m_d.m_vPosition = position;
          part->m_d.m_vSize = scale;
          part->m_d.m_szMaterial = mat->m_name;
          part->m_d.m_use3DMesh = true;
@@ -216,10 +312,16 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room)
       auto* floor = material("VisionRoomFloor", RGB(83, 91, 103), 0.9f);
       addMesh(group, "VRGround", floor, { 2.f, 2.f, 1.f });
    }
+   constexpr unsigned int modes = PartGroupData::PMVM_MIXED_REALITY | PartGroupData::PMVM_VIRTUAL_REALITY;
+   if (gorgarCoinDoor)
+   {
+      auto* group = makeGroup("VisionCoinDoor", SR_PLAYFIELD, modes);
+      auto* metal = material("VisionCoinDoorMetal", RGB(93, 96, 104), 0.44f);
+      addMesh(group, "VRCoinDoor", metal, gorgarCoinScale, gorgarCoinOffset);
+   }
    if (!cabinet)
       return;
 
-   constexpr unsigned int modes = PartGroupData::PMVM_MIXED_REALITY | PartGroupData::PMVM_VIRTUAL_REALITY;
    auto* body = makeGroup("VisionCabinet", SR_CABINET, modes);
    auto* feet = makeGroup("VisionCabinetFeet", SR_CABINET_FEET, modes);
    auto* wood = material("VisionCabinetBody", RGB(39, 46, 61), 0.67f);

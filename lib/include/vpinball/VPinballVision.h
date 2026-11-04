@@ -53,9 +53,15 @@ VPINBALLAPI VPINBALL_STATUS VPinballVisionConfigure(const VPINBALL_VISION_HOST* 
 VPINBALLAPI VPINBALL_STATUS VPinballVisionInit(VPinballEventCallback eventCallback);
 VPINBALLAPI void VPinballVisionTick(void);
 typedef struct {
+   float x, y, z;
+   float halfWidth, halfHeight;
+} VPINBALL_VISION_BUTTON_FACE;
+
+typedef struct {
    float width, length, height;
+   VPINBALL_VISION_BUTTON_FACE start, coin;
    float plungerX, plungerY, plungerZ;
-   int stockCabinet;
+   int hasPlunger;
 } VPINBALL_VISION_LAYOUT;
 
 // Dimensions and control placement in metres. Read after PLAYER_READY.
@@ -69,4 +75,6 @@ VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action,
 VPINBALLAPI int VPinballVisionRomRunning(void);
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
 VPINBALLAPI float VPinballVisionPlungerPosition(void);
+// Returns the Y position of a ball in the shooter lane, or -1.
+VPINBALLAPI float VPinballVisionShooterBallY(void);
 #endif
