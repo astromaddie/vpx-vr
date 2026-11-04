@@ -9,13 +9,24 @@ import simd
 import SwiftUI
 
 struct NativeLayerConfiguration: CompositorLayerConfiguration {
+    private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
+
     func makeConfiguration(capabilities: LayerRenderer.Capabilities, configuration: inout LayerRenderer.Configuration) {
+        let layouts = capabilities.supportedLayouts(options: [])
         configuration.isFoveationEnabled = false
-        configuration.layout = .dedicated
-        configuration.colorFormat = .bgra8Unorm_srgb
-        configuration.depthFormat = .depth32Float
-        // In metres. Leave room for the player to lean over the cabinet.
-        configuration.defaultDepthRange = SIMD2(100, 0.05)
+        if layouts.contains(.layered) {
+            configuration.layout = .layered
+        } else if !layouts.contains(configuration.layout), let layout = layouts.first {
+            configuration.layout = layout
+        }
+        if capabilities.supportedColorFormats(options: []).contains(.bgra8Unorm_srgb) {
+            configuration.colorFormat = .bgra8Unorm_srgb
+        }
+        if capabilities.supportedDepthFormats.contains(.depth32Float) {
+            configuration.depthFormat = .depth32Float
+        }
+        let selection = "layout \(configuration.layout), color \(configuration.colorFormat.rawValue), depth \(configuration.depthFormat.rawValue), near \(configuration.defaultDepthRange.y)"
+        Self.log.info("Layer: \(selection, privacy: .public)")
     }
 }
 
@@ -150,11 +161,15 @@ final class NativeCompositor: @unchecked Sendable {
                     let pass = MTLRenderPassDescriptor()
                     pass.colorAttachments[0].texture = drawable.colorTextures[map.textureIndex]
                     pass.colorAttachments[0].slice = map.sliceIndex
-                    pass.colorAttachments[0].loadAction = .clear
+                    // Shared layout places both views in the same texture and slice.
+                    let alreadyCleared = drawable.views.prefix(eye).contains {
+                        $0.textureMap.textureIndex == map.textureIndex && $0.textureMap.sliceIndex == map.sliceIndex
+                    }
+                    pass.colorAttachments[0].loadAction = alreadyCleared ? .load : .clear
                     pass.colorAttachments[0].storeAction = .store
                     pass.depthAttachment.texture = drawable.depthTextures[map.textureIndex]
                     pass.depthAttachment.slice = map.sliceIndex
-                    pass.depthAttachment.loadAction = .clear
+                    pass.depthAttachment.loadAction = alreadyCleared ? .load : .clear
                     pass.depthAttachment.storeAction = .store
                     pass.depthAttachment.clearDepth = 0
 
