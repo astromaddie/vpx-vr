@@ -58,8 +58,13 @@ typedef struct {
 } VPINBALL_VISION_BUTTON_FACE;
 
 typedef struct {
+   float x, y, z;
+} VPINBALL_VISION_POINT;
+
+typedef struct {
    float width, length, height;
    VPINBALL_VISION_BUTTON_FACE start, coin;
+   VPINBALL_VISION_POINT leftFlipper, rightFlipper;
    float plungerX, plungerY, plungerZ;
    int hasPlunger;
 } VPINBALL_VISION_LAYOUT;
@@ -75,6 +80,10 @@ VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action,
 VPINBALLAPI int VPinballVisionRomRunning(void);
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
 VPINBALLAPI float VPinballVisionPlungerPosition(void);
-// Returns the Y position of a ball in the shooter lane, or -1.
-VPINBALLAPI float VPinballVisionShooterBallY(void);
+typedef struct {
+   int id;
+   float y, velocityY;
+} VPINBALL_VISION_BALL_SAMPLE;
+// Use -1 to find the ball at the plunger, then pass its ID to follow it.
+VPINBALLAPI VPINBALL_VISION_BALL_SAMPLE VPinballVisionSampleBall(int ballId);
 #endif

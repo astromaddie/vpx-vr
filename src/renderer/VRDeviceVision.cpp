@@ -171,6 +171,11 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
          abs(edgeX.x) + abs(edgeY.x) + abs(edgeZ.x) + fingertipTolerance,
          abs(edgeX.y) + abs(edgeY.y) + abs(edgeZ.y) + fingertipTolerance };
    };
+   const auto flipper = [&cabinetPoint](const Matrix3D& transform, const Vertex3Ds& center)
+   {
+      const auto point = cabinetPoint(transform, center);
+      return VPINBALL_VISION_POINT { point.x, point.y, point.z };
+   };
    const auto plunger = [this, &cabinetPoint](const Matrix3D& transform, const Vertex3Ds& center)
    {
       const auto point = cabinetPoint(transform, center);
@@ -190,26 +195,50 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
          { MTOVPU(0.03287f), MTOVPU(1.22739f), MTOVPU(0.80861f) },
          { MTOVPU(0.01267f), 0.f, MTOVPU(0.01268f) });
       m_visionLayout.coin = face(worldFromStock, stockCoinCenter, stockCoinHalfExtent);
+      m_visionLayout.leftFlipper = flipper(worldFromStock, { MTOVPU(-0.03161f), MTOVPU(1.14771f), MTOVPU(0.86215f) });
+      m_visionLayout.rightFlipper = flipper(worldFromStock, { MTOVPU(0.54406f), MTOVPU(1.14771f), MTOVPU(0.86215f) });
       plunger(worldFromStock, { MTOVPU(0.48053f), MTOVPU(1.28027f), MTOVPU(0.85304f) });
    }
    // Legacy cabinet controls use the same playfield space as their meshes.
    const Matrix3D worldFromLegacyCabinet = m_pfWorld.m_toWorld * m_visionPlayfieldLevel;
-   const auto legacyButton = [&face, &worldFromLegacyCabinet](Primitive* part)
+   const auto legacyBounds = [midX = (table->m_left + table->m_right) * 0.5f](Primitive* part, int side = 0)
+      -> std::optional<std::pair<Vertex3Ds, Vertex3Ds>>
    {
-      if (!part || part->m_mesh.m_vertices.empty())
-         return VPINBALL_VISION_BUTTON_FACE{};
+      if (!part)
+         return std::nullopt;
       const auto& playfieldFromMesh = part->RecalculateMatrices();
       Vertex3Ds low { FLT_MAX, FLT_MAX, FLT_MAX };
       Vertex3Ds high { -FLT_MAX, -FLT_MAX, -FLT_MAX };
       for (const auto& vertex : part->m_mesh.m_vertices)
       {
          const auto point = playfieldFromMesh * Vertex3Ds { vertex.x, vertex.y, vertex.z };
+         if (side != 0 && (point.x - midX) * side <= 0.f)
+            continue;
          low.Set(min(low.x, point.x), min(low.y, point.y), min(low.z, point.z));
          high.Set(max(high.x, point.x), max(high.y, point.y), max(high.z, point.z));
       }
+      if (low.x == FLT_MAX)
+         return std::nullopt;
+      return std::pair { low, high };
+   };
+   const auto legacyButton = [&](Primitive* part)
+   {
+      const auto bounds = legacyBounds(part);
+      if (!bounds)
+         return VPINBALL_VISION_BUTTON_FACE{};
+      const auto& [low, high] = *bounds;
       const auto center = (low + high) * 0.5f;
       return face(worldFromLegacyCabinet, { center.x, high.y, center.z },
          { (high.x - low.x) * 0.5f, 0.f, (high.z - low.z) * 0.5f });
+   };
+   const auto legacyFlipper = [&](Primitive* part, int side)
+   {
+      const auto bounds = legacyBounds(part, side);
+      if (!bounds)
+         return VPINBALL_VISION_POINT{};
+      const auto& [low, high] = *bounds;
+      const auto center = (low + high) * 0.5f;
+      return flipper(worldFromLegacyCabinet, { side < 0 ? low.x : high.x, center.y, center.z });
    };
    if (timeMachineLegs)
    {
@@ -217,11 +246,16 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
       // PinCab_Metal_Coindoor, measured in the table's playfield units.
       m_visionLayout.start = face(worldFromLegacyCabinet, { 69.93f, 2093.54f, -119.37f }, { 25.13f, 0.f, 25.19f });
       m_visionLayout.coin = face(worldFromLegacyCabinet, { 491.4f, 2119.57f, -113.62f }, { 129.3f, 0.f, 29.54f });
+      auto* buttons = getPrimitive("PinCab_Buttons");
+      m_visionLayout.leftFlipper = legacyFlipper(buttons, -1);
+      m_visionLayout.rightFlipper = legacyFlipper(buttons, 1);
       plunger(worldFromLegacyCabinet, { 946.8f, 2200.f, -14.6f });
    }
    else if (meteor)
    {
       m_visionLayout.start = legacyButton(getPrimitive("VR_Cab_StartButton"));
+      m_visionLayout.leftFlipper = legacyFlipper(getPrimitive("VR_CabFlipperLeft"), -1);
+      m_visionLayout.rightFlipper = legacyFlipper(getPrimitive("VR_CabFlipperRight"), 1);
       // Slot artwork mapped through the three UV panels of VR_Cab_Coindoor_Graphics.
       m_visionLayout.coin = face(worldFromLegacyCabinet, { 467.f, 2115.2f, -51.5f }, { 125.f, 0.f, 12.f });
       plunger(worldFromLegacyCabinet, { 893.f, 2164.f, 19.f });
@@ -229,6 +263,8 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    else if (gorgar)
    {
       m_visionLayout.start = legacyButton(getPrimitive("PinCab_Button1i"));
+      m_visionLayout.leftFlipper = legacyFlipper(getPrimitive("Primary_flipper_button_left"), -1);
+      m_visionLayout.rightFlipper = legacyFlipper(getPrimitive("Primary_flipper_button_right"), 1);
       const auto worldFromDoor = Matrix3D::MatrixScale(gorgarCoinScale.x, gorgarCoinScale.y, gorgarCoinScale.z)
          * Matrix3D::MatrixTranslate(gorgarCoinOffset) * worldFromLegacyCabinet;
       m_visionLayout.coin = face(worldFromDoor, stockCoinCenter, stockCoinHalfExtent);
@@ -243,6 +279,12 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    };
    logFace("Start", m_visionLayout.start);
    logFace("coin", m_visionLayout.coin);
+   const auto logFlipper = [](const char* side, const VPINBALL_VISION_POINT& cap)
+   {
+      PLOGI << "Vision Pro " << side << " flipper cap: " << cap.x << ", " << cap.y << ", " << cap.z << " m";
+   };
+   logFlipper("left", m_visionLayout.leftFlipper);
+   logFlipper("right", m_visionLayout.rightFlipper);
    if (m_visionLayout.hasPlunger)
    {
       PLOGI << "Vision Pro plunger grip: " << m_visionLayout.plungerX << ", "

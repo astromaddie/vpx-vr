@@ -21,6 +21,8 @@ struct CabinetControlsLayout {
     var plunger: SIMD3<Float>? = nil
     var startFace: CabinetButtonFace? = nil
     var coinFace: CabinetButtonFace? = nil
+    var leftFlipperCap: SIMD3<Float>? = nil
+    var rightFlipperCap: SIMD3<Float>? = nil
 
     // VPX's lockbar calculation leaves 2 1/4 inches around the playfield.
     var width: Float { playfieldWidth + 0.05715 }
@@ -28,8 +30,12 @@ struct CabinetControlsLayout {
     var start: SIMD3<Float> { startFace?.position ?? SIMD3(-width * 0.30, -0.13, 0.025) }
     var coin: SIMD3<Float> { coinFace?.position ?? SIMD3(width * 0.22, -0.19, 0.025) }
 
+    func flipperCap(_ side: CabinetHandSide) -> SIMD3<Float>? {
+        side == .left ? leftFlipperCap : rightFlipperCap
+    }
+
     func flipper(_ side: CabinetHandSide) -> SIMD3<Float> {
-        SIMD3(side.sign * width / 2, -0.065, -0.055)
+        flipperCap(side) ?? SIMD3(side.sign * width / 2, -0.065, -0.055)
     }
 }
 
@@ -95,17 +101,27 @@ struct CabinetHandControls {
         left.reset(.left) + right.reset(.right) + plunger.reset()
     }
 
+    // About the length of the visible Time Machine handle travel.
+    static let plungerStroke: Float = 0.060
+
     private struct PlungerGrip {
-        private static let stroke: Float = 0.0762
         private var hand: CabinetHandSide?
         private var grabDepth: Float = 0
         private var pull: Float = 0
         private var lastSample: Double = 0
+        private var opening = false
+        private var fingertipLostAt: Double?
 
         mutating func reset() -> [CabinetInput] {
             guard hand != nil else { return [] }
             self = PlungerGrip()
             return [.cancelPlunger]
+        }
+
+        private mutating func release() -> [CabinetInput] {
+            let released = pull
+            self = PlungerGrip()
+            return released >= 0.04 ? [.releasePlunger(released)] : [.cancelPlunger]
         }
 
         mutating func expire(at time: Double) -> [CabinetInput] {
@@ -117,26 +133,37 @@ struct CabinetHandControls {
         ) -> [CabinetInput] {
             let expired = expire(at: time)
             guard hand == nil || hand == side else { return expired }
-            guard let thumb = sample?.thumb, let index = sample?.index else { return expired + reset() }
+            guard let sample else { return expired + reset() }
+            guard let thumb = sample.thumb, let index = sample.index else {
+                // A visible opening followed by fingertip occlusion is also a release.
+                // An occlusion from a closed grip still expires as tracking loss.
+                if opening && sample.palm != nil {
+                    let lostAt = fingertipLostAt ?? time
+                    fingertipLostAt = lostAt
+                    if time - lostAt >= 0.032 { return release() }
+                }
+                return expired
+            }
+            fingertipLostAt = nil
             let gap = simd_distance(thumb, index)
             let center = (thumb + index) * 0.5
             let offset = center - handle
             if hand == nil {
-                guard gap <= 0.032, simd_length_squared(offset) <= 0.060 * 0.060 else { return expired }
+                guard let palm = sample.palm, gap <= 0.032,
+                      simd_length_squared(offset) <= 0.060 * 0.060 else { return expired }
                 hand = side
-                grabDepth = center.z
+                grabDepth = palm.z
                 lastSample = time
                 return expired + [.pullPlunger(0)]
             }
 
             lastSample = time
-            if gap >= 0.048 {
-                let released = pull
-                self = PlungerGrip()
-                return released >= 0.04 ? [.releasePlunger(released)] : [.cancelPlunger]
-            }
+            if gap >= 0.048 { return release() }
+            // Keep the last closed-grip pull as the fingers begin opening.
+            opening = gap > 0.035
+            guard !opening, let palm = sample.palm else { return [] }
             guard simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.10 * 0.10 else { return reset() }
-            let newPull = min(max((center.z - grabDepth) / Self.stroke, 0), 1)
+            let newPull = min(max((palm.z - grabDepth) / CabinetHandControls.plungerStroke, 0), 1)
             guard abs(newPull - pull) >= 0.005 else { return [] }
             pull = newPull
             return [.pullPlunger(pull)]
@@ -174,7 +201,7 @@ struct CabinetHandControls {
             var events = expire(side, time: time)
             lastSample = time
             let wasDown = flipperDown
-            updateFlipper(sample, side: side, button: layout.flipper(side))
+            updateFlipper(sample, side: side, button: layout.flipper(side), mapped: layout.flipperCap(side) != nil)
             if flipperDown != wasDown {
                 events.append(.flipper(side, pressed: flipperDown))
             }
@@ -193,21 +220,23 @@ struct CabinetHandControls {
             return events
         }
 
-        private mutating func updateFlipper(_ sample: CabinetHandSample, side: CabinetHandSide, button: SIMD3<Float>) {
+        private mutating func updateFlipper(_ sample: CabinetHandSample, side: CabinetHandSide, button: SIMD3<Float>, mapped: Bool) {
             if let offset = sample.palm.map({ $0 - button }) {
                 let outside = offset.x * side.sign
                 // Give a held gesture extra room so small tracking changes do not release a trap.
                 let margin: Float = flipperDown ? 0.020 : 0
-                if abs(offset.y) <= 0.065 + margin, abs(offset.z) <= 0.10 + margin,
-                   (-0.085 ... 0.13).contains(outside) {
-                    if outside >= 0.018 {
+                let verticalReach: Float = mapped ? 0.090 : 0.065
+                let depthReach: Float = mapped ? 0.135 : 0.100
+                if abs(offset.y) <= verticalReach + margin, abs(offset.z) <= depthReach + margin,
+                   (-0.085 ... (0.13 + (mapped ? margin : 0))).contains(outside) {
+                    if outside >= (mapped ? 0.012 : 0.018) {
                         flipperArmed = true
                         translationDown = false
-                    } else if flipperArmed && outside <= -0.012 {
+                    } else if flipperArmed && outside <= (mapped ? -0.006 : -0.012) {
                         translationDown = true
                     }
 
-                    let canArm = outside >= -0.008
+                    let canArm = outside >= (mapped ? -0.025 : -0.008)
                     fingerTurn.update(sample.fingerDirection, inward: -side.sign, canArm: canArm)
                     palmTurn.update(sample.palmNormal, inward: -side.sign, canArm: canArm)
                     return

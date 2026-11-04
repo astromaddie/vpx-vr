@@ -71,6 +71,7 @@ struct HandControlChecks {
         precondition(feed(.right, coin(0), after: 0.16).isEmpty)
         print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
         checkWristTurns()
+        checkMappedFlippers()
         checkPlacement()
         checkRoomGrab()
         checkWristMenu()
@@ -81,23 +82,39 @@ struct HandControlChecks {
         let handle = SIMD3<Float>(0.24, -0.095, 0.040)
         var preview = CabinetHandControls()
         var player = CabinetHandControls(layout: CabinetControlsLayout(plunger: handle))
-        func grip(_ depth: Float, gap: Float = 0.02) -> CabinetHandSample {
-            .init(index: handle + [gap / 2, 0, depth], thumb: handle + [-gap / 2, 0, depth])
+        func grip(_ depth: Float, gap: Float = 0.02, tipDrift: Float = 0) -> CabinetHandSample {
+            .init(palm: handle + [0, 0, depth + 0.05],
+                  index: handle + [gap / 2, 0, depth + tipDrift],
+                  thumb: handle + [-gap / 2, 0, depth + tipDrift])
         }
         precondition(preview.update(.right, sample: grip(0), at: 0).isEmpty)
         precondition(player.update(.right, sample: grip(0.10), at: 0).isEmpty)
         precondition(player.update(.right, sample: grip(0), at: 0.016) == [.pullPlunger(0)])
         precondition(player.update(.left, sample: grip(0), at: 0.02).isEmpty)
-        let half = player.update(.right, sample: grip(0.0381), at: 0.032)
+        let halfDepth = CabinetHandControls.plungerStroke / 2
+        let half = player.update(.right, sample: grip(halfDepth), at: 0.032)
         guard half.count == 1, case let .pullPlunger(pull) = half[0] else { preconditionFailure("Missing half pull") }
         precondition(abs(pull - 0.5) < 0.01)
-        precondition(player.update(.right, sample: grip(0.0381, gap: 0.05), at: 0.048) == [.releasePlunger(pull)])
-        precondition(player.update(.right, sample: grip(0.0381, gap: 0.05), at: 0.064).isEmpty)
-        precondition(player.update(.right, sample: grip(0), at: 0.08) == [.pullPlunger(0)])
-        precondition(player.update(.right, sample: grip(0.1), at: 0.096) == [.pullPlunger(1)])
-        precondition(player.expire(at: 0.23) == [.cancelPlunger])
-        precondition(player.update(.right, sample: grip(0.1, gap: 0.05), at: 0.24).isEmpty)
-        print("Plunger passed: pull distance, one release, single grip, tracking loss cancels")
+        precondition(player.update(.right, sample: grip(halfDepth, tipDrift: -0.024), at: 0.048).isEmpty)
+        precondition(player.update(.right, sample: grip(0, gap: 0.041), at: 0.064).isEmpty)
+        var occluded = grip(0, gap: 0.041)
+        occluded.thumb = nil
+        precondition(player.update(.right, sample: occluded, at: 0.080).isEmpty)
+        precondition(player.update(.right, sample: grip(0, gap: 0.055), at: 0.096) == [.releasePlunger(pull)])
+        precondition(player.update(.right, sample: grip(0, gap: 0.055), at: 0.112).isEmpty)
+        precondition(player.update(.right, sample: grip(0), at: 0.128) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: grip(0.10), at: 0.144) == [.pullPlunger(1)])
+        let eased = player.update(.right, sample: grip(halfDepth), at: 0.160)
+        precondition(eased == half)
+        precondition(player.expire(at: 0.30) == [.cancelPlunger])
+        precondition(player.update(.right, sample: grip(0.1, gap: 0.055), at: 0.32).isEmpty)
+        precondition(player.update(.right, sample: grip(0), at: 0.34) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: grip(0.10), at: 0.36) == [.pullPlunger(1)])
+        precondition(player.update(.right, sample: grip(0, gap: 0.041), at: 0.38).isEmpty)
+        precondition(player.update(.right, sample: occluded, at: 0.40).isEmpty)
+        precondition(player.update(.right, sample: occluded, at: 0.44) == [.releasePlunger(1)])
+        precondition(player.update(.right, sample: occluded, at: 0.46).isEmpty)
+        print("Plunger passed: palm travel, easing back, opening with a dropout, one release, tracking loss cancels")
     }
 
     static func checkWristTurns() {
@@ -133,6 +150,25 @@ struct HandControlChecks {
         precondition(turn(.right, 9, roll: true) == [.flipper(.right, pressed: true)])
         precondition(controls.expire(at: time + 0.13) == [.flipper(.right, pressed: false)])
         print("Wrist turns passed: stationary palm, mirrored inward turns, hold and release")
+    }
+
+    static func checkMappedFlippers() {
+        let layout = CabinetControlsLayout(
+            leftFlipperCap: [-0.29, -0.16, -0.02], rightFlipperCap: [0.29, -0.16, -0.02])
+        var controls = CabinetHandControls(layout: layout)
+        var time = 0.0
+        func feed(_ side: CabinetHandSide, _ x: Float, _ direction: SIMD3<Float>?) -> [CabinetInput] {
+            time += 0.016
+            let palm = layout.flipper(side) + [side.sign * x, 0.075, 0.12]
+            return controls.update(side, sample: .init(palm: palm, fingerDirection: direction), at: time)
+        }
+        precondition(feed(.left, -0.018, [0, 0, -1]).isEmpty)
+        precondition(feed(.left, -0.018, [0.18, 0, -1]) == [.flipper(.left, pressed: true)])
+        precondition(feed(.left, -0.018, [0, 0, -1]) == [.flipper(.left, pressed: false)])
+        precondition(feed(.right, 0.014, nil).isEmpty)
+        precondition(feed(.right, -0.008, nil) == [.flipper(.right, pressed: true)])
+        precondition(feed(.right, 0.014, nil) == [.flipper(.right, pressed: false)])
+        print("Mapped flippers passed: wider reach, wrist arming at the cap, and a shorter inward press")
     }
 
     static func checkPlacement() {

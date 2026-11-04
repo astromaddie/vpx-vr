@@ -92,6 +92,14 @@ VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action,
    if (action != VPINBALL_VISION_PLUNGER_RELEASE && action != VPINBALL_VISION_PLUNGER_CANCEL)
       return;
 
+   if (action == VPINBALL_VISION_PLUNGER_RELEASE)
+   {
+      PLOGI << "Vision Pro plunger released at " << clamp(pull, 0.f, 1.f) * 100.f << "% pull";
+   }
+   else if (const float held = handler.GetRawPosition(); held > 0.04f)
+   {
+      PLOGI << "Vision Pro plunger grip cancelled at " << held * 100.f << "% pull";
+   }
    handler.SetExternalPlunger(false, 0.f, 0.f);
    for (IEditable* const part : g_pplayer->m_ptable->GetParts())
       if (part && part->GetItemType() == eItemPlunger)
@@ -126,24 +134,32 @@ VPINBALLAPI float VPinballVisionPlungerPosition(void)
    return SDL_IsMainThread() && g_pplayer ? g_pplayer->m_pininput.m_plungerHandler->GetRawPosition() : 0.f;
 }
 
-VPINBALLAPI float VPinballVisionShooterBallY(void)
+VPINBALLAPI VPINBALL_VISION_BALL_SAMPLE VPinballVisionSampleBall(int ballId)
 {
    if (!SDL_IsMainThread() || !g_pplayer)
-      return -1.f;
+      return { -1, 0.f, 0.f };
 
-   for (const auto* part : g_pplayer->m_ptable->GetParts())
-      if (part->GetItemType() == eItemPlunger)
+   for (auto* ball : g_pplayer->m_vball)
+   {
+      int id;
+      ball->get_ID(&id);
+      const auto& position = ball->GetPosition();
+      if (ballId >= 0)
       {
-         const auto& plunger = static_cast<const Plunger*>(part)->m_d;
-         if (plunger.m_mechPlunger && !plunger.m_autoPlunger)
-            for (const auto* ball : g_pplayer->m_vball)
-            {
-               const auto& position = ball->GetPosition();
-               if (abs(position.x - plunger.m_v.x) <= plunger.m_width
-                   && position.y <= plunger.m_v.y && position.y >= plunger.m_v.y - 380.f)
-                  return position.y;
-            }
+         if (id == ballId)
+            return { id, position.y, ball->GetVelocity().y };
+         continue;
       }
-   return -1.f;
+      for (const auto* part : g_pplayer->m_ptable->GetParts())
+         if (part->GetItemType() == eItemPlunger)
+         {
+            const auto& plunger = static_cast<const Plunger*>(part)->m_d;
+            if (plunger.m_mechPlunger && !plunger.m_autoPlunger
+                && abs(position.x - plunger.m_v.x) <= plunger.m_width
+                && position.y <= plunger.m_v.y && position.y >= plunger.m_v.y - 200.f)
+               return { id, position.y, ball->GetVelocity().y };
+         }
+   }
+   return { -1, 0.f, 0.f };
 }
 #endif

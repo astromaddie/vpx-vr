@@ -476,7 +476,9 @@ private final class NativePlayer {
                     tracker.setLayout(CabinetControlsLayout(
                         playfieldWidth: dimensions.width, playfieldLength: dimensions.length,
                         plunger: dimensions.hasPlunger == 0 ? nil : SIMD3(dimensions.plungerX, dimensions.plungerY, dimensions.plungerZ),
-                        startFace: face(dimensions.start), coinFace: face(dimensions.coin)))
+                        startFace: face(dimensions.start), coinFace: face(dimensions.coin),
+                        leftFlipperCap: dimensions.leftFlipper.x < 0 ? SIMD3(dimensions.leftFlipper.x, dimensions.leftFlipper.y, dimensions.leftFlipper.z) : nil,
+                        rightFlipperCap: dimensions.rightFlipper.x > 0 ? SIMD3(dimensions.rightFlipper.x, dimensions.rightFlipper.y, dimensions.rightFlipper.z) : nil))
                     let height = dimensions.height
                     #if targetEnvironment(simulator)
                     pose = tracker.placeForPlay(cabinetTransform, height: height, trackFloor: mixedReality, simulatedFloor: -1.60)
@@ -543,7 +545,9 @@ private final class NativePlayer {
         // The ROM can still be starting when the first frame reaches the GPU.
         try? await Task.sleep(for: .seconds(4))
         guard let tracker, let start = tracker.layout.startFace, let coin = tracker.layout.coinFace,
-              start.halfSize.x > 0, coin.halfSize.x > 0 else {
+              start.halfSize.x > 0, coin.halfSize.x > 0,
+              let leftCap = tracker.layout.flipperCap(.left),
+              let rightCap = tracker.layout.flipperCap(.right) else {
             VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator found missing cabinet button geometry")
             return
         }
@@ -574,12 +578,12 @@ private final class NativePlayer {
             (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
             (VPINBALL_VISION_START, .seconds(2), { poke(start.position) }),
             (VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150), {
-                let palm = tracker.layout.flipper(.left) + [-0.025, 0, 0]
+                let palm = leftCap + [0.018, 0.075, 0.12]
                 send(.left, .init(palm: palm, fingerDirection: [0, 0, -1]))
                 send(.left, .init(palm: palm, fingerDirection: [0.18, 0, -1]))
             }),
             (VPINBALL_VISION_RIGHT_FLIPPER, .milliseconds(150), {
-                let palm = tracker.layout.flipper(.right) + [0.025, 0, 0]
+                let palm = rightCap + [-0.018, 0.075, 0.12]
                 send(.right, .init(palm: palm, fingerDirection: [0, 0, -1]))
                 send(.right, .init(palm: palm, fingerDirection: [-0.18, 0, -1]))
             })
@@ -602,12 +606,17 @@ private final class NativePlayer {
         }
 
         if let handle = tracker.layout.plunger {
-            func grip(depth: Float, gap: Float) {
-                send(.right, .init(index: handle + [gap / 2, 0, depth],
-                                   thumb: handle + [-gap / 2, 0, depth]))
+            func grip(depth: Float, gap: Float, tipDrift: Float = 0, hideThumb: Bool = false) {
+                send(.right, .init(palm: handle + [0, 0, depth + 0.05],
+                                   index: handle + [gap / 2, 0, depth + tipDrift],
+                                   thumb: hideThumb ? nil : handle + [-gap / 2, 0, depth + tipDrift]))
             }
-            let pulls: [(Float, Float)] = [(0.0381, 0.5), (0.0762, 1)]
-            for (distance, expected) in pulls {
+            let arguments = CommandLine.arguments
+            let shot: Float? = arguments.contains("--check-ball-launch") ? 1
+                : arguments.contains("--check-half-launch") ? 0.5 : nil
+            let pulls: [Float] = shot.map { [$0] } ?? [0.5, 1]
+            for expected in pulls {
+                let distance = CabinetHandControls.plungerStroke * expected
                 grip(depth: 0, gap: 0.030)
                 grip(depth: distance, gap: 0.030)
                 try? await Task.sleep(for: .milliseconds(350))
@@ -615,21 +624,44 @@ private final class NativePlayer {
                     VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator pull \(expected) never reached the plunger handler")
                     return
                 }
-                let checkBall = expected == 0.5 && CommandLine.arguments.contains("--check-ball-launch")
-                let startY = checkBall ? VPinballVisionShooterBallY() : 0
-                grip(depth: distance, gap: 0.056)
-                if checkBall {
-                    var travel: Float = 0
-                    for _ in 0..<60 {
+
+                // Opening the pinch can move the hand forward before the release
+                // threshold and briefly obscure a fingertip.
+                grip(depth: distance, gap: 0.032, tipDrift: -0.026)
+                grip(depth: 0, gap: 0.041)
+                grip(depth: 0, gap: 0.041, hideThumb: true)
+                try? await Task.sleep(for: .milliseconds(25))
+                guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the stored pull while opening the grip")
+                    return
+                }
+                let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
+                if expected == 1 {
+                    for _ in 0..<3 { grip(depth: 0, gap: 0.041, hideThumb: true) }
+                } else {
+                    grip(depth: 0, gap: 0.056)
+                }
+                if let ball {
+                    var frontmostY = ball.y
+                    var peakSpeed: Float = 0
+                    let deadline = ContinuousClock.now + .seconds(2)
+                    while ContinuousClock.now < deadline && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(8))
-                        let y = VPinballVisionShooterBallY()
-                        if y >= 0 { travel = max(travel, startY - y) }
+                        let current = VPinballVisionSampleBall(ball.id)
+                        if current.id == ball.id && ball.id >= 0 {
+                            frontmostY = min(frontmostY, current.y)
+                            peakSpeed = max(peakSpeed, -current.velocityY)
+                        }
                     }
-                    guard startY >= 0, travel > 80 else {
-                        VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator half pull did not move a ball up the shooter lane (start: \(startY), travel: \(travel))")
+                    let travel = ball.y - frontmostY
+                    // The supplied Time Machine script uses Gate1_Hit to mark the
+                    // ball as out of the shooter. The authored gate sits at Y 725.16.
+                    let passed = expected == 1 ? frontmostY < 725.16 : travel > 80
+                    VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator shot \(expected): ball \(ball.id), Y \(ball.y) to \(frontmostY), travel \(travel) VP units, peak up-lane velocity \(peakSpeed)")
+                    guard ball.id >= 0, passed else {
+                        VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator shot \(expected) did not reach the required point in the shooter lane")
                         return
                     }
-                    VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator half pull moved the ball \(travel) VP units up the shooter lane")
                 } else {
                     try? await Task.sleep(for: .milliseconds(500))
                 }
@@ -638,7 +670,8 @@ private final class NativePlayer {
                     return
                 }
             }
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified 50% and 100% grip travel and release in the native plunger")
+
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native plunger travel and release with an opening grip")
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-room-placement") {
