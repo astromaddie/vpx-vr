@@ -1,0 +1,115 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+		900000000000000000000001 = {
+			isa = PBXProject;
+			buildConfigurationList = 900000000000000000000008;
+			developmentRegion = en;
+			knownRegions = (en, Base);
+			mainGroup = 900000000000000000000003;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 900000000000000000000005;
+			targets = (900000000000000000000002);
+		};
+		900000000000000000000002 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 900000000000000000000009;
+			buildPhases = (900000000000000000000007);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (900000000000000000000004);
+			name = CabinetHands;
+			productName = CabinetHands;
+			productReference = 900000000000000000000006;
+			productType = "com.apple.product-type.application";
+		};
+		900000000000000000000003 = {
+			isa = PBXGroup;
+			children = (900000000000000000000004, 90000000000000000000000F, 900000000000000000000005);
+			sourceTree = "<group>";
+		};
+		900000000000000000000004 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (90000000000000000000000E);
+			path = CabinetHands;
+			sourceTree = "<group>";
+		};
+		900000000000000000000005 = {
+			isa = PBXGroup;
+			children = (900000000000000000000006);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		900000000000000000000006 = {
+			isa = PBXFileReference;
+			explicitFileType = wrapper.application;
+			path = CabinetHands.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		900000000000000000000007 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		900000000000000000000008 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (90000000000000000000000A, 90000000000000000000000B);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		900000000000000000000009 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (90000000000000000000000C, 90000000000000000000000D);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		90000000000000000000000A = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = xros;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_VERSION = 6.0;
+				XROS_DEPLOYMENT_TARGET = 2.0;
+			};
+			name = Debug;
+		};
+		90000000000000000000000B = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = xros;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_VERSION = 6.0;
+				XROS_DEPLOYMENT_TARGET = 2.0;
+			};
+			name = Release;
+		};
+		90000000000000000000000C = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 90000000000000000000000F;
+			buildSettings = { SWIFT_OPTIMIZATION_LEVEL = "-Onone"; };
+			name = Debug;
+		};
+		90000000000000000000000D = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 90000000000000000000000F;
+			buildSettings = { SWIFT_OPTIMIZATION_LEVEL = "-O"; };
+			name = Release;
+		};
+		90000000000000000000000E = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (Info.plist);
+			target = 900000000000000000000002;
+		};
+		90000000000000000000000F = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.xcconfig;
+			path = CabinetHands.xcconfig;
+			sourceTree = SOURCE_ROOT;
+		};
+	};
+	rootObject = 900000000000000000000001;
+}
