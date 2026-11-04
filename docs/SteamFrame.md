@@ -142,7 +142,7 @@ folder, alongside 4 Queens. The installed engine is build `c8b2607`.
 | Black Hole | 1981 table | `blckhole` | `VPX_Black_Hole` |
 | Gorgar | 2.0 | `grgar_l1` | `VPX_Gorgar` |
 | Meteor | Stern 1979 table | `meteorb` | `VPX_Meteor` |
-| Middle Earth | 1.00 Flipperspiel | `midearth` (incomplete) | `VPX_Middle_Earth` |
+| Middle Earth | 1.00 Flipperspiel | `midearth` | `VPX_Middle_Earth` |
 | The Machine: Bride of Pinbot | 2.1 Flipperspiel | `bop_l7` | `VPX_Bride_of_Pinbot` |
 | Time Machine | Data East VR Room 1.0 Flipperspiel | `tmac_a24` | `VPX_Time_Machine` |
 
@@ -152,19 +152,31 @@ and 2160x2160 targets; a refresh-rate setting alone does not establish achieved 
 
 The supplied ROM ZIPs are unchanged in `~/Documents/VPXFrame/PinMAME/roms/`. Each new table
 folder has a `pinmame` symlink to that shared root, so PinMAME can find the ROMs and keep its
-writable data outside the application bundle. Black Hole and Bride of Pinbot also have their
-supplied backglasses, with `AddBackglass=1` in their table-local VR settings.
+writable data outside the application bundle. Black Hole, Bride of Pinbot and Middle Earth
+also have their supplied backglasses, with `AddBackglass=1` in their table-local VR settings.
+Middle Earth's backglass uses the table's full filename stem for automatic lookup. I checked
+its XML and embedded image data, verified its installed SHA-256 hash, and preserved every
+existing table setting while enabling the backglass.
 
 Black Hole's embedded script defaults to `RomSet = 5` (`blkhole7`). I installed a table-local
 `.vbs` override that changes only the supported selector to `RomSet = 1`, matching the
 supplied `blckhole.zip`. The VPX file is unchanged. The earlier BigusMOD 2.0 table remains in
 its separate folder; it defaults to `blkhole2` and is not the target of the new Steam entry.
 
-I checked all 16 transferred files against their source SHA-256 hashes and audited the ROM
-contents with the installed native PinMAME library. Six sets pass. Middle Earth is missing
-`20252-01.bin`, a 512-byte PROM with CRC32 `3d44551d`. Its supplied `82s130.bin` has CRC32
-`da1f77b4` and cannot substitute for it. The table and Steam entry are installed, but the
-correct PROM is still needed.
+I checked the original 16 transferred files against their source SHA-256 hashes. All seven
+ROM sets now pass the installed native PinMAME library's audit. Middle Earth uses the
+complete archive supplied at `/Users/mads/Downloads/midearth.zip`, including the previously
+missing `20252-01.bin` (512 bytes, CRC32 `3d44551d`). I installed the archive unchanged, with
+SHA-256 `fa3d377e3e5879cad9b0a0048911067807836c6f2407e47fdbb0f6149d5fa76f`.
+
+The Middle Earth audit uses `PinmameGetGameRoms` and `PinmameAuditGameRom` with strict filename
+and checksum verification inside Steam Linux Runtime 4. All three required files report
+state `OK`. The receipt and `rom-audit.json` are in
+`~/Documents/VPXFrame/imports/20261104T072853Z-middle-earth-rom-fix/`. A normal Steam startup
+check timed out while computing environment map radiance, before scripts and ROM loading.
+I stopped that test process and restored its saved preferences; the log extract is in
+`startup-summary.txt` beside the receipt. The backglass installation receipt and prior table
+settings are in `~/Documents/VPXFrame/imports/20261104T072501Z-middle-earth-backglass/`.
 
 The import record is in `~/Documents/VPXFrame/imports/20261104-20261104T061009Z/` on the
 Frame. `install-receipt.json` records source hashes, table paths, Steam AppIDs and verified
