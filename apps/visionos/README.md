@@ -5,7 +5,7 @@ This visionOS preview is for trying hand controls on a room-locked cabinet. It r
 Open `CabinetHands.xcodeproj`, select the **CabinetHands** scheme, and run on a visionOS destination. Choose **Open Cabinet**. The preview asks for hand tracking on a supported device. Look toward the space in front of you when opening it. Close and reopen it to place it again.
 
 - Put a hand by each red side button. Move a hand inward and back out to flip. Keeping it in holds the flipper.
-- Pinch above the gold coin slot. Move the pinched fingers down to the slot and let go. The slot flashes and **Coins** increases once.
+- Poke the gold coin box with your index finger. It flashes and **Coins** increases once. Pull back before poking it again.
 - Push the green Start button with your index finger. It flashes and **Start Presses** increases once. Pull back before pressing it again.
 
 The cabinet keeps the real hands visible in mixed immersion. The simulator can show the layout. Live hand tracking, reach and timing need a headset check.

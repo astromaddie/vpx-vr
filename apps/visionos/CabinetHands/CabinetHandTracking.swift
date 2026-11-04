@@ -73,7 +73,7 @@ final class CabinetHandTracking {
                         let towardPlayer = -simd_normalize(forward)
                         let up = SIMD3<Float>(0, 1, 0)
                         let right = simd_cross(up, towardPlayer)
-                        let position = head.columns.3.xyz - towardPlayer * 0.53 - up * 0.45
+                        let position = head.columns.3.xyz - towardPlayer * 0.53 - up * 0.35
                         let transform = simd_float4x4(
                             SIMD4(right, 0), SIMD4(up, 0), SIMD4(towardPlayer, 0), SIMD4(position, 1)
                         )
@@ -127,7 +127,7 @@ final class CabinetHandTracking {
             return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
         }
         let sample = CabinetHandSample(
-            palm: joint(.middleFingerKnuckle), index: joint(.indexFingerTip), thumb: joint(.thumbTip)
+            palm: joint(.middleFingerKnuckle), index: joint(.indexFingerTip)
         )
         controls.update(side, sample: sample, at: time).forEach(send)
     }

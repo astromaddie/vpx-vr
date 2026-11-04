@@ -5,6 +5,7 @@ import simd
 /// Metres in cabinet space: x to the player's right, y up, z toward the player.
 /// The origin is at the top centre of the front panel.
 struct CabinetControlsLayout {
+    static let coinFaceSize = SIMD2<Float>(0.080, 0.064)
     // The default preview uses Time Machine's 1,000 by 1,910 VP units.
     var playfieldWidth: Float = 0.53975
     var playfieldLength: Float = 1.0309225
@@ -16,7 +17,7 @@ struct CabinetControlsLayout {
     var coin: SIMD3<Float> { SIMD3(width * 0.22, -0.19, 0.025) }
 
     func flipper(_ side: CabinetHandSide) -> SIMD3<Float> {
-        SIMD3(side.sign * width / 2, -0.065, -0.13)
+        SIMD3(side.sign * width / 2, -0.065, -0.055)
     }
 }
 
@@ -29,7 +30,6 @@ enum CabinetHandSide: CaseIterable {
 struct CabinetHandSample {
     var palm: SIMD3<Float>?
     var index: SIMD3<Float>?
-    var thumb: SIMD3<Float>?
 }
 
 enum CabinetAction: Hashable {
@@ -81,7 +81,6 @@ struct CabinetHandControls {
         private var flipperDown = false
         private var startArmed = false
         private var coinArmed = false
-        private var coinPickedUp: Double?
 
         mutating func reset(_ side: CabinetHandSide) -> [CabinetInput] {
             let events: [CabinetInput] = flipperDown ? [.flipper(side, pressed: false)] : []
@@ -109,20 +108,16 @@ struct CabinetHandControls {
                 events.append(.flipper(side, pressed: flipperDown))
             }
 
-            if let tip = sample.index, updateStart(tip, button: layout.start) {
+            if Self.poke(sample.index, at: layout.start, armed: &startArmed, contains: {
+                simd_length_squared($0) <= 0.034 * 0.034
+            }) {
                 events.append(.pressStart)
-            } else if sample.index == nil {
-                startArmed = false
             }
-
-            if let tip = sample.index, let thumb = sample.thumb {
-                let pinch = simd_distance(tip, thumb)
-                if updateCoin((tip + thumb) / 2, pinch: pinch, slot: layout.coin, time: time) {
-                    events.append(.insertCoin)
-                }
-            } else {
-                coinArmed = false
-                coinPickedUp = nil
+            if Self.poke(sample.index, at: layout.coin, armed: &coinArmed, contains: {
+                let halfSize = CabinetControlsLayout.coinFaceSize / 2
+                return abs($0.x) <= halfSize.x && abs($0.y) <= halfSize.y
+            }) {
+                events.append(.insertCoin)
             }
             return events
         }
@@ -147,46 +142,23 @@ struct CabinetHandControls {
             flipperDown = false
         }
 
-        private mutating func updateStart(_ tip: SIMD3<Float>, button: SIMD3<Float>) -> Bool {
-            let offset = tip - button
-            guard simd_length(SIMD2(offset.x, offset.y)) <= 0.034,
+        private static func poke(
+            _ tip: SIMD3<Float>?,
+            at button: SIMD3<Float>,
+            armed: inout Bool,
+            contains: (SIMD2<Float>) -> Bool
+        ) -> Bool {
+            guard let offset = tip.map({ $0 - button }),
+                  contains(SIMD2(offset.x, offset.y)),
                   (-0.05 ... 0.085).contains(offset.z) else {
-                startArmed = false
+                armed = false
                 return false
             }
             if offset.z >= 0.025 {
-                startArmed = true
-            } else if offset.z <= 0.003 && startArmed {
-                startArmed = false
+                armed = true
+            } else if offset.z <= 0.003 && armed {
+                armed = false
                 return true
-            }
-            return false
-        }
-
-        private mutating func updateCoin(_ point: SIMD3<Float>, pinch: Float, slot: SIMD3<Float>, time: Double) -> Bool {
-            let offset = point - slot
-            guard abs(offset.x) <= 0.054, (-0.030 ... 0.125).contains(offset.y),
-                  (-0.015 ... 0.10).contains(offset.z) else {
-                coinArmed = false
-                coinPickedUp = nil
-                return false
-            }
-            let aboveSlot = offset.y >= 0.050
-            if let pickup = coinPickedUp {
-                if time - pickup > 1.2 {
-                    coinPickedUp = nil
-                } else if pinch >= 0.043 {
-                    coinPickedUp = nil
-                    coinArmed = aboveSlot
-                    return abs(offset.y) <= 0.035 && offset.z <= 0.055
-                }
-            } else if pinch >= 0.043 {
-                coinArmed = aboveSlot
-            } else if pinch <= 0.025 && coinArmed {
-                coinArmed = false
-                if aboveSlot {
-                    coinPickedUp = time
-                }
             }
             return false
         }

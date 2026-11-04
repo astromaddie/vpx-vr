@@ -46,28 +46,29 @@ struct HandControlChecks {
         precondition(controls.reset().isEmpty)
         precondition(feed(.left, start(-0.003)).isEmpty)
 
-        func coin(_ y: Float, _ gap: Float, x: Float = 0) -> CabinetHandSample {
-            let centre = layout.coin + [x, y, 0.035]
-            return .init(index: centre + [gap / 2, 0, 0], thumb: centre - [gap / 2, 0, 0])
+        func coin(_ z: Float, x: Float = 0.035, y: Float = 0.025) -> CabinetHandSample {
+            .init(index: layout.coin + [x, y, z])
         }
 
-        // A pinch that was already closed at pickup, or opens outside the slot, earns no credit.
-        precondition(feed(.right, coin(0.08, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.058, x: 0.09)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.058)) == [.insertCoin])
-        precondition(feed(.right, coin(0.00, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.058)).isEmpty)
-        precondition(feed(.right, coin(0.08, 0.016)).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.016), after: 0.16).isEmpty)
-        precondition(feed(.right, coin(0.00, 0.058)).isEmpty)
-        print("Hand controls passed: independent flippers, loss and re-arm, Start and coin gestures")
+        // The coin box accepts a fingertip near its edge, once per approach.
+        precondition(feed(.right, coin(0)).isEmpty)
+        precondition(feed(.right, coin(0.04)).isEmpty)
+        precondition(feed(.right, coin(0)) == [.insertCoin])
+        precondition(feed(.right, coin(0)).isEmpty)
+        precondition(feed(.right, coin(0.012)).isEmpty)
+        precondition(feed(.right, coin(0)).isEmpty)
+        precondition(feed(.right, coin(0.04)).isEmpty)
+        precondition(feed(.right, coin(0)) == [.insertCoin])
+
+        // Leaving the target or losing the fingertip cancels the approach.
+        precondition(feed(.right, coin(0.04)).isEmpty)
+        precondition(feed(.right, coin(0, x: 0.055)).isEmpty)
+        precondition(feed(.right, coin(0)).isEmpty)
+        precondition(feed(.right, coin(0.04)).isEmpty)
+        precondition(feed(.right, .init()).isEmpty)
+        precondition(feed(.right, coin(0)).isEmpty)
+        precondition(feed(.right, coin(0.04)).isEmpty)
+        precondition(feed(.right, coin(0), after: 0.16).isEmpty)
+        print("Hand controls passed: independent flippers, loss and re-arm, Start and coin pokes")
     }
 }

@@ -21,7 +21,8 @@ final class CabinetModel {
         start = ModelEntity(mesh: .generateCylinder(height: 0.020, radius: 0.033), materials: [Self.green])
         start.orientation = simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
         start.position = layout.start - SIMD3(0, 0, 0.010)
-        coin = Self.box([0.080, 0.064, 0.024], at: layout.coin - SIMD3(0, 0, 0.014), material: Self.gold)
+        let coinFace = CabinetControlsLayout.coinFaceSize
+        coin = Self.box([coinFace.x, coinFace.y, 0.024], at: layout.coin - SIMD3(0, 0, 0.014), material: Self.gold)
         coin.addChild(Self.box([0.010, 0.043, 0.005], at: [0, 0, 0.015], material: Self.cabinet))
         flippers = CabinetHandSide.allCases.map { side in
             let button = Self.box([0.025, 0.042, 0.060], at: layout.flipper(side), material: Self.red)
@@ -59,7 +60,7 @@ final class CabinetModel {
             root.addChild(button)
             root.addChild(pivot)
         }
-        root.position = [0, -0.42, -0.72]
+        root.position = [0, -0.32, -0.72]
         show([])
     }
 
