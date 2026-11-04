@@ -643,6 +643,22 @@ void RenderDevice::BGFXVisionRenderLoop()
    auto* const headset = g_pplayer->m_vrDevice;
    while (m_renderDeviceAlive)
    {
+      // The preload cache submits texture-only work while the main thread
+      // is still loading the table and the host has no drawable pose yet.
+      if (m_frameReadySem.try_acquire())
+      {
+         std::lock_guard lock(m_frameMutex);
+         if (m_framePending)
+         {
+            assert(m_frameNoPresent);
+            SubmitRenderFrame();
+            SubmitAndFlipFrame(false);
+            m_frameNoPresent = false;
+            m_framePending = false;
+         }
+         continue;
+      }
+
       headset->RenderVisionFrame(this, [this](RenderTarget* target) {
          // Keep the render target and predicted views valid through submission.
          g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_WAIT);
