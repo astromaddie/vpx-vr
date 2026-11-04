@@ -88,7 +88,19 @@ final class CabinetHandTracking {
     }
 
     func reset() {
-        controls.reset().forEach(send)
+        let events = controls.reset()
+        if events.contains(.cancelPlunger) {
+            Self.log.info("Plunger grip cancelled by cabinet input reset")
+        }
+        events.forEach(send)
+    }
+
+    func serviceControls(at time: Double, playing: Bool) {
+        if playing && roomPlacement == nil {
+            controls.expire(at: time).forEach(send)
+        } else {
+            reset()
+        }
     }
 
     func run(
@@ -205,14 +217,10 @@ final class CabinetHandTracking {
         let watchdog = Task { @MainActor in
             while !Task.isCancelled {
                 let now = CACurrentMediaTime()
-                let play = acceptsInput() && allowsControls()
-                roomPlacement?.expire(at: acceptsInput() ? now : .infinity)
+                let running = acceptsInput()
+                roomPlacement?.expire(at: running ? now : .infinity)
                 reportMovement()
-                if play && roomPlacement == nil {
-                    controls.expire(at: now).forEach(send)
-                } else {
-                    reset()
-                }
+                serviceControls(at: now, playing: running && allowsControls() && hands.state == .running)
                 tick(now)
                 try? await Task.sleep(for: .milliseconds(20))
             }
@@ -220,7 +228,7 @@ final class CabinetHandTracking {
         defer { watchdog.cancel() }
         for await change in hands.anchorUpdates {
             guard !Task.isCancelled else { return }
-            if acceptsInput() {
+            if acceptsInput() && hands.state == .running {
                 let now = CACurrentMediaTime()
                 if roomPlacement != nil {
                     let anchor = change.anchor

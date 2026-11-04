@@ -109,8 +109,8 @@ struct CabinetHandControls {
         private var grabDepth: Float = 0
         private var pull: Float = 0
         private var lastSample: Double = 0
-        private var opening = false
-        private var fingertipLostAt: Double?
+        // Infer a release from lost tracking only after a deliberate pull.
+        private static let minimumPullOnTrackingLoss: Float = 0.10
 
         mutating func reset() -> [CabinetInput] {
             guard hand != nil else { return [] }
@@ -125,44 +125,34 @@ struct CabinetHandControls {
         }
 
         mutating func expire(at time: Double) -> [CabinetInput] {
-            time - lastSample > CabinetHandControls.trackingTimeout ? reset() : []
+            guard hand != nil, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
+            return pull >= Self.minimumPullOnTrackingLoss ? release() : reset()
         }
 
         mutating func update(
             _ side: CabinetHandSide, sample: CabinetHandSample?, handle: SIMD3<Float>, time: Double
         ) -> [CabinetInput] {
             let expired = expire(at: time)
-            guard hand == nil || hand == side else { return expired }
-            guard let sample else { return expired + reset() }
-            guard let thumb = sample.thumb, let index = sample.index else {
-                // A visible opening followed by fingertip occlusion is also a release.
-                // An occlusion from a closed grip still expires as tracking loss.
-                if opening && sample.palm != nil {
-                    let lostAt = fingertipLostAt ?? time
-                    fingertipLostAt = lostAt
-                    if time - lostAt >= 0.032 { return release() }
-                }
-                return expired
-            }
-            fingertipLostAt = nil
+            guard expired.isEmpty, hand == nil || hand == side else { return expired }
+            // The headset can lose a fingertip or the whole hand before sending
+            // an open pinch. Keep the last usable pull through that grace period.
+            guard let sample, let thumb = sample.thumb, let index = sample.index else { return [] }
             let gap = simd_distance(thumb, index)
             let center = (thumb + index) * 0.5
             let offset = center - handle
             if hand == nil {
                 guard let palm = sample.palm, gap <= 0.032,
-                      simd_length_squared(offset) <= 0.060 * 0.060 else { return expired }
+                      simd_length_squared(offset) <= 0.060 * 0.060 else { return [] }
                 hand = side
                 grabDepth = palm.z
                 lastSample = time
-                return expired + [.pullPlunger(0)]
+                return [.pullPlunger(0)]
             }
 
-            lastSample = time
             if gap >= 0.048 { return release() }
-            // Keep the last closed-grip pull as the fingers begin opening.
-            opening = gap > 0.035
-            guard !opening, let palm = sample.palm else { return [] }
-            guard simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.10 * 0.10 else { return reset() }
+            guard gap <= 0.035, let palm = sample.palm,
+                  simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.10 * 0.10 else { return [] }
+            lastSample = time
             let newPull = min(max((palm.z - grabDepth) / CabinetHandControls.plungerStroke, 0), 1)
             guard abs(newPull - pull) >= 0.005 else { return [] }
             pull = newPull

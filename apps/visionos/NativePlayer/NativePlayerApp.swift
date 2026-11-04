@@ -606,10 +606,10 @@ private final class NativePlayer {
         }
 
         if let handle = tracker.layout.plunger {
-            func grip(depth: Float, gap: Float, tipDrift: Float = 0, hideThumb: Bool = false) {
+            func grip(depth: Float, gap: Float, hideThumb: Bool = false) {
                 send(.right, .init(palm: handle + [0, 0, depth + 0.05],
-                                   index: handle + [gap / 2, 0, depth + tipDrift],
-                                   thumb: hideThumb ? nil : handle + [-gap / 2, 0, depth + tipDrift]))
+                                   index: handle + [gap / 2, 0, depth],
+                                   thumb: hideThumb ? nil : handle + [-gap / 2, 0, depth]))
             }
             let arguments = CommandLine.arguments
             let shot: Float? = arguments.contains("--check-ball-launch") ? 1
@@ -625,22 +625,24 @@ private final class NativePlayer {
                     return
                 }
 
-                // Opening the pinch can move the hand forward before the release
-                // threshold and briefly obscure a fingertip.
-                grip(depth: distance, gap: 0.032, tipDrift: -0.026)
-                grip(depth: 0, gap: 0.041)
-                grip(depth: 0, gap: 0.041, hideThumb: true)
-                try? await Task.sleep(for: .milliseconds(25))
+                // Replay the M2 failure: the last usable grip is still closed
+                // when tracking disappears. Keep the pull during a brief gap.
+                if expected == 1 {
+                    send(.right, nil)
+                } else {
+                    grip(depth: distance, gap: 0.030, hideThumb: true)
+                }
+                try? await Task.sleep(for: .milliseconds(45))
+                time += 0.045
+                tracker.serviceControls(at: time, playing: true)
                 guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
-                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the stored pull while opening the grip")
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the stored pull before the tracking grace period expired")
                     return
                 }
                 let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
-                if expected == 1 {
-                    for _ in 0..<3 { grip(depth: 0, gap: 0.041, hideThumb: true) }
-                } else {
-                    grip(depth: 0, gap: 0.056)
-                }
+                try? await Task.sleep(for: .milliseconds(80))
+                time += 0.080
+                tracker.serviceControls(at: time, playing: true)
                 if let ball {
                     var frontmostY = ball.y
                     var peakSpeed: Float = 0
@@ -671,7 +673,7 @@ private final class NativePlayer {
                 }
             }
 
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native plunger travel and release with an opening grip")
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native plunger travel and release after lost tracking")
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-room-placement") {

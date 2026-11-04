@@ -106,15 +106,41 @@ struct HandControlChecks {
         precondition(player.update(.right, sample: grip(0.10), at: 0.144) == [.pullPlunger(1)])
         let eased = player.update(.right, sample: grip(halfDepth), at: 0.160)
         precondition(eased == half)
-        precondition(player.expire(at: 0.30) == [.cancelPlunger])
-        precondition(player.update(.right, sample: grip(0.1, gap: 0.055), at: 0.32).isEmpty)
+        precondition(player.expire(at: 0.30) == [.releasePlunger(pull)])
+        precondition(player.expire(at: 0.32).isEmpty)
+
+        // The M2 stopped reporting a usable grip before an open pinch was seen.
         precondition(player.update(.right, sample: grip(0), at: 0.34) == [.pullPlunger(0)])
         precondition(player.update(.right, sample: grip(0.10), at: 0.36) == [.pullPlunger(1)])
-        precondition(player.update(.right, sample: grip(0, gap: 0.041), at: 0.38).isEmpty)
-        precondition(player.update(.right, sample: occluded, at: 0.40).isEmpty)
-        precondition(player.update(.right, sample: occluded, at: 0.44) == [.releasePlunger(1)])
-        precondition(player.update(.right, sample: occluded, at: 0.46).isEmpty)
-        print("Plunger passed: palm travel, easing back, opening with a dropout, one release, tracking loss cancels")
+        precondition(player.update(.right, sample: nil, at: 0.38).isEmpty)
+        precondition(player.expire(at: 0.46).isEmpty)
+        precondition(player.expire(at: 0.49) == [.releasePlunger(1)])
+        precondition(player.update(.right, sample: nil, at: 0.51).isEmpty)
+
+        // An occluded tip can come back before the grace period expires.
+        precondition(player.update(.right, sample: grip(0), at: 0.54) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: grip(0.10), at: 0.56) == [.pullPlunger(1)])
+        precondition(player.update(.right, sample: occluded, at: 0.59).isEmpty)
+        precondition(player.update(.right, sample: grip(0.10), at: 0.64).isEmpty)
+        precondition(player.expire(at: 0.70).isEmpty)
+        precondition(player.reset() == [.cancelPlunger])
+        precondition(player.expire(at: 0.85).isEmpty)
+
+        // A small accidental movement followed by loss does not launch.
+        precondition(player.update(.right, sample: grip(0), at: 0.90) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: grip(0.003), at: 0.92).count == 1)
+        precondition(player.expire(at: 1.05) == [.cancelPlunger])
+
+        // Leaving the grip corridor after pulling also lets the spring go.
+        precondition(player.update(.right, sample: grip(0), at: 1.10) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: grip(0.10), at: 1.12) == [.pullPlunger(1)])
+        var away = grip(0.10)
+        away.thumb = away.thumb.map { $0 + [0.15, 0, 0] }
+        away.index = away.index.map { $0 + [0.15, 0, 0] }
+        precondition(player.update(.right, sample: away, at: 1.14).isEmpty)
+        precondition(player.update(.right, sample: away, at: 1.26) == [.releasePlunger(1)])
+        precondition(player.expire(at: 1.40).isEmpty)
+        print("Plunger passed: visible release, lost hand, recovered fingertip, off-axis release, and lifecycle cancellation")
     }
 
     static func checkWristTurns() {
