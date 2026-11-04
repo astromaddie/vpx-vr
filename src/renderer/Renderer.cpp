@@ -2118,17 +2118,31 @@ void Renderer::RenderItem(IEditable* const editable, bool isNoBackdrop)
 
    const PartGroupData::SpaceReference spaceReference = editable->GetPartGroup() ? editable->GetPartGroup()->GetReferenceSpace() : PartGroupData::SpaceReference::SR_PLAYFIELD;
    #if defined(VPX_VISIONOS_HEADSET)
-   if (!m_desktopScenePass && g_pplayer->m_vrDevice && g_pplayer->m_vrDevice->IsVisionMixedReality()
-      && (spaceReference == PartGroupData::SpaceReference::SR_ROOM || g_pplayer->m_vrDevice->IsVisionLegacyRoomPart(editable)))
+   const auto* vision = !m_desktopScenePass ? g_pplayer->m_vrDevice : nullptr;
+   const bool legacyRoom = vision && vision->IsVisionLegacyRoomPart(editable);
+   if (vision && vision->IsVisionMixedReality() && (spaceReference == PartGroupData::SpaceReference::SR_ROOM || legacyRoom))
       return;
    #endif
    SetSpaceReference(spaceReference, false);
+   #if defined(VPX_VISIONOS_HEADSET)
+   if (legacyRoom)
+   {
+      vision->UpdateVisionLegacyRoomPosition(m_mvp);
+      UpdateBasicShaderMatrix();
+      UpdateBallShaderMatrix();
+   }
+   #endif
 
    // Skip parts entirely outside of the active camera, before Render() requests probes or records any draw. UI wireframes, the
    // transmitted light buffer and the desktop display scene are never culled.
    if (m_frustumCulling && !isWireframe && !m_desktopScenePass && (m_render_mask & (UI_FILL | UI_EDGES | LIGHT_BUFFER)) == 0
       && IsOutsideFrustum(editable->GetIRenderable()))
+   {
+      #if defined(VPX_VISIONOS_HEADSET)
+      if (legacyRoom) SetSpaceReference(spaceReference, true);
+      #endif
       return;
+   }
 
    // Parts flagged as "Show in Editor" are rendered shaded, even when the part group visibility mask would hide them
    if (!isWireframe || editable->IsShownInEditor())
@@ -2141,6 +2155,9 @@ void Renderer::RenderItem(IEditable* const editable, bool isNoBackdrop)
       constexpr vec4 edgeColor{0.f, 0.f, 0.f, 1.f};
       DrawWireframe(editable, fillColor, edgeColor, m_shadeMode != ShadeMode::NoDepthWireframe);
    }
+   #if defined(VPX_VISIONOS_HEADSET)
+   if (legacyRoom) SetSpaceReference(spaceReference, true);
+   #endif
 }
 
 bool Renderer::IsOutsideFrustum(IRenderable* const renderable)

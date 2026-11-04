@@ -51,6 +51,7 @@ final class NativeCompositor: @unchecked Sendable {
 
     private struct Handoff {
         var originFromCabinet: simd_float4x4?
+        var originFromRoom: simd_float4x4?
         var request: Request?
         var drawing: Submission?
         var latest: Submission?
@@ -121,7 +122,10 @@ final class NativeCompositor: @unchecked Sendable {
 
     // Called after the player can service a frame request without blocking on table load.
     func place(_ transform: simd_float4x4) {
-        handoff.withLock { $0.originFromCabinet = transform }
+        handoff.withLock {
+            $0.originFromCabinet = transform
+            if $0.originFromRoom == nil { $0.originFromRoom = transform }
+        }
     }
 
     func configurePlayer() -> Bool {
@@ -261,7 +265,8 @@ final class NativeCompositor: @unchecked Sendable {
     private func makeRequest(
         _ drawable: LayerRenderer.Drawable, anchor: DeviceAnchor?, presentationTime: Double
     ) -> Request? {
-        guard let originFromCabinet = handoff.withLock({ $0.originFromCabinet }), !drawable.views.isEmpty else {
+        let origins = handoff.withLock { ($0.originFromCabinet, $0.originFromRoom) }
+        guard let originFromCabinet = origins.0, let originFromRoom = origins.1, !drawable.views.isEmpty else {
             return nil
         }
         #if targetEnvironment(simulator)
@@ -271,8 +276,8 @@ final class NativeCompositor: @unchecked Sendable {
         let originFromHead = anchor.originFromAnchorTransform
         #endif
 
-        func view(_ eye: Int) -> simd_float4x4 {
-            (originFromHead * drawable.views[eye].transform).inverse * originFromCabinet
+        func eyeFromOrigin(_ eye: Int) -> simd_float4x4 {
+            (originFromHead * drawable.views[eye].transform).inverse
         }
         func projection(_ eye: Int) -> simd_float4x4 {
             var matrix = drawable.computeProjection(convention: .rightUpBack, viewIndex: eye)
@@ -283,8 +288,12 @@ final class NativeCompositor: @unchecked Sendable {
         }
         var packet = VPINBALL_VISION_FRAME()
         let right = drawable.views.count == 2 ? 1 : 0
-        Self.copy(view(0), to: &packet.leftView)
-        Self.copy(view(right), to: &packet.rightView)
+        let leftView = eyeFromOrigin(0)
+        let rightView = right == 0 ? leftView : eyeFromOrigin(right)
+        Self.copy(leftView * originFromCabinet, to: &packet.leftView)
+        Self.copy(rightView * originFromCabinet, to: &packet.rightView)
+        Self.copy(leftView * originFromRoom, to: &packet.leftRoomView)
+        Self.copy(rightView * originFromRoom, to: &packet.rightRoomView)
         Self.copy(projection(0), to: &packet.leftProjection)
         Self.copy(projection(right), to: &packet.rightProjection)
         return Request(packet: packet, anchor: anchor, presentationTime: presentationTime)

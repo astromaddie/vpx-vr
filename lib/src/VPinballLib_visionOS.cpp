@@ -8,6 +8,7 @@
 #include "parts/pintable.h"
 #include "parts/plunger.h"
 #include "renderer/VRDevice.h"
+#include "pinmame/libpinmame.h"
 #include "VPinballLib.h"
 #include "../include/vpinball/VPinballVision.h"
 
@@ -62,11 +63,11 @@ VPINBALLAPI void VPinballVisionTick(void)
    lib.AppIterate();
 }
 
-VPINBALLAPI float VPinballVisionCabinetHeight(void)
+VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void)
 {
    if (!SDL_IsMainThread() || !g_pplayer || !g_pplayer->m_vrDevice)
-      return 0.f;
-   return g_pplayer->m_vrDevice->GetVisionCabinetHeight();
+      return { 0.53975f, 1.0309225f, 0.91f, 0.24f, -0.095f, 0.040f, 0 };
+   return g_pplayer->m_vrDevice->GetVisionLayout();
 }
 
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed)
@@ -97,6 +98,11 @@ VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action,
 }
 
 #if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
+VPINBALLAPI int VPinballVisionRomRunning(void)
+{
+   return SDL_IsMainThread() && g_pplayer && PinmameIsRunning() == 1;
+}
+
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void)
 {
    if (!SDL_IsMainThread() || !g_pplayer)

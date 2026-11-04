@@ -10,19 +10,25 @@ import simd
 final class CabinetHandTracking {
     private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
     private var controls: CabinetHandControls
-    private let layout: CabinetControlsLayout
+    private(set) var layout: CabinetControlsLayout
     private let moveCabinet: ((simd_float4x4) -> Void)?
     private var roomPlacement: CabinetRoomPlacement?
     private var floorY: Float?
+    private var watchSide: CabinetHandSide?
+    private let showMenu: (() -> Void)?
+    private var wristMenu = CabinetWristMenu()
     private let send: (CabinetInput) -> Void
     let world = WorldTrackingProvider()
     private var cabinetFromOrigin: simd_float4x4?
 
     init(layout: CabinetControlsLayout, moveCabinet: ((simd_float4x4) -> Void)? = nil,
+         watchSide: CabinetHandSide? = nil, showMenu: (() -> Void)? = nil,
          send: @escaping (CabinetInput) -> Void) {
         controls = CabinetHandControls(layout: layout)
         self.layout = layout
         self.moveCabinet = moveCabinet
+        self.watchSide = watchSide
+        self.showMenu = showMenu
         self.send = send
     }
 
@@ -31,11 +37,22 @@ final class CabinetHandTracking {
         cabinetFromOrigin = originFromCabinet.inverse
     }
 
-    func placeOnFloor(_ initial: simd_float4x4, height: Float, simulatedFloor: Float? = nil) -> simd_float4x4 {
+    func setWatchSide(_ side: CabinetHandSide) {
+        watchSide = side
+        wristMenu = CabinetWristMenu()
+    }
+
+    func setLayout(_ layout: CabinetControlsLayout) {
+        reset()
+        self.layout = layout
+        controls = CabinetHandControls(layout: layout)
+    }
+
+    func placeForPlay(_ initial: simd_float4x4, height: Float, trackFloor: Bool, simulatedFloor: Float? = nil) -> simd_float4x4 {
         var pose = initial
         // The immersive origin is at floor level until a local floor is detected.
         let floor = simulatedFloor ?? floorY ?? 0
-        pose.columns.3.y = floor + height
+        if trackFloor { pose.columns.3.y = floor + height }
         let source = simulatedFloor != nil ? "simulated" : (floorY != nil ? "detected" : "immersive origin")
         Self.log.info("Cabinet floor: \(floor) m (\(source, privacy: .public)); cabinet height: \(height) m")
         roomPlacement = CabinetRoomPlacement(width: layout.width, pose: pose)
@@ -51,7 +68,9 @@ final class CabinetHandTracking {
         placeCabinet: (simd_float4x4) -> simd_float4x4,
         report: (String) -> Void,
         acceptsInput: @escaping () -> Bool,
-        tick: @escaping (Double) -> Void
+        tick: @escaping (Double) -> Void,
+        trackFloor: Bool = false,
+        allowsControls: @escaping () -> Bool = { true }
     ) async {
         let session = ARKitSession()
         let hands = HandTrackingProvider()
@@ -75,7 +94,7 @@ final class CabinetHandTracking {
         var providers: [any DataProvider] = [world]
         if canTrackHands { providers.append(hands) }
         let canDetectFloor: Bool
-        if moveCabinet != nil && PlaneDetectionProvider.isSupported {
+        if trackFloor && PlaneDetectionProvider.isSupported {
             let authorization = await session.requestAuthorization(for: [.worldSensing])
             canDetectFloor = authorization[.worldSensing] == .allowed
         } else {
@@ -159,8 +178,9 @@ final class CabinetHandTracking {
         let watchdog = Task { @MainActor in
             while !Task.isCancelled {
                 let now = CACurrentMediaTime()
-                roomPlacement?.expire(at: acceptsInput() ? now : .infinity)
-                if acceptsInput() && roomPlacement?.isMoving != true {
+                let play = acceptsInput() && allowsControls()
+                roomPlacement?.expire(at: play ? now : .infinity)
+                if play && roomPlacement?.isMoving != true {
                     controls.expire(at: now).forEach(send)
                 } else {
                     reset()
@@ -173,7 +193,11 @@ final class CabinetHandTracking {
         for await change in hands.anchorUpdates {
             guard !Task.isCancelled else { return }
             if acceptsInput() {
-                update(change.anchor, removed: change.event == .removed, at: CACurrentMediaTime())
+                let now = CACurrentMediaTime()
+                checkWrist(change.anchor, removed: change.event == .removed, at: now)
+                if allowsControls() {
+                    update(change.anchor, removed: change.event == .removed, at: now)
+                }
             }
         }
     }
@@ -207,6 +231,26 @@ final class CabinetHandTracking {
         guard let anchor, anchor.isTracked else { return nil }
         if #available(visionOS 26.0, *), anchor.trackingState != .tracked { return nil }
         return anchor.originFromAnchorTransform
+    }
+
+    private func checkWrist(_ anchor: HandAnchor, removed: Bool, at time: Double) {
+        let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
+        guard side == watchSide, roomPlacement?.isMoving != true, let showMenu else { return }
+        func joint(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
+            guard !removed, anchor.isTracked, let joint = anchor.handSkeleton?.joint(name), joint.isTracked else { return nil }
+            return (anchor.originFromAnchorTransform * joint.anchorFromJointTransform).columns.3.xyz
+        }
+        let head = Self.trackedPose(world.queryDeviceAnchor(atTimestamp: time))
+        if let wrist = joint(.wrist), let middle = joint(.middleFingerKnuckle),
+           let index = joint(.indexFingerKnuckle), let little = joint(.littleFingerKnuckle) {
+            let direction = middle - wrist
+            let normal = side.sign * simd_cross(index - little, direction)
+            if wristMenu.update(head: head, wrist: wrist, fingers: direction, palmNormal: normal, at: time) {
+                showMenu()
+            }
+        } else {
+            _ = wristMenu.update(head: nil, wrist: nil, fingers: nil, palmNormal: nil, at: time)
+        }
     }
 
     private func update(_ anchor: HandAnchor, removed: Bool, at time: Double) {

@@ -10,12 +10,13 @@ struct CabinetControlsLayout {
     var playfieldWidth: Float = 0.53975
     var playfieldLength: Float = 1.0309225
     var plunger: SIMD3<Float>? = nil
+    var stockCabinet = false
 
     // VPX's lockbar calculation leaves 2 1/4 inches around the playfield.
     var width: Float { playfieldWidth + 0.05715 }
     var depth: Float { playfieldLength + 0.09 }
-    var start: SIMD3<Float> { SIMD3(-width * 0.30, -0.13, 0.025) }
-    var coin: SIMD3<Float> { SIMD3(width * 0.22, -0.19, 0.025) }
+    var start: SIMD3<Float> { stockCabinet ? SIMD3(-playfieldWidth * 0.435, -0.102, 0.014) : SIMD3(-width * 0.30, -0.13, 0.025) }
+    var coin: SIMD3<Float> { stockCabinet ? SIMD3(0, -0.19, 0.03) : SIMD3(width * 0.22, -0.19, 0.025) }
 
     func flipper(_ side: CabinetHandSide) -> SIMD3<Float> {
         SIMD3(side.sign * width / 2, -0.065, -0.055)

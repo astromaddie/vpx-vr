@@ -146,3 +146,51 @@ struct CabinetRoomPlacement {
         }
     }
 }
+
+/// Use head direction and the tracked back of the hand for a watch glance.
+/// Require a dwell, and then a sustained release before showing another menu.
+struct CabinetWristMenu {
+    private var enteredAt: Double?
+    private var releasedAt: Double?
+    private var lastSample: Double?
+    private var latched = false
+
+    mutating func update(
+        head: simd_float4x4?, wrist: SIMD3<Float>?, fingers: SIMD3<Float>?,
+        palmNormal: SIMD3<Float>?, at time: Double
+    ) -> Bool {
+        let gap = lastSample.map { time - $0 } ?? .infinity
+        let continuous = (0...0.16).contains(gap)
+        if gap >= 0.25 { latched = false }
+        lastSample = time
+        if !continuous { enteredAt = nil }
+        let looking: Bool
+        if let head, let wrist, let fingers, let palmNormal {
+            let eye = SIMD3(head.columns.3.x, head.columns.3.y, head.columns.3.z)
+            let forward = -SIMD3(head.columns.2.x, head.columns.2.y, head.columns.2.z)
+            let toWrist = wrist - eye
+            let distance = simd_length(toWrist)
+            let handDirection = simd_normalize(fingers)
+            looking = (0.24...0.80).contains(distance) && toWrist.y < -0.12
+                && simd_dot(toWrist / distance, forward) > 0.957
+                && simd_dot(toWrist / distance, simd_normalize(palmNormal)) > 0.55
+                && abs(handDirection.y) < 0.65
+                && abs(simd_dot(handDirection, forward)) < 0.65
+        } else {
+            looking = false
+        }
+
+        if !looking {
+            enteredAt = nil
+            releasedAt = releasedAt ?? time
+            if time - (releasedAt ?? time) >= 0.25 { latched = false }
+            return false
+        }
+        releasedAt = nil
+        guard !latched else { return false }
+        enteredAt = enteredAt ?? time
+        guard time - (enteredAt ?? time) >= 0.45 else { return false }
+        latched = true
+        return true
+    }
+}

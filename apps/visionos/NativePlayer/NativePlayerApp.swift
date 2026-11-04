@@ -3,6 +3,7 @@
 import CompositorServices
 import simd
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum TableEnvironment: String, CaseIterable {
     case physical = "Your Room"
@@ -21,7 +22,7 @@ struct NativePlayerApp: App {
         WindowGroup(id: TableWindow.id) {
             TableWindow(player: player, environment: $environment)
         }
-        .defaultSize(width: 440, height: 340)
+        .defaultSize(width: 460, height: 680)
 
         ImmersiveSpace(id: "Table") {
             CompositorLayer(configuration: NativeLayerConfiguration()) { layer in
@@ -29,7 +30,7 @@ struct NativePlayerApp: App {
             }
             .upperLimbVisibility(.visible)
         }
-        .immersionStyle(selection: Binding(get: { environment.style }, set: { _ in }), in: .mixed, .full)
+        .immersionStyle(selection: Binding(get: { (player.isOpen ? player.activeEnvironment : environment).style }, set: { _ in }), in: .mixed, .full)
     }
 }
 
@@ -41,48 +42,108 @@ private struct TableWindow: View {
     @Environment(\.dismissImmersiveSpace) private var dismissSpace
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @AppStorage("LeftHandDominant") private var leftHandDominant = false
+    @State private var selection: LibraryTable?
     @State private var transitioning = false
+    @State private var importing = false
+    @State private var choosingFolder = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Time Machine").font(.largeTitle)
-            if !player.isOpen {
-                Picker("Environment", selection: $environment) {
-                    ForEach(TableEnvironment.allCases, id: \.self) { option in
-                        Text(option.rawValue).tag(option)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Pinball Tables").font(.title)
+                Spacer()
+                Menu {
+                    Picker("Dominant Hand", selection: $leftHandDominant) {
+                        Text("Right").tag(false)
+                        Text("Left").tag(true)
                     }
+                } label: {
+                    Label("Dominant Hand", systemImage: "hand.raised")
+                        .labelStyle(.iconOnly)
                 }
-                .pickerStyle(.segmented)
-                .disabled(transitioning)
+                .accessibilityLabel("Dominant Hand")
             }
-            Text(player.status).foregroundStyle(.secondary)
-            Button(player.isOpen ? "Close Table" : "Play Time Machine") {
-                transitioning = true
-                Task {
-                    defer { transitioning = false }
-                    if player.isOpen {
-                        await dismissSpace()
-                    } else if player.prepareTable(environment: environment), case .error = await openSpace(id: "Table") {
-                        player.status = "Couldn’t open the table."
-                    }
+            Picker("Environment", selection: $environment) {
+                ForEach(TableEnvironment.allCases, id: \.self) { option in
+                    Text(option.rawValue).tag(option)
                 }
             }
-            .disabled(transitioning)
+            .pickerStyle(.segmented)
+
+            if player.tables.isEmpty {
+                ContentUnavailableView("No Tables", systemImage: "arcade.stick",
+                                       description: Text("Import a folder with your tables, ROMs, and backglasses."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                List(player.tables, selection: $selection) { table in
+                    Text(table.title).tag(table)
+                }
+                .listStyle(.plain)
+            }
+
+            if let message = player.status {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            } else if player.isOpen {
+                Text("Choose another table or resume this game.").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("Pinch both front sides to move a table. Look toward your non-dominant wrist like a watch to reopen the picker.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("Import Folder…") { choosingFolder = true }
+                Spacer()
+                if player.isOpen {
+                    Button("Resume") { player.hideMenu() }
+                }
+                Button("Play Table") {
+                    guard let selection else { return }
+                    Task { await play(selection) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selection == nil)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(28)
+        .padding(24)
+        .disabled(transitioning || importing)
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            guard case .success(let folder) = result else { return }
+            importing = true
+            Task {
+                defer { importing = false }
+                do {
+                    let tables = try await Task.detached {
+                        let accessed = folder.startAccessingSecurityScopedResource()
+                        defer { if accessed { folder.stopAccessingSecurityScopedResource() } }
+                        return try TableLibrary.importFolder(folder, to: .documentsDirectory)
+                    }.value
+                    player.tables = tables
+                    selection = selection ?? tables.first
+                    player.status = nil
+                } catch {
+                    player.status = error.localizedDescription
+                }
+            }
+        }
         .onAppear {
+            player.refreshLibrary()
+            selection = player.currentTable ?? selection ?? player.tables.first
             player.setLauncherActions(
                 hide: { dismissWindow(id: Self.id) },
                 show: { openWindow(id: Self.id) }
             )
         }
+        .onChange(of: player.tables) { _, tables in
+            if selection == nil { selection = tables.first }
+        }
+        .onDisappear { player.menuDidClose() }
+        .onChange(of: leftHandDominant) { _, leftHand in
+            player.setDominantHand(leftHand)
+        }
         #if targetEnvironment(simulator)
         .task {
-            if player.prepareSimulatorLaunch(environment: environment) {
-                if case .error = await openSpace(id: "Table") {
-                    player.status = "Couldn’t open the table."
-                }
+            if let table = player.takeSimulatorTable() {
+                await play(table)
             }
         }
         #endif
@@ -94,6 +155,20 @@ private struct TableWindow: View {
                 }
             }
         }
+    }
+
+    private func play(_ table: LibraryTable) async {
+        guard !transitioning else { return }
+        transitioning = true
+        defer { transitioning = false }
+        if player.isOpen {
+            // Keep the picker open until the replacement has a rendered frame.
+            await dismissSpace()
+            guard await player.waitUntilClosed() else { return }
+        }
+        player.prepareTable(table, environment: environment, leftHandDominant: leftHandDominant)
+        if case .opened = await openSpace(id: "Table") { return }
+        player.status = "Couldn’t open the table."
     }
 }
 
@@ -112,7 +187,12 @@ private nonisolated func nativePlayerEvent(_ event: VPINBALL_EVENT, _: UnsafePoi
 private final class NativePlayer {
     static let shared = NativePlayer()
 
-    var status = "Look ahead to place the cabinet. In Your Room, pinch both front sides to move or turn it, then release to lock it in place."
+    var status: String?
+    var tables: [LibraryTable] = []
+    var activeEnvironment: TableEnvironment = .physical
+    var currentTable: LibraryTable? { selectedTable }
+    private var menuVisible = false
+    private var watchSide: CabinetHandSide = .left
     var isOpen = false
     var needsDismissal = false
 
@@ -120,19 +200,39 @@ private final class NativePlayer {
     private var hideLauncher: (() -> Void)?
     private var showLauncher: (() -> Void)?
     private var launcherHidden = false
-    private var selectedTable: URL?
+    private var selectedTable: LibraryTable?
     private var cabinetTransform: simd_float4x4?
     private var tracker: CabinetHandTracking?
-    private var mixedReality = true
+    private var mixedReality: Bool { activeEnvironment == .physical }
     private var pump: Task<Void, Never>?
     #if targetEnvironment(simulator)
     private var inputCheck: Task<Void, Never>?
-    private var simulatorLaunchPending = CommandLine.arguments.contains("--play-time-machine")
+    private var simulatorLaunchPending = true
+    private var simulatorTables: [LibraryTable] = []
+    private var simulatorSequence = false
 
-    func prepareSimulatorLaunch(environment: TableEnvironment) -> Bool {
-        guard simulatorLaunchPending else { return false }
-        simulatorLaunchPending = false
-        return prepareTable(environment: environment)
+    func takeSimulatorTable() -> LibraryTable? {
+        if simulatorLaunchPending {
+            simulatorLaunchPending = false
+            let arguments = CommandLine.arguments
+            if let index = arguments.firstIndex(of: "--import-tables"), arguments.indices.contains(index + 1) {
+                do {
+                    tables = try TableLibrary.importFolder(URL(filePath: arguments[index + 1]), to: .documentsDirectory)
+                } catch {
+                    status = error.localizedDescription
+                    print("Simulator library import failed: \(error)")
+                    return nil
+                }
+            }
+            refreshLibrary()
+            simulatorSequence = arguments.contains("--check-library")
+            if simulatorSequence {
+                simulatorTables = tables
+            } else if arguments.contains("--play-time-machine") {
+                simulatorTables = Array(tables.filter { $0.title == "Time Machine" }.prefix(1))
+            }
+        }
+        return simulatorTables.isEmpty ? nil : simulatorTables.removeFirst()
     }
     #endif
     private var tracking: Task<Void, Never>?
@@ -146,15 +246,52 @@ private final class NativePlayer {
         showLauncher = show
     }
 
-    func prepareTable(environment: TableEnvironment) -> Bool {
-        mixedReality = environment == .physical
-        do {
-            selectedTable = try timeMachine()
-            return true
-        } catch {
-            selectedTable = nil
-            status = error.localizedDescription
-            return false
+    func refreshLibrary() {
+        tables = TableLibrary.tables(in: .documentsDirectory)
+    }
+
+    func prepareTable(_ table: LibraryTable, environment: TableEnvironment, leftHandDominant: Bool) {
+        selectedTable = table
+        activeEnvironment = environment
+        setDominantHand(leftHandDominant)
+        status = "Look ahead and hold steady to place the cabinet."
+    }
+
+    func setDominantHand(_ left: Bool) {
+        watchSide = left ? .right : .left
+        tracker?.setWatchSide(watchSide)
+    }
+
+    func waitUntilClosed() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(15)
+        while isOpen && !Task.isCancelled && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        if isOpen { status = "The current table is still closing." }
+        return !isOpen
+    }
+
+    private func showMenu() {
+        guard ready, !stopping, launcherHidden, !menuVisible else { return }
+        menuVisible = true
+        tracker?.reset()
+        clearButtons()
+        launcherHidden = false
+        status = nil
+        showLauncher?()
+    }
+
+    func hideMenu() {
+        guard menuVisible else { return }
+        menuVisible = false
+        launcherHidden = true
+        hideLauncher?()
+    }
+
+    func menuDidClose() {
+        if menuVisible {
+            menuVisible = false
+            launcherHidden = isOpen
         }
     }
 
@@ -163,10 +300,9 @@ private final class NativePlayer {
         do {
             // The Time Machine plunger is to the right of the coin door.
             let layout = CabinetControlsLayout(plunger: SIMD3(0.24, -0.095, 0.040))
-            let moveCabinet: ((simd_float4x4) -> Void)? = mixedReality ? { [weak self] pose in
+            let tracker = CabinetHandTracking(layout: layout, moveCabinet: { [weak self] pose in
                 self?.compositor?.place(pose)
-            } : nil
-            let tracker = CabinetHandTracking(layout: layout, moveCabinet: moveCabinet, send: handle)
+            }, watchSide: watchSide, showMenu: { [weak self] in self?.showMenu() }, send: handle)
             let compositor = try NativeCompositor(layer: layer, world: tracker.world, mixedReality: mixedReality)
             guard compositor.configurePlayer(), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
                 status = "Couldn’t initialize VPX."
@@ -207,7 +343,8 @@ private final class NativePlayer {
                     return transform
                 }, report: { message in
                     if !loading { status = message }
-                }, acceptsInput: { compositor.isRunning }, tick: { _ in })
+                }, acceptsInput: { compositor.isRunning }, tick: { _ in },
+                   trackFloor: mixedReality, allowsControls: { !self.menuVisible })
                 if !Task.isCancelled && !loading && !ready {
                     needsDismissal = true
                 }
@@ -219,12 +356,12 @@ private final class NativePlayer {
         }
     }
 
-    private func loadTable(_ table: URL, at transform: simd_float4x4) {
+    private func loadTable(_ table: LibraryTable, at transform: simd_float4x4) {
         cabinetTransform = transform
-        status = "Loading Time Machine..."
-        loading = VPinballPlay(table.path) == VPINBALL_STATUS_SUCCESS
+        status = "Loading \(table.title)…"
+        loading = VPinballPlay(table.url.path) == VPINBALL_STATUS_SUCCESS
         if !loading {
-            status = "Couldn’t start loading Time Machine."
+            status = "Couldn’t start loading \(table.title)."
             needsDismissal = true
         }
     }
@@ -232,7 +369,7 @@ private final class NativePlayer {
     private func step() {
         guard let compositor else { return }
         if !compositor.isClosed {
-            if !launcherHidden, compositor.hasPresentedTable {
+            if !launcherHidden, !menuVisible, compositor.hasPresentedTable {
                 launcherHidden = true
                 hideLauncher?()
             }
@@ -253,12 +390,17 @@ private final class NativePlayer {
         case VPINBALL_EVENT_PLAYER_READY:
             if let cabinetTransform {
                 let pose: simd_float4x4
-                if mixedReality, let tracker {
-                    let height = VPinballVisionCabinetHeight()
+                if let tracker {
+                    let dimensions = VPinballVisionGetLayout()
+                    tracker.setLayout(CabinetControlsLayout(
+                        playfieldWidth: dimensions.width, playfieldLength: dimensions.length,
+                        plunger: SIMD3(dimensions.plungerX, dimensions.plungerY, dimensions.plungerZ),
+                        stockCabinet: dimensions.stockCabinet != 0))
+                    let height = dimensions.height
                     #if targetEnvironment(simulator)
-                    pose = tracker.placeOnFloor(cabinetTransform, height: height, simulatedFloor: -1.60)
+                    pose = tracker.placeForPlay(cabinetTransform, height: height, trackFloor: mixedReality, simulatedFloor: -1.60)
                     #else
-                    pose = tracker.placeOnFloor(cabinetTransform, height: height)
+                    pose = tracker.placeForPlay(cabinetTransform, height: height, trackFloor: mixedReality)
                     #endif
                 } else {
                     pose = cabinetTransform
@@ -268,14 +410,14 @@ private final class NativePlayer {
             loading = false
             ready = true
             #if targetEnvironment(simulator)
-            if CommandLine.arguments.contains("--check-controls"), inputCheck == nil {
+            if simulatorSequence || CommandLine.arguments.contains("--check-controls"), inputCheck == nil {
                 inputCheck = Task { await checkControls() }
             }
             #endif
-            status = "Poke the coin box and Start. Grab, pull, and release the plunger. Turn your wrists to flip."
+            status = nil
         case VPINBALL_EVENT_PLAYER_FAILED:
             loading = false
-            status = "VPX couldn’t load Time Machine."
+            status = "VPX couldn’t load \(selectedTable?.title ?? "the table")."
             needsDismissal = true
         case VPINBALL_EVENT_PLAYER_CLOSED:
             if compositor?.isClosed == false { needsDismissal = true }
@@ -299,6 +441,7 @@ private final class NativePlayer {
         loading = false
         stopping = false
         isOpen = false
+        menuVisible = false
         compositor = nil
         tracker = nil
         cabinetTransform = nil
@@ -361,11 +504,24 @@ private final class NativePlayer {
             guard !Task.isCancelled, ready else { return }
             checkRoomPlacement()
         }
+        if simulatorSequence, let selectedTable {
+            guard VPinballVisionRomRunning() != 0 else {
+                print("Simulator ROM was not running for \(selectedTable.title)")
+                return
+            }
+            let width = VPinballVisionGetLayout().width
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator library passed \(selectedTable.title) at \(width) m")
+            print("Simulator library passed \(selectedTable.title) at \(width) m")
+            if !simulatorTables.isEmpty {
+                try? await Task.sleep(for: .seconds(2))
+                if !Task.isCancelled { showMenu() }
+            }
+        }
     }
 
     private func checkRoomPlacement() {
         guard let tracker, let initial = tracker.simulatorRoomPose else { return }
-        let layout = CabinetControlsLayout()
+        let layout = tracker.layout
         let center = initial * SIMD4<Float>(0, -0.05, -0.12, 1)
         var time = 0.0
         func feed(_ side: CabinetHandSide, at point: SIMD4<Float>, gap: Float) {
@@ -394,7 +550,7 @@ private final class NativePlayer {
             VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator cabinet movement or release failed")
             return
         }
-        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified mixed reality translation, yaw and release at fixed floor height")
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified \(mixedReality ? "mixed" : "virtual") reality translation, yaw and release at fixed height")
     }
     #endif
 
@@ -438,15 +594,4 @@ private final class NativePlayer {
         VPinballVisionSetButton(VPINBALL_VISION_RIGHT_FLIPPER, 0)
     }
 
-    private func timeMachine() throws -> URL {
-        let directory = URL.documentsDirectory.appending(path: "Time Machine", directoryHint: .isDirectory)
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory,
-                                                                  includingPropertiesForKeys: nil)) ?? []
-        guard let table = files.first(where: { $0.pathExtension.lowercased() == "vpx" }) else {
-            throw CocoaError(.fileNoSuchFile, userInfo: [
-                NSLocalizedDescriptionKey: "Import the Time Machine table and ROM into the app’s Documents folder."
-            ])
-        }
-        return table
-    }
 }

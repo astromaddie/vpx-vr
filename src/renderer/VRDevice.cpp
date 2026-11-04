@@ -362,15 +362,13 @@ VRDevice::VRDevice(const Settings& settings)
       {
          m_eyeWidth = m_visionHost.width;
          m_eyeHeight = m_visionHost.height;
-         const auto* table = g_pplayer->m_ptable;
+         auto* table = g_pplayer->m_ptable;
          m_lockbarWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
          m_lockbarHeight = VPUTOCM(table->m_groundToLockbarHeight);
          m_orientation = 0.f;
          m_headsetPos = {0.f, 0.f, 0.f};
          m_tableOffset = {0.f, 0.f, 0.f};
-         m_visionCabinetHeight = m_lockbarHeight * 0.01f;
-         if (IsVisionMixedReality())
-            ConfigureVisionRoom(table);
+         ConfigureVisionRoom(table);
       }
    #endif
 }

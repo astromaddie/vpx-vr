@@ -26,6 +26,7 @@ typedef struct {
    // VPX uses the same 16 floats as a row-vector transform. Projection uses
    // conventional Metal depth, where near = 0 and far = 1.
    float leftView[16], rightView[16];
+   float leftRoomView[16], rightRoomView[16];
    float leftProjection[16], rightProjection[16];
    float secondsUntilPresentation;
    unsigned int eyeBuffer;
@@ -51,14 +52,21 @@ VPINBALLAPI VPINBALL_STATUS VPinballVisionConfigure(const VPINBALL_VISION_HOST* 
 // Call from the visionOS app's main thread. The host owns the event loop.
 VPINBALLAPI VPINBALL_STATUS VPinballVisionInit(VPinballEventCallback eventCallback);
 VPINBALLAPI void VPinballVisionTick(void);
-// Physical distance from the floor to the cabinet pose origin. Read after PLAYER_READY.
-VPINBALLAPI float VPinballVisionCabinetHeight(void);
+typedef struct {
+   float width, length, height;
+   float plungerX, plungerY, plungerZ;
+   int stockCabinet;
+} VPINBALL_VISION_LAYOUT;
+
+// Dimensions and control placement in metres. Read after PLAYER_READY.
+VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void);
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed);
 // Pull is measured from the resting position (0) to fully pulled back (1).
 VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);
 
 #if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
 // Read resolved native input, on the player thread, for the Simulator check.
+VPINBALLAPI int VPinballVisionRomRunning(void);
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
 VPINBALLAPI float VPinballVisionPlungerPosition(void);
 #endif

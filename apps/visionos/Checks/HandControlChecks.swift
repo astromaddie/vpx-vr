@@ -73,6 +73,7 @@ struct HandControlChecks {
         checkWristTurns()
         checkPlacement()
         checkRoomGrab()
+        checkWristMenu()
         checkPlunger()
     }
 
@@ -224,5 +225,26 @@ struct HandControlChecks {
         feed(.right, center + grip, gap: 0.015)
         precondition(!room.isMoving && room.pose == moved)
         print("Room placement passed: two-hand arming, yaw, translation, fixed scale and height, and tracking-loss lock")
+    }
+
+    static func checkWristMenu() {
+        var gesture = CabinetWristMenu()
+        let wrist: SIMD3<Float> = [0, -0.26, -0.42]
+        let forward = simd_normalize(wrist)
+        let head = simd_float4x4(simd_quatf(from: SIMD3(0, 0, -1), to: forward))
+        let acrossBody: SIMD3<Float> = [1, 0, 0]
+        func sample(_ time: Double, headPose: simd_float4x4 = head, normal: SIMD3<Float> = forward) -> Bool {
+            gesture.update(head: headPose, wrist: wrist, fingers: acrossBody, palmNormal: normal, at: time)
+        }
+        for frame in 0..<10 {
+            precondition(!sample(Double(frame) / 20, headPose: matrix_identity_float4x4))
+            precondition(!sample(Double(frame) / 20, normal: -forward))
+        }
+        for frame in 10..<19 { precondition(!sample(Double(frame) / 20)) }
+        precondition(sample(1))
+        for frame in 21..<31 { precondition(!sample(Double(frame) / 20)) }
+        for frame in 40..<49 { precondition(!sample(Double(frame) / 20)) }
+        precondition(sample(2.5))
+        print("Wrist menu passed: head alignment, back of hand, dwell, one opening, and re-arm after tracking loss")
     }
 }
