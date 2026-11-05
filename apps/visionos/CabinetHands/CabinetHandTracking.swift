@@ -15,6 +15,7 @@ final class CabinetHandTracking {
         (.ringFingerKnuckle, .ringFingerIntermediateBase, .ringFingerIntermediateTip),
         (.littleFingerKnuckle, .littleFingerIntermediateBase, .littleFingerIntermediateTip)
     ]
+    var calibration: CabinetCalibration?
     private var controls: CabinetHandControls
     private(set) var layout: CabinetControlsLayout
     private let moveCabinet: ((simd_float4x4) -> Void)?
@@ -103,7 +104,9 @@ final class CabinetHandTracking {
 
     func serviceControls(at time: Double, playing: Bool) {
         if playing && roomPlacement == nil {
-            controls.expire(at: time).forEach(send)
+            let events = controls.expire(at: time)
+            calibration?.observeSystemEvents(at: time, events: events)
+            events.forEach(send)
         } else {
             reset()
         }
@@ -335,8 +338,9 @@ final class CabinetHandTracking {
         } else {
             palmNormal = nil
         }
+        let indexTip = joint(.indexFingerTip)
         var sample = CabinetHandSample(
-            palm: palm.trackedPosition, index: joint(.indexFingerTip).trackedPosition,
+            palm: palm.trackedPosition, index: indexTip.trackedPosition,
             fingerDirection: fingerDirection, palmNormal: palmNormal
         )
         if layout.usesWristGestures {
@@ -350,17 +354,29 @@ final class CabinetHandTracking {
             sample.recognizeGrip(wrist: wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz,
                                  palm: palm, fingers: fingers)
         }
-        if layout.plunger != nil {
+        let thumb = layout.plunger != nil || calibration?.isRecording == true ? joint(.thumbTip) : nil
+        if layout.plunger != nil, let thumb {
             sample.plungerPose = CabinetPlungerPose.classify(
                 side: side, wrist: wrist, palm: palm, index: indexKnuckle, little: littleKnuckle,
-                thumbIsTracked: skeleton.joint(.thumbTip).isTracked
+                thumbIsTracked: thumb.isTracked
             )
         }
-        sendControlSample(side, sample: sample, at: time)
+        let metrics: CalibrationMetrics?
+        if calibration?.isRecording == true, let thumb {
+            metrics = CalibrationMetrics(side: side, sample: sample, layout: layout, wrist: wrist, palm: palm,
+                                         index: indexKnuckle, little: littleKnuckle, indexTip: indexTip, thumb: thumb)
+        } else {
+            metrics = nil
+        }
+        sendControlSample(side, sample: sample, at: time, metrics: metrics)
     }
 
-    private func sendControlSample(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) {
-        controls.update(side, sample: sample, at: time).forEach(send)
+    private func sendControlSample(
+        _ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double, metrics: CalibrationMetrics? = nil
+    ) {
+        let events = controls.update(side, sample: sample, at: time)
+        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events)
+        events.forEach(send)
     }
 }
 

@@ -63,6 +63,17 @@ private struct TableWindow: View {
     @State private var choosingFolder = false
 
     var body: some View {
+        Group {
+            if player.isCalibrating {
+                ControlCalibrationView(calibration: player.calibration, done: player.finishCalibration)
+            } else {
+                tablePicker
+            }
+        }
+        .onDisappear { player.menuDidClose() }
+    }
+
+    private var tablePicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Pinball Tables").font(.title)
@@ -104,7 +115,10 @@ private struct TableWindow: View {
             if let message = player.status {
                 Text(message).font(.footnote).foregroundStyle(.secondary)
             } else if player.isOpen {
-                Button("Edit Placement", systemImage: "move.3d") { player.beginEditing() }
+                HStack {
+                    Button("Edit Placement", systemImage: "move.3d") { player.beginEditing() }
+                    Button("Calibrate Controls", systemImage: "hand.raised") { player.beginCalibration() }
+                }
             } else {
                 Text("Look toward your non-dominant wrist during play to switch tables or edit placement.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -157,7 +171,6 @@ private struct TableWindow: View {
         .onChange(of: player.tables) { _, tables in
             if selection == nil { selection = tables.first }
         }
-        .onDisappear { player.menuDidClose() }
         .onChange(of: leftHandDominant) { _, leftHand in
             player.setDominantHand(leftHand)
         }
@@ -244,6 +257,11 @@ private final class NativePlayer {
     var activeEnvironment: TableEnvironment = .physical
     var currentTable: LibraryTable? { selectedTable }
     private var menuVisible = false
+    private(set) var isCalibrating = false
+    let calibration = CabinetCalibration(
+        url: URL.documentsDirectory.appending(path: CabinetCalibration.filename),
+        build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+    )
     var isEditingPlacement = false
     var isMovingCabinet = false
     private var resolution = EyeResolution.high
@@ -349,6 +367,22 @@ private final class NativePlayer {
         hideLauncher?()
     }
 
+    func beginCalibration() {
+        guard ready, !stopping, menuVisible, !isEditingPlacement, let tracker else { return }
+        tracker.reset()
+        clearButtons()
+        tracker.calibration = calibration
+        isCalibrating = true
+    }
+
+    func finishCalibration() {
+        guard isCalibrating else { return }
+        calibration.cancel()
+        tracker?.calibration = nil
+        tracker?.reset()
+        isCalibrating = false
+    }
+
     func beginEditing() {
         guard ready, !stopping, !isEditingPlacement, tracker?.beginEditing() == true else { return }
         isEditingPlacement = true
@@ -365,6 +399,7 @@ private final class NativePlayer {
     }
 
     func menuDidClose() {
+        finishCalibration()
         if menuVisible {
             menuVisible = false
             launcherHidden = isOpen
@@ -420,8 +455,12 @@ private final class NativePlayer {
                     return transform
                 }, report: { message in
                     if !loading { status = message }
-                }, acceptsInput: { compositor.isRunning }, tick: { _ in },
-                   trackFloor: mixedReality, allowsControls: { !self.menuVisible && !self.isEditingPlacement })
+                }, acceptsInput: { compositor.isRunning }, tick: { time in
+                    if self.isCalibrating { self.calibration.advance(at: time) }
+                }, trackFloor: mixedReality, allowsControls: {
+                    if self.isCalibrating { return self.calibration.isRecording }
+                    return !self.menuVisible && !self.isEditingPlacement
+                })
                 if !Task.isCancelled && !loading && !ready {
                     needsDismissal = true
                 }
@@ -526,6 +565,7 @@ private final class NativePlayer {
         stopping = false
         isOpen = false
         finishEditing(keepPlacement: true)
+        finishCalibration()
         menuVisible = false
         compositor = nil
         tracker = nil
@@ -773,7 +813,7 @@ private final class NativePlayer {
     #endif
 
     private func handle(_ input: CabinetInput) {
-        guard ready, !stopping else { return }
+        guard ready, !stopping, !isCalibrating else { return }
         switch input {
         case let .flipper(side, pressed):
             VPinballVisionSetButton(side == .left ? VPINBALL_VISION_LEFT_FLIPPER : VPINBALL_VISION_RIGHT_FLIPPER,

@@ -50,6 +50,12 @@ The gear menu sets the dominant hand and eye resolution. **High** renders at 179
 The Vision Pro path uses VPX's shared stereo culling, texture budget, and spatial audio code. Set `VPX_VR_PERF=5` in the launch environment to log the same timing breakdown as the Frame. Packed HDR can be compared with `VPX_PACKED_HDR=0|1`.
 
 
+### Calibrate Controls
+
+Open a table and use the non-dominant wrist menu to choose **Calibrate Controls**. Start with **Resting Hands**. Pick a gesture and choose **Record Attempt**. Use the two-second **Get Ready** cue to move your hands into position, then perform the gesture during the five-second **Recording** cue. The next gesture is selected after a successful save. You can repeat any attempt. The table ignores gesture inputs in this mode. **Done** returns to the menu and **Resume** returns to play.
+
+I use **Thumb Tuck Pull** and **Pinch Pull** as separate attempts so I can compare the thumb-tip tracking flag, the thumb-to-index gap, how far the thumb crosses or drops below the palm, and the plunger’s current decision. The report also records wrist angles, how far each hand moved, and which controls fired. Time is in milliseconds from the start of each attempt. The app keeps the latest 18 attempts from the current build in **Files → On My Vision Pro → VPX Vision → Control Calibration.json**. It saves only derived measurements. **Clear Report** deletes the local file.
+
 ### Run Time Machine in Simulator
 
 Build the pinned Simulator dependencies and the same VPX framework against the Simulator SDK.
