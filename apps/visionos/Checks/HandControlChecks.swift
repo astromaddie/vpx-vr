@@ -74,6 +74,7 @@ struct HandControlChecks {
         checkMappedFlippers()
         checkGestureFlippers()
         checkFistNudges()
+        checkOccludedFistInputs()
         checkPlacement()
         checkRoomGrab()
         checkWristMenu()
@@ -233,10 +234,11 @@ struct HandControlChecks {
     static func checkFistNudges() {
         let wrist: SIMD3<Float> = [0, 0, 0]
         let knuckle: SIMD3<Float> = [0, 0, -0.06]
-        let curled = CabinetHandPose.Finger(knuckle: knuckle, bend: [0, -0.025, -0.065], next: nil)
-        let open = CabinetHandPose.Finger(knuckle: knuckle, bend: [0, 0, -0.09], next: [0, 0, -0.114])
-        let missing = CabinetHandPose.Finger(knuckle: knuckle, bend: nil, next: nil)
-        let curledAtMiddle = CabinetHandPose.Finger(knuckle: knuckle, bend: [0, 0, -0.09], next: [0, -0.025, -0.09])
+        func joint(_ point: SIMD3<Float>) -> CabinetHandJoint { .init(point: point, isTracked: true) }
+        let curled = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, -0.025, -0.065]), next: nil)
+        let open = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, 0, -0.09]), next: joint([0, 0, -0.114]))
+        let missing = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: nil, next: nil)
+        let curledAtMiddle = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, 0, -0.09]), next: joint([0, -0.025, -0.09]))
         precondition(CabinetHandPose.classify(wrist: wrist, fingers: [curled, curledAtMiddle, missing, missing]) == .fist)
         precondition(CabinetHandPose.classify(wrist: wrist, fingers: [open, open, missing, missing]) == .open)
         precondition(CabinetHandPose.classify(wrist: wrist, fingers: [open, open, open, curled]) == .open)
@@ -285,6 +287,64 @@ struct HandControlChecks {
         precondition(controls.update(.left, sample: left, at: 0.14).isEmpty)
         precondition(controls.update(.right, sample: .init(pose: .open), at: 0.16) == [.releasePlunger(1)])
         print("Nudges passed: curl evidence with missing joints, brief two-fist dwell, 2.7 cm shared motion, four directions, plunger arbitration and re-arm")
+    }
+
+    static func checkOccludedFistInputs() {
+        let knob: SIMD3<Float> = [0.241, -0.155, 0.109]
+        let layout = CabinetControlsLayout(plunger: knob, usesWristGestures: true)
+        func hand(at palm: SIMD3<Float>, open: Bool = false, pointing: Bool = false) -> CabinetHandSample {
+            let wrist = palm + [0, 0, 0.06]
+            func joint(_ point: SIMD3<Float>, tracked: Bool = false) -> CabinetHandJoint {
+                .init(point: point, isTracked: tracked)
+            }
+            let fingers: [CabinetHandPose.Finger] = (0..<4).map { finger in
+                let knuckle = palm + [Float(finger) * 0.02 - 0.02, 0, 0]
+                let pointingIndex = pointing && finger == 0
+                let straight = open || pointingIndex
+                return .init(knuckle: joint(knuckle),
+                             bend: joint(knuckle + (straight ? [0, 0, -0.028] : [0, -0.026, -0.008]),
+                                         tracked: pointingIndex),
+                             next: joint(knuckle + (straight ? [0, 0, -0.051] : [0, -0.040, 0.008])))
+            }
+            let palmJoint = joint(palm)
+            var sample = CabinetHandSample(palm: palmJoint.trackedPosition)
+            sample.recognizeGrip(wrist: wrist, palm: palmJoint, fingers: fingers)
+            return sample
+        }
+
+        // The hand anchor is tracked while the palm and curled finger joints
+        // are estimated. The same sample policy is used by the ARKit adapter.
+        let grab = knob + [0, 0, 0.05]
+        let closed = hand(at: grab)
+        precondition(closed.palm == nil && closed.gripPosition == grab && closed.pose == .fist)
+        var player = CabinetHandControls(layout: layout)
+        precondition(player.update(.right, sample: closed, at: 0.016) == [.pullPlunger(0)])
+        precondition(player.update(.right, sample: hand(at: grab + [0, 0, 0.065]), at: 0.032) == [.pullPlunger(1)])
+        precondition(player.update(.right, sample: hand(at: grab, open: true), at: 0.048) == [.releasePlunger(1)])
+
+        let left: SIMD3<Float> = [-0.4, 0, 0.3]
+        let right: SIMD3<Float> = [0.4, 0, 0.3]
+        var time = 0.1
+        func pair(_ offset: SIMD3<Float>) -> [CabinetInput] {
+            time += 0.016
+            let events = player.update(.left, sample: hand(at: left + offset), at: time)
+            time += 0.016
+            return events + player.update(.right, sample: hand(at: right + offset), at: time)
+        }
+        for _ in 0..<4 { precondition(pair(.zero).isEmpty) }
+        precondition(pair([0.022, 0, 0]).isEmpty)
+        precondition(pair([0.027, 0, 0]) == [.nudge(.right)])
+
+        _ = player.reset()
+        var pointing = hand(at: left, pointing: true)
+        precondition(pointing.pose == .unknown)
+        pointing.index = layout.start + [0, 0, 0.04]
+        precondition(player.update(.left, sample: pointing, at: 0.35).isEmpty)
+        pointing.index = layout.start
+        precondition(player.update(.left, sample: pointing, at: 0.37) == [.pressStart])
+        let invalidJoint = CabinetHandJoint(point: [.nan, 0, 0], isTracked: true)
+        precondition(invalidJoint.trackedPosition == nil && invalidJoint.estimatedPosition == nil)
+        print("Occluded joints passed: estimated fist grip, open release, 2.7 cm nudge, and tracked index poke")
     }
 
     static func checkPlacement() {

@@ -82,6 +82,8 @@ In Build 11 I replayed independent inward wrist bends with the palms 0.65 m to e
 
 For Build 12 I launched the supplied Time Machine VPX and `tmac_a24` with `--play-time-machine --check-controls --check-standard-resolution --check-ball-launch --check-nudges`. I ran it again with `--check-half-launch` in place of the last two flags. A 30 mm fist pull moved the ball 513 VP units. A 60 mm pull moved it 1,729 units past the gate. Both released when the synthetic hand opened after an incomplete finger sample. The cabinet model registered one impulse per direction at 27 mm and stayed quiet at 22 mm.
 
+For Build 13 I used ARKit’s estimated finger and palm positions for fist gestures when the hand anchor is still tracked. Button pokes still need a tracked fingertip. The Mac checks feed occluded joint samples through the same fist classifier and replay a pull and open-hand release, a 27 mm two-fist nudge, and a Start poke with the other fingers curled.
+
 ### Seven-table library check
 
 I imported Attack from Mars, Black Hole, Gorgar, Meteor, Middle Earth, The Machine: Bride of Pinbot, and Time Machine in visionOS Simulator 26.5. The library check rendered each table in one app session and checked that PinMAME was running. It checked coin, Start, both flippers, and a half plunger pull in VPX's input manager. The backglass files for Black Hole, Middle Earth, and Bride of Pinbot were imported next to their tables. The stock cabinet covered playfield widths from 0.514 m to 0.685 m. Build 8 completed the same seven-table sequence with the new cabinet button faces and wrist input path.

@@ -46,16 +46,29 @@ enum CabinetHandSide: CaseIterable {
     var sign: Float { self == .left ? -1 : 1 }
 }
 
+struct CabinetHandJoint {
+    let point: SIMD3<Float>
+    let isTracked: Bool
+
+    var estimatedPosition: SIMD3<Float>? {
+        point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
+    }
+
+    var trackedPosition: SIMD3<Float>? {
+        isTracked ? estimatedPosition : nil
+    }
+}
+
 enum CabinetHandPose {
     case open, fist, unknown
 
     struct Finger {
-        let knuckle: SIMD3<Float>?
-        let bend: SIMD3<Float>?
-        let next: SIMD3<Float>?
+        let knuckle: CabinetHandJoint?
+        let bend: CabinetHandJoint?
+        let next: CabinetHandJoint?
 
         func pose(relativeTo wrist: SIMD3<Float>?) -> CabinetHandPose {
-            guard let knuckle, let bend else { return .unknown }
+            guard let knuckle = knuckle?.estimatedPosition, let bend = bend?.estimatedPosition else { return .unknown }
             let proximal = bend - knuckle
             guard simd_length_squared(proximal) > 1e-8 else { return .unknown }
             let direction = simd_normalize(proximal)
@@ -64,7 +77,7 @@ enum CabinetHandPose {
                 return simd_dot(direction, simd_normalize(bone))
             }
             let atKnuckle = alignment(wrist.map { knuckle - $0 })
-            let atBend = alignment(next.map { $0 - bend })
+            let atBend = alignment((next?.estimatedPosition).map { $0 - bend })
             guard atKnuckle != nil || atBend != nil else { return .unknown }
             // A curled finger can hide the outer joint. Its knuckle bend
             // still distinguishes it from an extended finger.
@@ -78,14 +91,18 @@ enum CabinetHandPose {
     static func classify(wrist: SIMD3<Float>?, fingers: [Finger]) -> CabinetHandPose {
         var curled = 0
         var straight = 0
-        for finger in fingers {
+        var isPointing = false
+        for (index, finger) in fingers.enumerated() {
             switch finger.pose(relativeTo: wrist) {
             case .fist: curled += 1
-            case .open: straight += 1
+            case .open:
+                straight += 1
+                isPointing = isPointing || (index == 0 && finger.bend?.isTracked == true)
             case .unknown: break
             }
         }
-        if curled >= 2 && curled > straight { return .fist }
+        // A tracked extended index with the other fingers curled can poke a cabinet button.
+        if curled >= 2 && curled > straight && !isPointing { return .fist }
         if straight >= 3 || (straight >= 2 && curled == 0) { return .open }
         return .unknown
     }
@@ -98,6 +115,16 @@ struct CabinetHandSample {
     var palmNormal: SIMD3<Float>?
     var forearmDirection: SIMD3<Float>?
     var pose: CabinetHandPose = .unknown
+    var estimatedGripPosition: SIMD3<Float>? = nil
+
+    var gripPosition: SIMD3<Float>? { estimatedGripPosition ?? palm }
+
+    mutating func recognizeGrip(wrist: SIMD3<Float>?, palm: CabinetHandJoint, fingers: [CabinetHandPose.Finger]) {
+        // Finger joints are often occluded when making a fist. ARKit still
+        // supplies estimates while it tracks the hand as a whole.
+        estimatedGripPosition = palm.estimatedPosition
+        pose = CabinetHandPose.classify(wrist: wrist, fingers: fingers)
+    }
 }
 
 enum CabinetNudgeDirection: CaseIterable {
@@ -213,7 +240,7 @@ struct CabinetHandControls {
             var current = previous
             if sample?.pose == .open {
                 current = nil
-            } else if let palm = sample?.palm {
+            } else if let palm = sample?.gripPosition {
                 let position = SIMD2(palm.x, palm.y)
                 if sample?.pose == .fist {
                     current = Fist(position: position, confirmedAt: time, sampledAt: time)
@@ -294,7 +321,7 @@ struct CabinetHandControls {
                 if needsOpen == side { needsOpen = nil }
                 return hand == side ? release() : []
             }
-            guard let sample, let palm = sample.palm else { return [] }
+            guard let sample, let palm = sample.gripPosition else { return [] }
             if hand == nil {
                 let offset = palm - handle
                 guard allowGrab, sample.pose == .fist, needsOpen != side,

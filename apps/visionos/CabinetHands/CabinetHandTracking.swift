@@ -312,43 +312,42 @@ final class CabinetHandTracking {
             return
         }
         let cabinetFromHand = cabinetFromOrigin * anchor.originFromAnchorTransform
-        func joint(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
+        func joint(_ name: HandSkeleton.JointName) -> CabinetHandJoint {
             let joint = skeleton.joint(name)
-            guard joint.isTracked else { return nil }
             let point = (cabinetFromHand * joint.anchorFromJointTransform).columns.3.xyz
-            return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
+            return CabinetHandJoint(point: point, isTracked: joint.isTracked)
         }
         let palm = joint(.middleFingerKnuckle)
         let wrist = joint(.wrist)
         let fingerDirection: SIMD3<Float>?
-        if let palm, let wrist {
+        if let palm = palm.trackedPosition, let wrist = wrist.trackedPosition {
             fingerDirection = palm - wrist
         } else {
             fingerDirection = nil
         }
         let palmNormal: SIMD3<Float>?
-        if let fingerDirection, let index = joint(.indexFingerKnuckle), let little = joint(.littleFingerKnuckle) {
+        if let fingerDirection, let index = joint(.indexFingerKnuckle).trackedPosition,
+           let little = joint(.littleFingerKnuckle).trackedPosition {
             // This order gives both palms the same outward-facing normal relative to their joints.
             palmNormal = side.sign * simd_cross(index - little, fingerDirection)
         } else {
             palmNormal = nil
         }
-        var forearmDirection: SIMD3<Float>?
-        var pose = CabinetHandPose.unknown
+        var sample = CabinetHandSample(
+            palm: palm.trackedPosition, index: joint(.indexFingerTip).trackedPosition,
+            fingerDirection: fingerDirection, palmNormal: palmNormal
+        )
         if layout.usesWristGestures {
-            let forearmWrist = joint(.forearmWrist) ?? wrist
-            if let arm = joint(.forearmArm), let forearmWrist {
-                forearmDirection = forearmWrist - arm
+            let forearmWrist = joint(.forearmWrist).trackedPosition ?? wrist.trackedPosition
+            if let arm = joint(.forearmArm).trackedPosition, let forearmWrist {
+                sample.forearmDirection = forearmWrist - arm
             }
             let fingers = Self.fistJoints.map { knuckle, bend, next in
                 CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
             }
-            pose = CabinetHandPose.classify(wrist: wrist ?? forearmWrist, fingers: fingers)
+            sample.recognizeGrip(wrist: wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz,
+                                 palm: palm, fingers: fingers)
         }
-        let sample = CabinetHandSample(
-            palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
-            forearmDirection: forearmDirection, pose: pose
-        )
         sendControlSample(side, sample: sample, at: time)
     }
 
