@@ -8,7 +8,7 @@ struct CalibrationCheck {
     @MainActor static func main() throws {
         let scratch = URL(filePath: CommandLine.arguments[1], directoryHint: .isDirectory)
         let file = scratch.appending(path: "calibration-report.json")
-        let model = CabinetCalibration(url: file, build: "18")
+        let model = CabinetCalibration(url: file, build: "19")
         model.choose(.thumbTuck)
         model.start(at: 10)
         precondition(model.phase == .gettingReady)
@@ -18,35 +18,38 @@ struct CalibrationCheck {
         precondition(model.phase == .recording)
         let knob: SIMD3<Float> = [0, 0, 0]
         let layout = CabinetControlsLayout(plunger: knob, usesWristGestures: true)
-        let sample = CabinetHandSample(palm: [0, 0, 0.06], plungerPose: .grab)
+        let sample = CabinetHandSample(palm: [0, 0, 0.06], plungerPose: .init(tuck: .grab))
         func joint(_ point: SIMD3<Float>, tracked: Bool = true) -> CabinetHandJoint {
             .init(point: point, isTracked: tracked)
         }
-        let metrics = CalibrationMetrics(
-            side: .right, sample: sample, layout: layout, wrist: joint([0, 0, 0.06]),
-            palm: joint(.zero), index: joint([-0.03, 0, 0]), little: joint([0.03, 0, 0]),
+        let geometry = CabinetPlungerGeometry(
+            side: .right, wrist: joint([0, 0, 0.06]), palm: joint(.zero),
+            index: joint([-0.03, 0, 0]), little: joint([0.03, 0, 0]),
             indexTip: joint([-0.03, 0, -0.07]), thumb: joint([0, -0.015, 0], tracked: false)
         )
+        let metrics = CalibrationMetrics(side: .right, sample: sample, layout: layout, geometry: geometry,
+                                         thumbTipTracked: false)
         precondition(!metrics.thumbTipTracked && metrics.palmDownDegrees == 0)
         precondition(metrics.thumbBelowPalmMM == 15 && metrics.thumbAcrossPalmPercent == 50)
-        precondition(metrics.plungerFrontMM == 60 && metrics.plungerDecision == "grab")
+        precondition(metrics.plungerFrontMM == 60 && metrics.plungerDecision == "tuck=grab,pinch=uncertain")
         var controls = CabinetHandControls(layout: layout)
         let events = controls.update(.right, sample: sample, at: 12.03)
         precondition(events == [.pullPlunger(0)])
-        model.observe(side: .right, at: 12.03, sample: sample, metrics: metrics, events: events)
+        model.observe(side: .right, at: 12.03, sample: sample, metrics: metrics, events: events, nudgePhase: controls.nudgePhase)
         model.observe(side: .right, at: 12.04, sample: sample, metrics: metrics, events: [])
         model.observeSystemEvents(at: 12.2, events: controls.expire(at: 12.2))
         model.advance(at: 17)
         precondition(model.phase == .idle && model.selection == .pinch && model.attemptCount == 1)
         let data = try Data(contentsOf: file)
         let report = try JSONDecoder().decode(CabinetCalibration.Report.self, from: data)
-        precondition(report.schema == 1 && report.build == "18")
+        precondition(report.schema == 2 && report.build == "19")
         let attempt = report.attempts[0]
         precondition(attempt.gesture == .thumbTuck && attempt.frames.count == 2)
         precondition(attempt.frames[0].ms == 30 && attempt.frames[0].events == ["plungerHold:0"])
+        precondition(attempt.frames[0].nudgePhase == "waitingForFists" && attempt.frames[0].depthTravelMM == 0)
         precondition(attempt.frames[1].hand == "system" && attempt.frames[1].events == ["plungerCancel"])
-        precondition(CabinetCalibration(url: file, build: "18").attemptCount == 1)
-        precondition(CabinetCalibration(url: file, build: "19").attemptCount == 0)
+        precondition(CabinetCalibration(url: file, build: "19").attemptCount == 1)
+        precondition(CabinetCalibration(url: file, build: "20").attemptCount == 0)
         model.start(at: 20)
         model.advance(at: 22)
         model.cancel()
@@ -54,6 +57,13 @@ struct CalibrationCheck {
         model.start(at: 30)
         model.advance(at: 37)
         precondition(model.attemptCount == 1 && model.message?.hasPrefix("No hand tracking") == true)
+        model.choose(.nudgeForward)
+        model.start(at: 40)
+        model.advance(at: 42)
+        model.observe(side: .right, at: 42.1, sample: sample, metrics: metrics, events: [.nudge(.up)], nudgePhase: "latched")
+        model.advance(at: 47)
+        let directed = try JSONDecoder().decode(CabinetCalibration.Report.self, from: Data(contentsOf: file))
+        precondition(directed.attempts.last?.gesture == .nudgeForward && model.selection == .nudgeBack)
         for trial in 0..<20 {
             let t = 100 + Double(trial) * 10
             model.start(at: t)

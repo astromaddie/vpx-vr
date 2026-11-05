@@ -82,30 +82,32 @@ struct HandControlChecks {
     }
 
     static func plungerPose(
-        _ side: CabinetHandSide = .right, roll: Float = 0, thumbVisible: Bool = false, palmTracked: Bool = true
+        _ side: CabinetHandSide = .right, roll: Float = 0, thumbUntucked: Bool = false, palmTracked: Bool = true
     ) -> CabinetPlungerPose {
         let radians = roll * .pi / 180
         let index = -side.sign * SIMD3<Float>(0.03 * cos(radians), 0.03 * sin(radians), 0)
-        return CabinetPlungerPose.classify(
+        let thumb = thumbUntucked ? index * 1.6 : SIMD3<Float>(0, -0.015, 0)
+        return CabinetPlungerGeometry(
             side: side, wrist: .init(point: [0, 0, 0.06], isTracked: palmTracked),
             palm: .init(point: .zero, isTracked: palmTracked),
             index: .init(point: index, isTracked: false), little: .init(point: -index, isTracked: false),
-            thumbIsTracked: thumbVisible
-        )
+            indexTip: .init(point: index + [0, 0, -0.07], isTracked: true),
+            thumb: .init(point: thumb, isTracked: true)
+        ).pose
     }
 
     static func checkPlunger() {
         let handle = SIMD3<Float>(0.24, -0.095, 0.040)
         var preview = CabinetHandControls()
         var player = CabinetHandControls(layout: CabinetControlsLayout(plunger: handle))
-        let thumbRelease = plungerPose(thumbVisible: true)
+        let thumbRelease = plungerPose(thumbUntucked: true)
         let sidewaysRelease = plungerPose(roll: 90)
-        let rolling = plungerPose(roll: 45)
-        precondition(plungerPose(.right) == .grab && plungerPose(.left) == .grab)
-        precondition(thumbRelease == .release && sidewaysRelease == .release)
-        precondition(plungerPose(roll: 180) == .release && rolling == .uncertain)
-        precondition(plungerPose(palmTracked: false) == .uncertain)
-        func grip(_ depth: Float, pose: CabinetPlungerPose = .grab, side: Float = 0) -> CabinetHandSample {
+        let rolling = plungerPose(roll: 57)
+        precondition(plungerPose(.right).tuck == .grab && plungerPose(.left).tuck == .grab)
+        precondition(thumbRelease.tuck == .release && sidewaysRelease.tuck == .release)
+        precondition(plungerPose(roll: 180).tuck == .release && rolling.tuck == .uncertain)
+        precondition(plungerPose(palmTracked: false).tuck == .uncertain)
+        func grip(_ depth: Float, pose: CabinetPlungerPose = .init(tuck: .grab), side: Float = 0) -> CabinetHandSample {
             .init(palm: handle + [side, 0, depth + 0.05], plungerPose: pose)
         }
         precondition(preview.update(.right, sample: grip(0), at: 0).isEmpty)
@@ -154,7 +156,21 @@ struct HandControlChecks {
         precondition(player.update(.right, sample: grip(0), at: 0.92) == [.pullPlunger(0)])
         precondition(player.update(.right, sample: grip(0.003), at: 0.94).count == 1)
         precondition(player.expire(at: 1.08) == [.cancelPlunger])
-        print("Plunger passed: palm-down thumb occlusion, proportional travel, release by thumb or roll, and cancellation on tracking loss")
+        var tuck = CabinetHandControls(layout: CabinetControlsLayout(plunger: handle))
+        precondition(tuck.update(.right, sample: grip(0), at: 1.2) == [.pullPlunger(0)])
+        precondition(tuck.update(.right, sample: grip(0.06, pose: plungerPose(roll: 53)), at: 1.22) == [.pullPlunger(1)])
+        let overlap = CabinetPlungerPose(tuck: .release, pinch: .grab)
+        precondition(tuck.update(.right, sample: grip(0, pose: overlap), at: 1.24) == [.releasePlunger(1)])
+        precondition(tuck.update(.right, sample: grip(0, pose: overlap), at: 1.26).isEmpty)
+
+        func pinch(_ gap: Float) -> CabinetPlungerPose {
+            .classify(angle: 72, across: 19, gapMM: gap, trackedPalmJoints: 2)
+        }
+        precondition(tuck.update(.right, sample: grip(0, pose: pinch(25)), at: 1.28).isEmpty)
+        precondition(tuck.update(.right, sample: grip(0, pose: pinch(15)), at: 1.30) == [.pullPlunger(0)])
+        precondition(tuck.update(.right, sample: grip(halfDepth, pose: pinch(20)), at: 1.32) == half)
+        precondition(tuck.update(.right, sample: grip(0, pose: pinch(25)), at: 1.34) == [.releasePlunger(pull)])
+        print("Plunger passed: thumb geometry with a tracked tip, tilted pull, roll and untuck release, pinch hysteresis and tracking loss")
     }
 
     static func checkWristTurns() {
@@ -234,7 +250,10 @@ struct HandControlChecks {
         precondition(feed(.right, [-0.18, 0, -1], roll: true) == [.flipper(.right, pressed: true)])
         precondition(feed(.left, [0.12, 0, -1], arm: nil, roll: true).isEmpty)
         precondition(feed(.left, straight) == [.flipper(.left, pressed: false)])
-        precondition(feed(.right, [-0.18, 0, -1], fist: true) == [.flipper(.right, pressed: false)])
+        precondition(feed(.right, [-0.18, 0, -1], fist: true).isEmpty)
+        precondition(feed(.right, straight, fist: true) == [.flipper(.right, pressed: false)])
+        precondition(feed(.right, [-0.18, 0, -1], fist: true) == [.flipper(.right, pressed: true)])
+        precondition(feed(.right, straight, fist: true) == [.flipper(.right, pressed: false)])
         precondition(controls.reset().isEmpty)
         precondition(feed(.left, straight, arm: nil).isEmpty)
         precondition(feed(.left, [0.18, 0, -1], arm: nil) == [.flipper(.left, pressed: true)])
@@ -281,7 +300,8 @@ struct HandControlChecks {
         precondition(CabinetHandPose.classify(wrist: nil, fingers: [curled, missing, missing, missing]) == .unknown)
 
         let directions: [(CabinetNudgeDirection, SIMD3<Float>)] = [
-            (.left, [-0.032, 0, 0]), (.right, [0.032, 0, 0]), (.up, [0, 0.032, 0]), (.down, [0, -0.032, 0])
+            (.left, [-0.032, 0, 0]), (.right, [0.032, 0, 0]), (.up, [0, 0.032, 0]), (.down, [0, -0.032, 0]),
+            (.up, [0, 0, -0.032]), (.down, [0, 0, 0.032])
         ]
         for (direction, offset) in directions {
             let layout = CabinetControlsLayout(usesWristGestures: true)
@@ -302,23 +322,21 @@ struct HandControlChecks {
             let armedAt = time
             precondition(pair(offset, offset) == [.nudge(direction)])
             precondition(time - armedAt < 0.04)
-            precondition(pair(offset, offset).isEmpty)
-            precondition(pair().isEmpty)
-            precondition(pair(offset, offset) == [.nudge(direction)])
-            precondition(time - armedAt < 0.14)
-            precondition(controls.reset().isEmpty)
+            precondition(controls.nudgePhase == "latched")
+            // The next shove starts from a new resting position.
+            for _ in 0..<4 { precondition(pair(offset, offset).isEmpty) }
+            precondition(controls.nudgePhase == "armed")
+            precondition(pair(offset * 2, offset * 2) == [.nudge(direction)])
 
+            precondition(controls.reset().isEmpty)
             precondition(pair().isEmpty)
             precondition(pair(offset * 0.8, offset * 0.8).isEmpty)
             precondition(pair(offset * 1.6, offset * 0.4).isEmpty)
             precondition(pair(offset, -offset).isEmpty)
             precondition(pair(offset * 2, .zero).isEmpty)
-            precondition(pair(offset, offset, rightPose: .unknown) == [.nudge(direction)])
-            for _ in 0..<16 { precondition(pair(offset, offset).isEmpty) }
-            precondition(pair(offset * 0.8, offset * 0.8).isEmpty)
-            precondition(pair(offset, offset).isEmpty)
+            precondition(controls.reset().isEmpty)
             precondition(pair().isEmpty)
-            precondition(pair(offset, offset) == [.nudge(direction)])
+            precondition(pair(offset, offset, rightPose: .unknown) == [.nudge(direction)])
             precondition(controls.expire(at: time + 0.15).isEmpty)
             time += 0.15
             precondition(pair().isEmpty)
@@ -336,8 +354,8 @@ struct HandControlChecks {
         let pulled = CabinetHandSample(palm: grab + [0, 0, 0.07], plungerPose: plungerPose())
         precondition(controls.update(.right, sample: pulled, at: 0.04) == [.pullPlunger(1)])
         precondition(controls.update(.left, sample: left, at: 0.06).isEmpty)
-        precondition(controls.update(.right, sample: .init(plungerPose: plungerPose(thumbVisible: true)), at: 0.08) == [.releasePlunger(1)])
-        print("Nudges passed: next paired sample in all directions, 3.2 cm shared motion, recenter without a timer, plunger priority")
+        precondition(controls.update(.right, sample: .init(plungerPose: plungerPose(thumbUntucked: true)), at: 0.08) == [.releasePlunger(1)])
+        print("Nudges passed: next paired sample on all axes, shared motion, re-arm at a new position, plunger priority")
     }
 
     static func checkOccludedFistInputs() {

@@ -123,25 +123,80 @@ enum CabinetHandPose {
     }
 }
 
-enum CabinetPlungerPose {
-    case uncertain, grab, release
+struct CabinetPlungerPose {
+    enum Signal { case uncertain, grab, hold, release }
+    enum Grip { case tuck, pinch }
 
-    static func classify(
-        side: CabinetHandSide, wrist: CabinetHandJoint, palm: CabinetHandJoint,
-        index: CabinetHandJoint, little: CabinetHandJoint, thumbIsTracked: Bool
-    ) -> Self {
-        if thumbIsTracked { return .release }
-        // Require independent palm evidence so general tracking loss cannot
-        // look like a hidden thumb. A hidden knuckle can still give an estimate.
-        guard [wrist, palm, index, little].filter({ $0.trackedPosition != nil }).count >= 2,
-              let wrist = wrist.estimatedPosition, let palm = palm.estimatedPosition,
-              let index = index.estimatedPosition, let little = little.estimatedPosition else { return .uncertain }
-        let normal = side.sign * simd_cross(index - little, palm - wrist)
-        guard simd_length_squared(normal) > 1e-8 else { return .uncertain }
-        let down = -simd_normalize(normal).y
-        if down >= 0.87 { return .grab }     // Within about 30° of palm down.
-        if down <= 0.50 { return .release }  // A turn of about 60° releases.
-        return .uncertain
+    var tuck: Signal = .uncertain
+    var pinch: Signal = .uncertain
+    static let uncertain = Self()
+
+    var grab: Grip? {
+        if tuck == .grab { return .tuck }
+        if pinch == .grab { return .pinch }
+        return nil
+    }
+
+    func signal(for grip: Grip) -> Signal {
+        grip == .tuck ? tuck : pinch
+    }
+
+    static func classify(angle: Float?, across: Float?, gapMM: Float?, trackedPalmJoints: Int) -> Self {
+        guard trackedPalmJoints >= 2 else { return .uncertain }
+        var pose = Self()
+        if let angle, let across {
+            if angle >= 60 || across <= 25 {
+                pose.tuck = .release
+            } else if angle <= 55 {
+                pose.tuck = across >= 30 ? .grab : .hold
+            }
+        }
+        if let gapMM {
+            if gapMM <= 15 { pose.pinch = .grab }
+            else if gapMM >= 25 { pose.pinch = .release }
+            else { pose.pinch = .hold }
+        }
+        return pose
+    }
+}
+
+struct CabinetPlungerGeometry {
+    let trackedPalmJoints: Int
+    let thumbIndexGapMM: Float?
+    let palmDownDegrees: Float?
+    let thumbBelowPalmMM: Float?
+    let thumbAcrossPalmPercent: Float?
+
+    init(side: CabinetHandSide, wrist: CabinetHandJoint, palm: CabinetHandJoint,
+         index: CabinetHandJoint, little: CabinetHandJoint, indexTip: CabinetHandJoint, thumb: CabinetHandJoint) {
+        trackedPalmJoints = [wrist, palm, index, little].filter { $0.trackedPosition != nil }.count
+        thumbIndexGapMM = thumb.estimatedPosition.flatMap { tip in
+            indexTip.estimatedPosition.map { simd_distance(tip, $0) * 1000 }
+        }
+        var angle: Float?
+        var below: Float?
+        var across: Float?
+        if let wrist = wrist.estimatedPosition, let palm = palm.estimatedPosition,
+           let index = index.estimatedPosition, let little = little.estimatedPosition {
+            let span = little - index
+            let normal = side.sign * simd_cross(-span, palm - wrist)
+            if simd_length_squared(normal) > 1e-8 {
+                let unitNormal = simd_normalize(normal)
+                angle = acos(min(max(-unitNormal.y, -1), 1)) * 180 / .pi
+                if let tip = thumb.estimatedPosition {
+                    below = simd_dot(tip - palm, unitNormal) * 1000
+                    across = simd_dot(tip - index, span) / simd_length_squared(span) * 100
+                }
+            }
+        }
+        palmDownDegrees = angle
+        thumbBelowPalmMM = below
+        thumbAcrossPalmPercent = across
+    }
+
+    var pose: CabinetPlungerPose {
+        .classify(angle: palmDownDegrees, across: thumbAcrossPalmPercent,
+                  gapMM: thumbIndexGapMM, trackedPalmJoints: trackedPalmJoints)
     }
 }
 
@@ -209,22 +264,22 @@ struct CabinetHandControls {
         let plungerEvents = layout.plunger.map {
             plunger.update(side, sample: sample, handle: $0, allowGrab: !nudge.isArmed && !flipperDown, time: time)
         } ?? []
-        let closedHand = sample?.pose == .fist || (sample?.pose == .unknown && nudge.isClosed(side, at: time))
-        let blockFlipper = layout.usesWristGestures && (closedHand || heldBefore == side || plunger.hand == side)
+        let direction: CabinetNudgeDirection?
+        if layout.usesWristGestures, heldBefore == nil, plunger.hand == nil {
+            direction = nudge.update(side, sample: sample, layout: layout, at: time)
+        } else {
+            nudge = FistNudge()
+            direction = nil
+        }
+        let blockFlipper = layout.usesWristGestures && (nudge.isArmed || heldBefore == side || plunger.hand == side)
         let buttons = switch side {
         case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
         case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
         }
-        guard layout.usesWristGestures else { return buttons + plungerEvents }
-        guard heldBefore == nil, plunger.hand == nil else {
-            nudge = FistNudge()
-            return buttons + plungerEvents
-        }
-        if let direction = nudge.update(side, sample: sample, layout: layout, at: time) {
-            return buttons + plungerEvents + [.nudge(direction)]
-        }
-        return buttons + plungerEvents
+        return buttons + plungerEvents + (direction.map { [.nudge($0)] } ?? [])
     }
+
+    var nudgePhase: String { nudge.phase }
 
     mutating func expire(at time: Double) -> [CabinetInput] {
         nudge.expire(at: time)
@@ -238,28 +293,30 @@ struct CabinetHandControls {
 
     private struct FistNudge {
         private struct Fist {
-            let position: SIMD2<Float>
+            let position: SIMD3<Float>
             let confirmedAt: Double
             let sampledAt: Double
+        }
+
+        private struct Pair {
+            let left: SIMD3<Float>
+            let right: SIMD3<Float>
+            let time: Double
         }
 
         private var left: Fist?
         private var right: Fist?
         private var lastPair = -Double.infinity
-        private var origin: (left: SIMD2<Float>, right: SIMD2<Float>)?
+        private var history: [Pair] = []
         private var spent = false
-        var isArmed: Bool { origin != nil }
-
-        func isClosed(_ side: CabinetHandSide, at time: Double) -> Bool {
-            guard let fist = side == .left ? left : right else { return false }
-            return time - fist.confirmedAt <= CabinetHandControls.trackingTimeout
-        }
+        var isArmed: Bool { !history.isEmpty }
+        var phase: String { isArmed ? (spent ? "latched" : "armed") : "waitingForFists" }
 
         mutating func expire(at time: Double) {
             if let left, time - left.confirmedAt > CabinetHandControls.trackingTimeout { self.left = nil }
             if let right, time - right.confirmedAt > CabinetHandControls.trackingTimeout { self.right = nil }
             if left == nil || right == nil {
-                origin = nil
+                history.removeAll(keepingCapacity: true)
                 spent = false
             }
         }
@@ -273,48 +330,66 @@ struct CabinetHandControls {
             if sample?.pose == .open {
                 current = nil
             } else if let palm = sample?.gripPosition {
-                let position = SIMD2(palm.x, palm.y)
                 if !layout.isByNudgeRail(side, palm: palm, margin: isArmed ? 0.04 : 0) {
                     current = nil
                 } else if sample?.pose == .fist {
-                    current = Fist(position: position, confirmedAt: time, sampledAt: time)
+                    current = Fist(position: palm, confirmedAt: time, sampledAt: time)
                 } else if let previous {
-                    // Preserve a closed fist briefly when some finger joints
-                    // disappear, using the palm for movement in the meantime.
-                    current = Fist(position: position, confirmedAt: previous.confirmedAt, sampledAt: time)
+                    // Use the palm through a brief loss of finger evidence.
+                    current = Fist(position: palm, confirmedAt: previous.confirmedAt, sampledAt: time)
                 }
             }
             if side == .left { left = current } else { right = current }
             expire(at: time)
             guard let left, let right, min(left.sampledAt, right.sampledAt) > lastPair else { return nil }
             lastPair = max(left.sampledAt, right.sampledAt)
-
-            guard let origin else {
-                // Use the first pair of firm fists at the rails. Movement
-                // before both hands reach that position does not count.
-                if left.confirmedAt == left.sampledAt, right.confirmedAt == right.sampledAt {
-                    self.origin = (left.position, right.position)
-                }
+            let leftConfirmed = left.confirmedAt == left.sampledAt
+            let rightConfirmed = right.confirmedAt == right.sampledAt
+            let pair = Pair(left: left.position, right: right.position, time: lastPair)
+            guard isArmed else {
+                if leftConfirmed && rightConfirmed { history.append(pair) }
                 return nil
             }
 
-            let leftMove = left.position - origin.left
-            let rightMove = right.position - origin.right
+            history.removeAll { pair.time - $0.time > 0.10 }
             if spent {
-                if simd_length(leftMove) < 0.012, simd_length(rightMove) < 0.012 {
+                // After the shove, re-arm where the fists settle. No need to
+                // return to the location where the hands first closed.
+                if let oldest = history.first, pair.time - oldest.time >= 0.06,
+                   history.allSatisfy({
+                       simd_distance($0.left, pair.left) < 0.012 && simd_distance($0.right, pair.right) < 0.012
+                   }) {
                     spent = false
+                    history.removeAll(keepingCapacity: true)
                 }
+                history.append(pair)
                 return nil
             }
+
+            defer { history.append(pair) }
+            guard leftConfirmed || rightConfirmed, let reference = history.first else { return nil }
+            let leftMove = pair.left - reference.left
+            let rightMove = pair.right - reference.right
             let move = (leftMove + rightMove) * 0.5
-            let axis = abs(move.x) >= abs(move.y) ? 0 : 1
-            let sign: Float = move[axis] < 0 ? -1 : 1
-            guard left.confirmedAt == left.sampledAt || right.confirmedAt == right.sampledAt,
-                  abs(move[axis]) >= 0.030,
-                  sign * leftMove[axis] >= 0.022, sign * rightMove[axis] >= 0.022 else { return nil }
+            var strongestAxis: Int?
+            var strongestMove: Float = 0
+            for axis in 0..<3 {
+                let sign: Float = move[axis] < 0 ? -1 : 1
+                let distance = abs(move[axis])
+                if distance >= 0.030, distance > strongestMove,
+                   sign * leftMove[axis] >= 0.022, sign * rightMove[axis] >= 0.022 {
+                    strongestAxis = axis
+                    strongestMove = distance
+                }
+            }
+            guard let axis = strongestAxis else { return nil }
             spent = true
-            if axis == 0 { return sign < 0 ? .left : .right }
-            return sign < 0 ? .down : .up
+            history.removeAll(keepingCapacity: true)
+            switch axis {
+            case 0: return move.x < 0 ? .left : .right
+            case 1: return move.y < 0 ? .down : .up
+            default: return move.z < 0 ? .up : .down
+            }
         }
     }
 
@@ -326,7 +401,8 @@ struct CabinetHandControls {
         private var grabDepth: Float = 0
         private var pull: Float = 0
         private var lastSample: Double = 0
-        private var needsRelease: CabinetHandSide?
+        private var grip: CabinetPlungerPose.Grip?
+        private var needsRelease: (side: CabinetHandSide, grip: CabinetPlungerPose.Grip)?
 
         mutating func reset() -> [CabinetInput] {
             let wasHeld = hand != nil
@@ -341,9 +417,9 @@ struct CabinetHandControls {
         }
 
         mutating func expire(at time: Double) -> [CabinetInput] {
-            guard let hand, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
+            guard let hand, let grip, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
             let events = reset()
-            needsRelease = hand
+            needsRelease = (hand, grip)
             return events
         }
 
@@ -352,26 +428,36 @@ struct CabinetHandControls {
         ) -> [CabinetInput] {
             let expired = expire(at: time)
             guard expired.isEmpty, hand == nil || hand == side else { return expired }
-            if sample?.plungerPose == .release {
-                if needsRelease == side { needsRelease = nil }
-                return hand == side ? release() : []
+            guard let sample else { return [] }
+            if let needsRelease, needsRelease.side == side,
+               sample.plungerPose.signal(for: needsRelease.grip) == .release {
+                self.needsRelease = nil
             }
-            guard let sample, let palm = sample.gripPosition else { return [] }
+            if hand == side, let grip, sample.plungerPose.signal(for: grip) == .release {
+                let events = release()
+                // Rolling out of a tuck can leave the fingertips touching.
+                // Require a fresh gesture before accepting the other grip.
+                if let otherGrip = sample.plungerPose.grab { needsRelease = (side, otherGrip) }
+                return events
+            }
+            guard let palm = sample.gripPosition else { return [] }
             if hand == nil {
                 let offset = palm - handle
-                guard allowGrab, sample.plungerPose == .grab, needsRelease != side,
+                guard allowGrab, let grip = sample.plungerPose.grab, needsRelease?.side != side,
                       simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.13 * 0.13,
                       (-0.10...0.20).contains(offset.z) else { return [] }
                 hand = side
+                self.grip = grip
                 grabDepth = palm.z
                 lastSample = time
                 return [.pullPlunger(0)]
             }
 
             lastSample = time
-            // Hold the last pull while the palm rolls through the release
-            // angle so motion toward the cabinet cannot weaken the shot.
-            guard sample.plungerPose == .grab else { return [] }
+            // Ambiguous tracking can preserve a pull without weakening the shot.
+            guard let grip else { return [] }
+            let signal = sample.plungerPose.signal(for: grip)
+            guard signal == .grab || signal == .hold else { return [] }
             let newPull = min(max((palm.z - grabDepth) / CabinetHandControls.plungerStroke, 0), 1)
             guard abs(newPull - pull) >= 0.005 else { return [] }
             pull = newPull

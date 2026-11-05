@@ -344,27 +344,30 @@ final class CabinetHandTracking {
             fingerDirection: fingerDirection, palmNormal: palmNormal
         )
         if layout.usesWristGestures {
-            let forearmWrist = joint(.forearmWrist).trackedPosition ?? wrist.trackedPosition
-            if let arm = joint(.forearmArm).trackedPosition, let forearmWrist {
+            let wristPosition = wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz
+            if let palmPosition = palm.estimatedPosition {
+                sample.fingerDirection = palmPosition - wristPosition
+            }
+            let forearmWrist = joint(.forearmWrist).estimatedPosition ?? wristPosition
+            if let arm = joint(.forearmArm).estimatedPosition {
                 sample.forearmDirection = forearmWrist - arm
             }
             let fingers = Self.fistJoints.map { knuckle, bend, next in
                 CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
             }
-            sample.recognizeGrip(wrist: wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz,
+            sample.recognizeGrip(wrist: wristPosition,
                                  palm: palm, fingers: fingers)
         }
-        let thumb = layout.plunger != nil || calibration?.isRecording == true ? joint(.thumbTip) : nil
-        if layout.plunger != nil, let thumb {
-            sample.plungerPose = CabinetPlungerPose.classify(
-                side: side, wrist: wrist, palm: palm, index: indexKnuckle, little: littleKnuckle,
-                thumbIsTracked: thumb.isTracked
-            )
-        }
         let metrics: CalibrationMetrics?
-        if calibration?.isRecording == true, let thumb {
-            metrics = CalibrationMetrics(side: side, sample: sample, layout: layout, wrist: wrist, palm: palm,
-                                         index: indexKnuckle, little: littleKnuckle, indexTip: indexTip, thumb: thumb)
+        if layout.plunger != nil || calibration?.isRecording == true {
+            let thumb = joint(.thumbTip)
+            let geometry = CabinetPlungerGeometry(side: side, wrist: wrist, palm: palm, index: indexKnuckle,
+                                                  little: littleKnuckle, indexTip: indexTip, thumb: thumb)
+            if layout.plunger != nil { sample.plungerPose = geometry.pose }
+            metrics = calibration?.isRecording == true
+                ? CalibrationMetrics(side: side, sample: sample, layout: layout, geometry: geometry,
+                                     thumbTipTracked: thumb.isTracked)
+                : nil
         } else {
             metrics = nil
         }
@@ -375,7 +378,7 @@ final class CabinetHandTracking {
         _ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double, metrics: CalibrationMetrics? = nil
     ) {
         let events = controls.update(side, sample: sample, at: time)
-        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events)
+        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events, nudgePhase: controls.nudgePhase)
         events.forEach(send)
     }
 }

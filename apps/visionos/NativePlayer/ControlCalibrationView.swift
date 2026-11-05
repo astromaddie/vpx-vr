@@ -9,6 +9,21 @@ struct ControlCalibrationView: View {
     @State private var confirmingClear = false
 
     var body: some View {
+        ScrollView {
+            panel
+        }
+        .confirmationDialog("Clear the Calibration Report?", isPresented: $confirmingClear) {
+            Button("Clear Report", role: .destructive) { calibration.clear() }
+        }
+        .task {
+            while !Task.isCancelled {
+                calibration.advance(at: CACurrentMediaTime())
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private var panel: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Control Calibration").font(.title)
             Text("Record one attempt at a time beside the cabinet. The table will ignore game inputs while calibration is open.")
@@ -72,15 +87,5 @@ struct ControlCalibrationView: View {
             }
         }
         .padding(24)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-        .confirmationDialog("Clear the Calibration Report?", isPresented: $confirmingClear) {
-            Button("Clear Report", role: .destructive) { calibration.clear() }
-        }
-        .task {
-            while !Task.isCancelled {
-                calibration.advance(at: CACurrentMediaTime())
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-        }
     }
 }

@@ -258,10 +258,11 @@ private final class NativePlayer {
     var currentTable: LibraryTable? { selectedTable }
     private var menuVisible = false
     private(set) var isCalibrating = false
-    let calibration = CabinetCalibration(
-        url: URL.documentsDirectory.appending(path: CabinetCalibration.filename),
-        build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-    )
+    let calibration: CabinetCalibration = {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return CabinetCalibration(url: URL.documentsDirectory.appending(path: CabinetCalibration.filename(build: build)),
+                                  build: build)
+    }()
     var isEditingPlacement = false
     var isMovingCabinet = false
     private var resolution = EyeResolution.high
@@ -647,7 +648,7 @@ private final class NativePlayer {
         }
 
         if let handle = tracker.layout.plunger {
-            func grip(depth: Float, pose: CabinetPlungerPose = .grab) {
+            func grip(depth: Float, pose: CabinetPlungerPose = .init(tuck: .grab)) {
                 send(.right, .init(palm: handle + [0, 0, depth + 0.05], plungerPose: pose))
             }
             let arguments = CommandLine.arguments
@@ -675,7 +676,7 @@ private final class NativePlayer {
                     return
                 }
                 let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
-                grip(depth: 0, pose: .release)
+                grip(depth: 0, pose: .init(tuck: .release))
                 if let ball {
                     var frontmostY = ball.y
                     var peakSpeed: Float = 0

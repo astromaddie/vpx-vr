@@ -5,7 +5,8 @@ import Observation
 import simd
 
 enum CalibrationGesture: String, CaseIterable, Identifiable, Codable {
-    case rest, rightFlipper, leftFlipper, thumbTuck, pinch, nudge
+    case rest, rightFlipper, leftFlipper, thumbTuck, pinch
+    case nudgeLeft, nudgeRight, nudgeUp, nudgeDown, nudgeForward, nudgeBack
 
     var id: Self { self }
     var title: String {
@@ -15,7 +16,12 @@ enum CalibrationGesture: String, CaseIterable, Identifiable, Codable {
         case .leftFlipper: "Left Flipper"
         case .thumbTuck: "Thumb Tuck Pull"
         case .pinch: "Pinch Pull"
-        case .nudge: "Two-Fist Nudge"
+        case .nudgeLeft: "Nudge Left"
+        case .nudgeRight: "Nudge Right"
+        case .nudgeUp: "Nudge Up"
+        case .nudgeDown: "Nudge Down"
+        case .nudgeForward: "Nudge Forward"
+        case .nudgeBack: "Nudge Back"
         }
     }
 
@@ -26,7 +32,12 @@ enum CalibrationGesture: String, CaseIterable, Identifiable, Codable {
         case .leftFlipper: "Flick your left wrist inward the way you do during play."
         case .thumbTuck: "Hold your palm down by the plunger. Tuck your thumb, pull, then release."
         case .pinch: "Pinch by the plunger, pull, then release."
-        case .nudge: "Close both fists by the cabinet sides and move them together to nudge."
+        case .nudgeLeft: "Close both fists by the cabinet sides and shove them to your left."
+        case .nudgeRight: "Close both fists by the cabinet sides and shove them to your right."
+        case .nudgeUp: "Close both fists by the cabinet sides and lift them together."
+        case .nudgeDown: "Close both fists by the cabinet sides and lower them together."
+        case .nudgeForward: "Close both fists by the cabinet sides and push them away from you."
+        case .nudgeBack: "Close both fists by the cabinet sides and pull them toward you."
         }
     }
 }
@@ -46,32 +57,13 @@ struct CalibrationMetrics: Codable {
     let plungerDecision: String
 
     init(side: CabinetHandSide, sample: CabinetHandSample, layout: CabinetControlsLayout,
-         wrist: CabinetHandJoint, palm: CabinetHandJoint, index: CabinetHandJoint,
-         little: CabinetHandJoint, indexTip: CabinetHandJoint, thumb: CabinetHandJoint) {
-        thumbTipTracked = thumb.isTracked
-        trackedPalmJoints = [wrist, palm, index, little].filter { $0.trackedPosition != nil }.count
-        thumbIndexGapMM = Self.integer(thumb.estimatedPosition.flatMap { tip in
-            indexTip.estimatedPosition.map { simd_distance(tip, $0) * 1000 }
-        })
-        var down: Float?
-        var below: Float?
-        var across: Float?
-        if let wrist = wrist.estimatedPosition, let palm = palm.estimatedPosition,
-           let index = index.estimatedPosition, let little = little.estimatedPosition {
-            let span = little - index
-            let normal = side.sign * simd_cross(-span, palm - wrist)
-            if simd_length_squared(normal) > 1e-8 {
-                let unitNormal = simd_normalize(normal)
-                down = acos(min(max(-unitNormal.y, -1), 1)) * 180 / .pi
-                if let tip = thumb.estimatedPosition {
-                    below = simd_dot(tip - palm, unitNormal) * 1000
-                    across = simd_dot(tip - index, span) / simd_length_squared(span) * 100
-                }
-            }
-        }
-        palmDownDegrees = Self.integer(down)
-        thumbBelowPalmMM = Self.integer(below)
-        thumbAcrossPalmPercent = Self.integer(across)
+         geometry: CabinetPlungerGeometry, thumbTipTracked: Bool) {
+        self.thumbTipTracked = thumbTipTracked
+        trackedPalmJoints = geometry.trackedPalmJoints
+        thumbIndexGapMM = Self.integer(geometry.thumbIndexGapMM)
+        palmDownDegrees = Self.integer(geometry.palmDownDegrees)
+        thumbBelowPalmMM = Self.integer(geometry.thumbBelowPalmMM)
+        thumbAcrossPalmPercent = Self.integer(geometry.thumbAcrossPalmPercent)
         if let direction = sample.fingerDirection, let forearm = sample.forearmDirection,
            simd_length_squared(forearm) > 1e-8 {
             let arm = simd_normalize(forearm)
@@ -95,11 +87,7 @@ struct CalibrationMetrics: Codable {
             plungerOffsetMM = nil
         }
         firmFist = sample.pose == .fist
-        plungerDecision = switch sample.plungerPose {
-        case .grab: "grab"
-        case .release: "release"
-        case .uncertain: "uncertain"
-        }
+        plungerDecision = "tuck=\(sample.plungerPose.tuck),pinch=\(sample.plungerPose.pinch)"
     }
 
     static func integer(_ value: Float?) -> Int? {
@@ -118,6 +106,8 @@ final class CabinetCalibration {
         let metrics: CalibrationMetrics?
         let lateralTravelMM: Int?
         let verticalTravelMM: Int?
+        let depthTravelMM: Int?
+        let nudgePhase: String?
         let events: [String]
     }
     struct Attempt: Codable {
@@ -130,7 +120,7 @@ final class CabinetCalibration {
         var attempts: [Attempt]
     }
 
-    static let filename = "Control Calibration.json"
+    static func filename(build: String) -> String { "Control Calibration Build \(build).json" }
     private static let attemptLimit = 18
     private static let frameLimit = 600
     private static let preparationTime = 2.0
@@ -155,12 +145,12 @@ final class CabinetCalibration {
         let previous = (fileSize ?? 0) <= 5_000_000
             ? (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Report.self, from: $0) }
             : nil
-        if var previous, previous.schema == 1, previous.build == build,
+        if var previous, previous.schema == 2, previous.build == build,
            previous.attempts.allSatisfy({ $0.frames.count <= Self.frameLimit }) {
             previous.attempts = Array(previous.attempts.suffix(Self.attemptLimit))
             report = previous
         } else {
-            report = Report(schema: 1, build: build, attempts: [])
+            report = Report(schema: 2, build: build, attempts: [])
         }
     }
 
@@ -186,7 +176,7 @@ final class CabinetCalibration {
     }
 
     func observe(side: CabinetHandSide, at time: Double, sample: CabinetHandSample?,
-                 metrics: CalibrationMetrics?, events: [CabinetInput]) {
+                 metrics: CalibrationMetrics?, events: [CabinetInput], nudgePhase: String? = nil) {
         guard isRecording, time >= startTime, time < startTime + Self.recordTime,
               frames.count < Self.frameLimit else { return }
         guard !events.isEmpty || time - (lastFrame[side] ?? -.infinity) >= 0.032 else { return }
@@ -197,14 +187,16 @@ final class CabinetCalibration {
         frames.append(Frame(ms: Int(((time - startTime) * 1000).rounded()), hand: side == .left ? "left" : "right",
                             metrics: metrics, lateralTravelMM: CalibrationMetrics.integer(travel.map { $0.x * 1000 }),
                             verticalTravelMM: CalibrationMetrics.integer(travel.map { $0.y * 1000 }),
-                            events: events.map(Self.describe)))
+                            depthTravelMM: CalibrationMetrics.integer(travel.map { $0.z * 1000 }),
+                            nudgePhase: nudgePhase, events: events.map(Self.describe)))
     }
 
     func observeSystemEvents(at time: Double, events: [CabinetInput]) {
         guard isRecording, !events.isEmpty, time >= startTime, time < startTime + Self.recordTime,
               frames.count < Self.frameLimit else { return }
         frames.append(Frame(ms: Int(((time - startTime) * 1000).rounded()), hand: "system",
-                            metrics: nil, lateralTravelMM: nil, verticalTravelMM: nil, events: events.map(Self.describe)))
+                            metrics: nil, lateralTravelMM: nil, verticalTravelMM: nil,
+                            depthTravelMM: nil, nudgePhase: nil, events: events.map(Self.describe)))
     }
 
     func cancel() {
