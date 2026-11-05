@@ -671,8 +671,8 @@ private final class NativePlayer {
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-nudges") {
             let offsets: [(SIMD3<Float>, VPINBALL_VISION_INPUT)] = [
-                ([-0.027, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.027, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
-                ([0, 0.027, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.027, 0], VPINBALL_VISION_NUDGE_BACK)
+                ([-0.032, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.032, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
+                ([0, 0.032, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.032, 0], VPINBALL_VISION_NUDGE_BACK)
             ]
             func fists(_ offset: SIMD3<Float>, rightPose: CabinetHandPose = .fist) {
                 send(.left, .init(palm: [-0.4, 0, 0.3] + offset, pose: .fist))
@@ -681,7 +681,7 @@ private final class NativePlayer {
             for (offset, button) in offsets {
                 time += 0.42
                 let before = VPinballVisionNudgeCount()
-                for _ in 0..<4 { fists(.zero) }
+                for _ in 0..<6 { fists(.zero) }
                 fists(offset * 0.8)
                 guard VPinballVisionNudgeCount() == before else {
                     VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator nudge dead zone failed for button \(button.rawValue)")
