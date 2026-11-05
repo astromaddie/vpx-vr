@@ -674,9 +674,11 @@ private final class NativePlayer {
                 ([-0.032, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.032, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
                 ([0, 0.032, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.032, 0], VPINBALL_VISION_NUDGE_BACK)
             ]
+            let leftRail = tracker.layout.flipper(.left) + [-0.07, 0.06, -0.08]
+            let rightRail = tracker.layout.flipper(.right) + [0.07, 0.06, -0.08]
             func fists(_ offset: SIMD3<Float>, rightPose: CabinetHandPose = .fist) {
-                send(.left, .init(palm: [-0.4, 0, 0.3] + offset, pose: .fist))
-                send(.right, .init(palm: [0.4, 0, 0.3] + offset, pose: rightPose))
+                send(.left, .init(palm: leftRail + offset, pose: .fist))
+                send(.right, .init(palm: rightRail + offset, pose: rightPose))
             }
             for (offset, button) in offsets {
                 time += 0.42

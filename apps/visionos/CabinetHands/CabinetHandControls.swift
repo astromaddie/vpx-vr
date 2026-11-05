@@ -38,6 +38,17 @@ struct CabinetControlsLayout {
     func flipper(_ side: CabinetHandSide) -> SIMD3<Float> {
         flipperCap(side) ?? SIMD3(side.sign * width / 2, -0.065, -0.055)
     }
+
+    func isByNudgeRail(_ side: CabinetHandSide, palm: SIMD3<Float>, margin: Float) -> Bool {
+        let offset = palm - flipper(side)
+        let outward = offset.x * side.sign
+        // Use the actual side of the cabinet. Keep the front of the knob
+        // clear for the plunger, and allow a little room for the shove.
+        return (-0.035 - margin...0.22 + margin).contains(outward)
+            && abs(offset.y) <= 0.22 + margin
+            && (-0.32 - margin...0.07 + margin).contains(offset.z)
+            && palm.z <= margin
+    }
 }
 
 enum CabinetHandSide: CaseIterable {
@@ -185,7 +196,7 @@ struct CabinetHandControls {
             nudge = FistNudge()
             return buttons + plungerEvents
         }
-        if let direction = nudge.update(side, sample: sample, at: time) {
+        if let direction = nudge.update(side, sample: sample, layout: layout, at: time) {
             return buttons + plungerEvents + [.nudge(direction)]
         }
         return buttons + plungerEvents
@@ -232,7 +243,9 @@ struct CabinetHandControls {
             }
         }
 
-        mutating func update(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) -> CabinetNudgeDirection? {
+        mutating func update(
+            _ side: CabinetHandSide, sample: CabinetHandSample?, layout: CabinetControlsLayout, at time: Double
+        ) -> CabinetNudgeDirection? {
             expire(at: time)
             let previous = side == .left ? left : right
             var current = previous
@@ -240,7 +253,9 @@ struct CabinetHandControls {
                 current = nil
             } else if let palm = sample?.gripPosition {
                 let position = SIMD2(palm.x, palm.y)
-                if sample?.pose == .fist {
+                if !layout.isByNudgeRail(side, palm: palm, margin: isArmed ? 0.04 : 0) {
+                    current = nil
+                } else if sample?.pose == .fist {
                     current = Fist(position: position, confirmedAt: time, sampledAt: time)
                 } else if let previous {
                     // Preserve a closed fist briefly when some finger joints
