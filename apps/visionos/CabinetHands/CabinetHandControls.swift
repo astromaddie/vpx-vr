@@ -271,7 +271,7 @@ struct CabinetHandControls {
             nudge = FistNudge()
             direction = nil
         }
-        let blockFlipper = layout.usesWristGestures && (nudge.isArmed || heldBefore == side || plunger.hand == side)
+        let blockFlipper = layout.usesWristGestures && (nudge.blocksFlippers || heldBefore == side || plunger.hand == side)
         let buttons = switch side {
         case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
         case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
@@ -306,15 +306,20 @@ struct CabinetHandControls {
 
         private var left: Fist?
         private var right: Fist?
+        private var leftNearRailAt: Double?
+        private var rightNearRailAt: Double?
         private var lastPair = -Double.infinity
         private var history: [Pair] = []
         private var spent = false
         var isArmed: Bool { !history.isEmpty }
+        var blocksFlippers: Bool { isArmed || (leftNearRailAt != nil && rightNearRailAt != nil) }
         var phase: String { isArmed ? (spent ? "latched" : "armed") : "waitingForFists" }
 
         mutating func expire(at time: Double) {
             if let left, time - left.confirmedAt > CabinetHandControls.trackingTimeout { self.left = nil }
             if let right, time - right.confirmedAt > CabinetHandControls.trackingTimeout { self.right = nil }
+            if let leftNearRailAt, time - leftNearRailAt > CabinetHandControls.trackingTimeout { self.leftNearRailAt = nil }
+            if let rightNearRailAt, time - rightNearRailAt > CabinetHandControls.trackingTimeout { self.rightNearRailAt = nil }
             if left == nil || right == nil {
                 history.removeAll(keepingCapacity: true)
                 spent = false
@@ -325,6 +330,21 @@ struct CabinetHandControls {
             _ side: CabinetHandSide, sample: CabinetHandSample?, layout: CabinetControlsLayout, at time: Double
         ) -> CabinetNudgeDirection? {
             expire(at: time)
+            // A paired fist stance can suppress wrist presses just outside
+            // the rail. The tighter placement gate still controls nudging.
+            let nearRailAt = side == .left ? leftNearRailAt : rightNearRailAt
+            var updatedNearRailAt = nearRailAt
+            if sample?.pose == .open {
+                updatedNearRailAt = nil
+            } else if let palm = sample?.gripPosition {
+                if !layout.isByNudgeRail(side, palm: palm, margin: 0.07) {
+                    updatedNearRailAt = nil
+                } else if sample?.pose == .fist {
+                    updatedNearRailAt = time
+                }
+            }
+            if side == .left { leftNearRailAt = updatedNearRailAt } else { rightNearRailAt = updatedNearRailAt }
+
             let previous = side == .left ? left : right
             var current = previous
             if sample?.pose == .open {
@@ -471,9 +491,10 @@ struct CabinetHandControls {
         private var translationDown = false
         private var fingerTurn = WristTurn()
         private var palmTurn = WristTurn()
+        private var wristFlick = WristFlick()
         private var usingForearm: Bool?
         private var lastForearm: (direction: SIMD3<Float>, time: Double)?
-        var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown }
+        var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown || wristFlick.isDown }
         private var startArmed = false
         private var coinArmed = false
 
@@ -527,7 +548,7 @@ struct CabinetHandControls {
             guard let direction = sample?.fingerDirection, simd_length_squared(direction) > 1e-8 else {
                 usingForearm = nil
                 lastForearm = nil
-                fingerTurn = WristTurn()
+                wristFlick = WristFlick()
                 return
             }
             if let forearm = sample?.forearmDirection, simd_length_squared(forearm) > 1e-8 {
@@ -547,13 +568,10 @@ struct CabinetHandControls {
             let hasForearm = bend != nil
             if usingForearm != hasForearm {
                 usingForearm = hasForearm
-                fingerTurn = WristTurn()
+                wristFlick = WristFlick()
             }
-            if let bend {
-                fingerTurn.update(angle: bend, canArm: true)
-            } else {
-                fingerTurn.update(direction, inward: inward.x, canArm: true)
-            }
+            let angle = bend ?? atan2(inward.x * direction.x, simd_length(SIMD2(direction.y, direction.z)))
+            wristFlick.update(angle: angle, at: time)
         }
 
         private mutating func updateFlipper(_ sample: CabinetHandSample, side: CabinetHandSide, button: SIMD3<Float>, mapped: Bool) {
@@ -582,6 +600,43 @@ struct CabinetHandControls {
             translationDown = false
             fingerTurn = WristTurn()
             palmTurn = WristTurn()
+        }
+
+        private struct WristFlick {
+            private static let historyDuration = 0.10
+            private static let pressAngle: Float = 8 * .pi / 180
+            private static let pressSpeed: Float = 140 * .pi / 180
+            private static let releaseRollback: Float = 5 * .pi / 180
+
+            private var history: [(angle: Float, time: Double)] = []
+            private var releaseAt: Float?
+            var isDown: Bool { releaseAt != nil }
+
+            mutating func update(angle: Float, at time: Double) {
+                if let releaseAt {
+                    if angle <= releaseAt {
+                        self.releaseAt = nil
+                        history.append((angle, time))
+                    } else {
+                        self.releaseAt = max(releaseAt, angle - Self.releaseRollback)
+                    }
+                    return
+                }
+
+                history.removeAll { time - $0.time > Self.historyDuration }
+                if history.contains(where: { previous in
+                    let elapsed = Float(time - previous.time)
+                    let bend = angle - previous.angle
+                    return elapsed > 0 && bend >= Self.pressAngle && bend >= Self.pressSpeed * elapsed
+                }) {
+                    // Release on relaxation from the held bend, including
+                    // when the press fired early in a large flick.
+                    releaseAt = angle - Self.releaseRollback
+                    history.removeAll(keepingCapacity: true)
+                    return
+                }
+                history.append((angle, time))
+            }
         }
 
         private struct WristTurn {

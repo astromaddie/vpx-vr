@@ -73,6 +73,7 @@ struct HandControlChecks {
         checkWristTurns()
         checkMappedFlippers()
         checkGestureFlippers()
+        checkWristFlickTiming()
         checkFistNudges()
         checkOccludedFistInputs()
         checkPlacement()
@@ -283,6 +284,68 @@ struct HandControlChecks {
         precondition(grip(0, direction: inward, pose: sideways) == [.flipper(.right, pressed: true)])
         precondition(controls.reset() == [.flipper(.right, pressed: false)])
         print("Gesture flippers passed: distance-independent bends, palm roll, arm motion rejection, independent holds and forearm fallback")
+    }
+
+    static func checkWristFlickTiming() {
+        let layout = CabinetControlsLayout(usesWristGestures: true)
+        var controls = CabinetHandControls(layout: layout)
+        var time = 0.0
+        func feed(_ degrees: Float, after delay: Double = 0.016) -> [CabinetInput] {
+            time += delay
+            let angle = degrees * .pi / 180
+            return controls.update(.right, sample: .init(
+                fingerDirection: [-sin(angle), 0, -cos(angle)], forearmDirection: [0, 0, -1]
+            ), at: time)
+        }
+
+        // Slow drift crosses eight degrees from the starting angle without a press.
+        for angle in 0...12 { precondition(feed(Float(angle), after: 0.032).isEmpty) }
+        precondition(feed(21) == [.flipper(.right, pressed: true)])
+        for _ in 0..<20 { precondition(feed(21).isEmpty) }
+        precondition(feed(17).isEmpty)
+        precondition(feed(15) == [.flipper(.right, pressed: false)])
+        precondition(feed(24) == [.flipper(.right, pressed: true)])
+        precondition(feed(32).isEmpty)
+        precondition(feed(28).isEmpty)
+        precondition(feed(26) == [.flipper(.right, pressed: false)])
+        precondition(feed(35) == [.flipper(.right, pressed: true)])
+        precondition(controls.expire(at: time + 0.13) == [.flipper(.right, pressed: false)])
+
+        // Speed alone is insufficient for small jumps.
+        time += 0.13
+        precondition(feed(-4).isEmpty)
+        precondition(feed(1, after: 0.01).isEmpty)
+        precondition(feed(-9).isEmpty)
+        precondition(feed(4) == [.flipper(.right, pressed: true)])
+        precondition(feed(0).isEmpty)
+        precondition(feed(-2) == [.flipper(.right, pressed: false)])
+
+        // Both fists beside the cabinet suppress an otherwise valid flick.
+        _ = controls.reset()
+        let leftRail = layout.flipper(.left) + [-0.08, 0.06, -0.08]
+        let rightRail = layout.flipper(.right) + [0.08, 0.06, -0.08]
+        precondition(controls.update(.left, sample: .init(palm: leftRail, pose: .fist), at: 2.0).isEmpty)
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
+                                                         pose: .fist), at: 2.01).isEmpty)
+        precondition(controls.update(.left, sample: .init(palm: leftRail, pose: .fist), at: 2.02).isEmpty)
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
+                                                         pose: .fist), at: 2.03).isEmpty)
+        // A fist slightly ahead of the rail blocks the paired flick
+        // without allowing an off-rail nudge.
+        _ = controls.reset()
+        let justAhead = SIMD3(leftRail.x, leftRail.y, 0.055)
+        precondition(controls.update(.left, sample: .init(palm: justAhead, pose: .fist), at: 3.0).isEmpty)
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
+                                                         pose: .fist), at: 3.01).isEmpty)
+        precondition(controls.nudgePhase == "waitingForFists")
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
+                                                         pose: .fist), at: 3.03).isEmpty)
+        precondition(controls.update(.left, sample: .init(palm: justAhead, pose: .open), at: 3.04).isEmpty)
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
+                                                         pose: .fist), at: 3.05).isEmpty)
+        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
+                                                         pose: .fist), at: 3.07) == [.flipper(.right, pressed: true)])
+        print("Wrist flick timing passed: slow drift, angular speed and bend, sustained hold, backswing release and nudge priority")
     }
 
     static func checkFistNudges() {
