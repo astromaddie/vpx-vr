@@ -683,7 +683,7 @@ private final class NativePlayer {
             for (offset, button) in offsets {
                 time += 0.42
                 let before = VPinballVisionNudgeCount()
-                for _ in 0..<6 { fists(.zero) }
+                fists(.zero)
                 fists(offset * 0.8)
                 guard VPinballVisionNudgeCount() == before else {
                     VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator nudge dead zone failed for button \(button.rawValue)")

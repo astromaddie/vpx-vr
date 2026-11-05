@@ -221,10 +221,8 @@ struct CabinetHandControls {
 
         private var left: Fist?
         private var right: Fist?
-        private var settling: (left: SIMD2<Float>, right: SIMD2<Float>, since: Double)?
         private var lastPair = -Double.infinity
         private var origin: (left: SIMD2<Float>, right: SIMD2<Float>)?
-        private var lastNudge = -Double.infinity
         private var spent = false
         var isArmed: Bool { origin != nil }
 
@@ -238,7 +236,6 @@ struct CabinetHandControls {
             if let right, time - right.confirmedAt > CabinetHandControls.trackingTimeout { self.right = nil }
             if left == nil || right == nil {
                 origin = nil
-                settling = nil
                 spent = false
             }
         }
@@ -269,20 +266,10 @@ struct CabinetHandControls {
             lastPair = max(left.sampledAt, right.sampledAt)
 
             guard let origin else {
-                // Take the reference after both fists settle. Closing them
-                // or moving into position should never count as the shove.
-                guard left.confirmedAt == left.sampledAt, right.confirmedAt == right.sampledAt else {
-                    settling = nil
-                    return nil
-                }
-                if let settling, simd_distance(left.position, settling.left) < 0.012,
-                   simd_distance(right.position, settling.right) < 0.012 {
-                    if time - settling.since >= 0.14 {
-                        self.origin = (left.position, right.position)
-                        self.settling = nil
-                    }
-                } else {
-                    settling = (left.position, right.position, time)
+                // Use the first pair of firm fists at the rails. Movement
+                // before both hands reach that position does not count.
+                if left.confirmedAt == left.sampledAt, right.confirmedAt == right.sampledAt {
+                    self.origin = (left.position, right.position)
                 }
                 return nil
             }
@@ -290,7 +277,7 @@ struct CabinetHandControls {
             let leftMove = left.position - origin.left
             let rightMove = right.position - origin.right
             if spent {
-                if time - lastNudge >= 0.30, simd_length(leftMove) < 0.012, simd_length(rightMove) < 0.012 {
+                if simd_length(leftMove) < 0.012, simd_length(rightMove) < 0.012 {
                     spent = false
                 }
                 return nil
@@ -299,10 +286,9 @@ struct CabinetHandControls {
             let axis = abs(move.x) >= abs(move.y) ? 0 : 1
             let sign: Float = move[axis] < 0 ? -1 : 1
             guard left.confirmedAt == left.sampledAt || right.confirmedAt == right.sampledAt,
-                  time - lastNudge >= 0.30, abs(move[axis]) >= 0.030,
+                  abs(move[axis]) >= 0.030,
                   sign * leftMove[axis] >= 0.022, sign * rightMove[axis] >= 0.022 else { return nil }
             spent = true
-            lastNudge = time
             if axis == 0 { return sign < 0 ? .left : .right }
             return sign < 0 ? .down : .up
         }

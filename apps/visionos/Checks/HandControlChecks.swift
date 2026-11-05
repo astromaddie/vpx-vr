@@ -262,13 +262,18 @@ struct HandControlChecks {
             }
             for _ in 0..<9 { precondition(pair(offset, offset, rightPose: .open).isEmpty) }
             for _ in 0..<9 { precondition(pair(offset, offset, rightPose: .looseFist).isEmpty) }
-            // Both fists move into position before they settle. That motion
-            // exceeds the shove threshold, but must only set a new reference.
-            for step in 0..<5 {
-                let moving = offset * (Float(4 - step) / 2)
-                precondition(pair(moving, moving).isEmpty)
-            }
-            for _ in 0..<6 { precondition(pair().isEmpty) }
+            // Arm on the first firm pair. The very next pair can nudge.
+            precondition(pair().isEmpty)
+            let armedAt = time
+            precondition(pair(offset, offset) == [.nudge(direction)])
+            precondition(time - armedAt < 0.04)
+            precondition(pair(offset, offset).isEmpty)
+            precondition(pair().isEmpty)
+            precondition(pair(offset, offset) == [.nudge(direction)])
+            precondition(time - armedAt < 0.14)
+            precondition(controls.reset().isEmpty)
+
+            precondition(pair().isEmpty)
             precondition(pair(offset * 0.8, offset * 0.8).isEmpty)
             precondition(pair(offset * 1.6, offset * 0.4).isEmpty)
             precondition(pair(offset, -offset).isEmpty)
@@ -282,7 +287,7 @@ struct HandControlChecks {
             precondition(controls.expire(at: time + 0.15).isEmpty)
             time += 0.15
             precondition(pair().isEmpty)
-            precondition(pair(offset, offset).isEmpty)
+            precondition(pair(offset, offset) == [.nudge(direction)])
         }
         let knob: SIMD3<Float> = [0.24, -0.15, 0.109]
         var controls = CabinetHandControls(layout: CabinetControlsLayout(plunger: knob, usesWristGestures: true))
@@ -297,7 +302,7 @@ struct HandControlChecks {
         precondition(controls.update(.right, sample: pulled, at: 0.04) == [.pullPlunger(1)])
         precondition(controls.update(.left, sample: left, at: 0.06).isEmpty)
         precondition(controls.update(.right, sample: .init(pose: .open), at: 0.08) == [.releasePlunger(1)])
-        print("Nudges passed: firm fists settle, 3.2 cm shared motion, four directions, plunger priority and re-arm")
+        print("Nudges passed: next paired sample in all directions, 3.2 cm shared motion, recenter without a timer, plunger priority")
     }
 
     static func checkOccludedFistInputs() {
@@ -356,11 +361,14 @@ struct HandControlChecks {
             precondition(pair(offLeft + shove, offRight + shove).isEmpty)
         }
 
-        for _ in 0..<6 { precondition(pair(left, right).isEmpty) }
+        precondition(pair(left, right).isEmpty)
         precondition(pair(left + shove * 0.8, right + shove * 0.8).isEmpty)
         precondition(pair(left + shove, right + shove) == [.nudge(.right)])
         precondition(pair(left, right + [0, 0, 0.52]).isEmpty)
-        precondition(pair(left, right).isEmpty)
+        // A shove while the other hand is away stays quiet. Returning to
+        // the rail establishes a fresh origin without inheriting the shove.
+        precondition(pair(left + shove, right + [0, 0, 0.52]).isEmpty)
+        precondition(pair(left + shove, right + shove).isEmpty)
         precondition(pair(left + shove, right + shove).isEmpty)
 
         _ = player.reset()
