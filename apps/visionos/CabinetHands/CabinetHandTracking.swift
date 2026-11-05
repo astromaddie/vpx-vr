@@ -319,6 +319,8 @@ final class CabinetHandTracking {
         }
         let palm = joint(.middleFingerKnuckle)
         let wrist = joint(.wrist)
+        let indexKnuckle = joint(.indexFingerKnuckle)
+        let littleKnuckle = joint(.littleFingerKnuckle)
         let fingerDirection: SIMD3<Float>?
         if let palm = palm.trackedPosition, let wrist = wrist.trackedPosition {
             fingerDirection = palm - wrist
@@ -326,8 +328,8 @@ final class CabinetHandTracking {
             fingerDirection = nil
         }
         let palmNormal: SIMD3<Float>?
-        if let fingerDirection, let index = joint(.indexFingerKnuckle).trackedPosition,
-           let little = joint(.littleFingerKnuckle).trackedPosition {
+        if let fingerDirection, let index = indexKnuckle.trackedPosition,
+           let little = littleKnuckle.trackedPosition {
             // This order gives both palms the same outward-facing normal relative to their joints.
             palmNormal = side.sign * simd_cross(index - little, fingerDirection)
         } else {
@@ -347,6 +349,12 @@ final class CabinetHandTracking {
             }
             sample.recognizeGrip(wrist: wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz,
                                  palm: palm, fingers: fingers)
+        }
+        if layout.plunger != nil {
+            sample.plungerPose = CabinetPlungerPose.classify(
+                side: side, wrist: wrist, palm: palm, index: indexKnuckle, little: littleKnuckle,
+                thumbIsTracked: skeleton.joint(.thumbTip).isTracked
+            )
         }
         sendControlSample(side, sample: sample, at: time)
     }

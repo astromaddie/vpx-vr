@@ -73,7 +73,7 @@ struct CabinetHandJoint {
 enum CabinetHandPose {
     case open, looseFist, fist, unknown
 
-    var canGrip: Bool { self == .fist || self == .looseFist }
+    var isClosed: Bool { self == .fist || self == .looseFist }
 
     struct Finger {
         let knuckle: CabinetHandJoint?
@@ -123,6 +123,28 @@ enum CabinetHandPose {
     }
 }
 
+enum CabinetPlungerPose {
+    case uncertain, grab, release
+
+    static func classify(
+        side: CabinetHandSide, wrist: CabinetHandJoint, palm: CabinetHandJoint,
+        index: CabinetHandJoint, little: CabinetHandJoint, thumbIsTracked: Bool
+    ) -> Self {
+        if thumbIsTracked { return .release }
+        // Require independent palm evidence so general tracking loss cannot
+        // look like a hidden thumb. A hidden knuckle can still give an estimate.
+        guard [wrist, palm, index, little].filter({ $0.trackedPosition != nil }).count >= 2,
+              let wrist = wrist.estimatedPosition, let palm = palm.estimatedPosition,
+              let index = index.estimatedPosition, let little = little.estimatedPosition else { return .uncertain }
+        let normal = side.sign * simd_cross(index - little, palm - wrist)
+        guard simd_length_squared(normal) > 1e-8 else { return .uncertain }
+        let down = -simd_normalize(normal).y
+        if down >= 0.87 { return .grab }     // Within about 30° of palm down.
+        if down <= 0.50 { return .release }  // A turn of about 60° releases.
+        return .uncertain
+    }
+}
+
 struct CabinetHandSample {
     var palm: SIMD3<Float>?
     var index: SIMD3<Float>?
@@ -131,6 +153,7 @@ struct CabinetHandSample {
     var forearmDirection: SIMD3<Float>?
     var pose: CabinetHandPose = .unknown
     var estimatedGripPosition: SIMD3<Float>? = nil
+    var plungerPose: CabinetPlungerPose = .uncertain
 
     var gripPosition: SIMD3<Float>? { estimatedGripPosition ?? palm }
 
@@ -182,8 +205,9 @@ struct CabinetHandControls {
 
     mutating func update(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) -> [CabinetInput] {
         let heldBefore = plunger.hand
+        let flipperDown = side == .left ? left.flipperDown : right.flipperDown
         let plungerEvents = layout.plunger.map {
-            plunger.update(side, sample: sample, handle: $0, allowGrab: !nudge.isArmed, time: time)
+            plunger.update(side, sample: sample, handle: $0, allowGrab: !nudge.isArmed && !flipperDown, time: time)
         } ?? []
         let closedHand = sample?.pose == .fist || (sample?.pose == .unknown && nudge.isClosed(side, at: time))
         let blockFlipper = layout.usesWristGestures && (closedHand || heldBefore == side || plunger.hand == side)
@@ -302,7 +326,7 @@ struct CabinetHandControls {
         private var grabDepth: Float = 0
         private var pull: Float = 0
         private var lastSample: Double = 0
-        private var needsOpen: CabinetHandSide?
+        private var needsRelease: CabinetHandSide?
 
         mutating func reset() -> [CabinetInput] {
             let wasHeld = hand != nil
@@ -319,7 +343,7 @@ struct CabinetHandControls {
         mutating func expire(at time: Double) -> [CabinetInput] {
             guard let hand, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
             let events = reset()
-            needsOpen = hand
+            needsRelease = hand
             return events
         }
 
@@ -328,14 +352,14 @@ struct CabinetHandControls {
         ) -> [CabinetInput] {
             let expired = expire(at: time)
             guard expired.isEmpty, hand == nil || hand == side else { return expired }
-            if sample?.pose == .open {
-                if needsOpen == side { needsOpen = nil }
+            if sample?.plungerPose == .release {
+                if needsRelease == side { needsRelease = nil }
                 return hand == side ? release() : []
             }
             guard let sample, let palm = sample.gripPosition else { return [] }
             if hand == nil {
                 let offset = palm - handle
-                guard allowGrab, sample.pose.canGrip, needsOpen != side,
+                guard allowGrab, sample.plungerPose == .grab, needsRelease != side,
                       simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.13 * 0.13,
                       (-0.10...0.20).contains(offset.z) else { return [] }
                 hand = side
@@ -345,9 +369,9 @@ struct CabinetHandControls {
             }
 
             lastSample = time
-            // An obscured finger can leave the palm tracked. Hold the saved
-            // pull until the hand clearly closes or opens again.
-            guard sample.pose.canGrip else { return [] }
+            // Hold the last pull while the palm rolls through the release
+            // angle so motion toward the cabinet cannot weaken the shot.
+            guard sample.plungerPose == .grab else { return [] }
             let newPull = min(max((palm.z - grabDepth) / CabinetHandControls.plungerStroke, 0), 1)
             guard abs(newPull - pull) >= 0.005 else { return [] }
             pull = newPull
@@ -363,7 +387,7 @@ struct CabinetHandControls {
         private var palmTurn = WristTurn()
         private var usingForearm: Bool?
         private var lastForearm: (direction: SIMD3<Float>, time: Double)?
-        private var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown }
+        var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown }
         private var startArmed = false
         private var coinArmed = false
 
@@ -398,7 +422,7 @@ struct CabinetHandControls {
                 events.append(.flipper(side, pressed: flipperDown))
             }
 
-            let fingertip = layout.usesWristGestures && sample.pose.canGrip ? nil : sample.index
+            let fingertip = layout.usesWristGestures && sample.pose.isClosed ? nil : sample.index
             if Self.poke(fingertip, at: layout.start, contactDepth: layout.startFace == nil ? 0.003 : 0.012, armed: &startArmed, contains: {
                 layout.startFace?.contains($0) ?? (simd_length_squared($0) <= 0.034 * 0.034)
             }) {

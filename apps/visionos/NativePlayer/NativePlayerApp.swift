@@ -607,8 +607,8 @@ private final class NativePlayer {
         }
 
         if let handle = tracker.layout.plunger {
-            func grip(depth: Float, pose: CabinetHandPose = .fist) {
-                send(.right, .init(palm: handle + [0, 0, depth + 0.05], pose: pose))
+            func grip(depth: Float, pose: CabinetPlungerPose = .grab) {
+                send(.right, .init(palm: handle + [0, 0, depth + 0.05], plungerPose: pose))
             }
             let arguments = CommandLine.arguments
             let shot: Float? = arguments.contains("--check-ball-launch") ? 1
@@ -624,18 +624,18 @@ private final class NativePlayer {
                     return
                 }
 
-                // The wrist can move forward as the hand opens. Use the
-                // last closed-fist pull even if a frame is incomplete.
-                grip(depth: 0, pose: .unknown)
+                // Keep the last pull if the wrist moves forward while
+                // rolling from the grab angle to the release angle.
+                grip(depth: 0, pose: .uncertain)
                 try? await Task.sleep(for: .milliseconds(45))
                 time += 0.045
                 tracker.serviceControls(at: time, playing: true)
                 guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
-                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the held fist before it opened")
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the held plunger before release")
                     return
                 }
                 let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
-                grip(depth: 0, pose: .open)
+                grip(depth: 0, pose: .release)
                 if let ball {
                     var frontmostY = ball.y
                     var peakSpeed: Float = 0
@@ -666,7 +666,7 @@ private final class NativePlayer {
                 }
             }
 
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native fist plunger travel and open-hand release")
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native palm-down plunger travel and release")
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-nudges") {
