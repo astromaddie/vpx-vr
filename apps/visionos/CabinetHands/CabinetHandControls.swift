@@ -46,22 +46,58 @@ enum CabinetHandSide: CaseIterable {
     var sign: Float { self == .left ? -1 : 1 }
 }
 
+enum CabinetHandPose {
+    case open, fist, unknown
+
+    struct Finger {
+        let knuckle: SIMD3<Float>?
+        let bend: SIMD3<Float>?
+        let next: SIMD3<Float>?
+
+        func pose(relativeTo wrist: SIMD3<Float>?) -> CabinetHandPose {
+            guard let knuckle, let bend else { return .unknown }
+            let proximal = bend - knuckle
+            guard simd_length_squared(proximal) > 1e-8 else { return .unknown }
+            let direction = simd_normalize(proximal)
+            func alignment(_ bone: SIMD3<Float>?) -> Float? {
+                guard let bone, simd_length_squared(bone) > 1e-8 else { return nil }
+                return simd_dot(direction, simd_normalize(bone))
+            }
+            let atKnuckle = alignment(wrist.map { knuckle - $0 })
+            let atBend = alignment(next.map { $0 - bend })
+            guard atKnuckle != nil || atBend != nil else { return .unknown }
+            // A curled finger can hide the outer joint. Its knuckle bend
+            // still distinguishes it from an extended finger.
+            let strongestBend = min(atKnuckle ?? 1, atBend ?? 1)
+            if strongestBend < 0.64 { return .fist }
+            if strongestBend > 0.79 { return .open }
+            return .unknown
+        }
+    }
+
+    static func classify(wrist: SIMD3<Float>?, fingers: [Finger]) -> CabinetHandPose {
+        var curled = 0
+        var straight = 0
+        for finger in fingers {
+            switch finger.pose(relativeTo: wrist) {
+            case .fist: curled += 1
+            case .open: straight += 1
+            case .unknown: break
+            }
+        }
+        if curled >= 2 && curled > straight { return .fist }
+        if straight >= 3 || (straight >= 2 && curled == 0) { return .open }
+        return .unknown
+    }
+}
+
 struct CabinetHandSample {
     var palm: SIMD3<Float>?
     var index: SIMD3<Float>?
     var fingerDirection: SIMD3<Float>?
     var palmNormal: SIMD3<Float>?
-    var thumb: SIMD3<Float>?
     var forearmDirection: SIMD3<Float>?
-    var fist = false
-
-    static func fingerIsCurled(knuckle: SIMD3<Float>?, bend: SIMD3<Float>?, next: SIMD3<Float>?) -> Bool {
-        guard let knuckle, let bend, let next else { return false }
-        let proximal = bend - knuckle
-        let distal = next - bend
-        let squaredLength = simd_length_squared(proximal) * simd_length_squared(distal)
-        return squaredLength > 1e-10 && simd_dot(proximal, distal) < 0.55 * sqrt(squaredLength)
-    }
+    var pose: CabinetHandPose = .unknown
 }
 
 enum CabinetNudgeDirection: CaseIterable {
@@ -103,9 +139,19 @@ struct CabinetHandControls {
     }
 
     mutating func update(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) -> [CabinetInput] {
+        let other: CabinetHandSide = side == .left ? .right : .left
+        // A second fist claims the nudge if the knob has only been grabbed.
+        // Once the spring is pulled, its hand owns the grip through release.
+        let nudgeTakesGrip = layout.usesWristGestures && sample?.pose == .fist
+            && plunger.hand == other && plunger.isPrimed
+        var plungerEvents = nudgeTakesGrip ? plunger.reset() : []
         let heldBefore = plunger.hand
-        let plungerEvents = layout.plunger.map { plunger.update(side, sample: sample, handle: $0, time: time) } ?? []
-        let blockFlipper = layout.usesWristGestures && (sample?.fist == true || heldBefore == side || plunger.hand == side)
+        if let handle = layout.plunger {
+            let allowGrab = !nudgeTakesGrip && !nudge.isClosed(other, at: time)
+            plungerEvents += plunger.update(side, sample: sample, handle: handle, allowGrab: allowGrab, time: time)
+        }
+        let closedHand = sample?.pose == .fist || (sample?.pose == .unknown && nudge.isClosed(side, at: time))
+        let blockFlipper = layout.usesWristGestures && (closedHand || heldBefore == side || plunger.hand == side)
         let buttons = switch side {
         case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
         case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
@@ -115,7 +161,7 @@ struct CabinetHandControls {
             nudge = FistNudge()
             return buttons + plungerEvents
         }
-        if let direction = nudge.update(side, fist: sample?.fist == true ? sample?.palm : nil, at: time) {
+        if let direction = nudge.update(side, sample: sample, at: time) {
             return buttons + plungerEvents + [.nudge(direction)]
         }
         return buttons + plungerEvents
@@ -134,7 +180,8 @@ struct CabinetHandControls {
     private struct FistNudge {
         private struct Fist {
             let position: SIMD2<Float>
-            let time: Double
+            let confirmedAt: Double
+            let sampledAt: Double
         }
 
         private var left: Fist?
@@ -145,9 +192,14 @@ struct CabinetHandControls {
         private var lastNudge = -Double.infinity
         private var spent = false
 
+        func isClosed(_ side: CabinetHandSide, at time: Double) -> Bool {
+            guard let fist = side == .left ? left : right else { return false }
+            return time - fist.confirmedAt <= CabinetHandControls.trackingTimeout
+        }
+
         mutating func expire(at time: Double) {
-            if let left, time - left.time > CabinetHandControls.trackingTimeout { self.left = nil }
-            if let right, time - right.time > CabinetHandControls.trackingTimeout { self.right = nil }
+            if let left, time - left.confirmedAt > CabinetHandControls.trackingTimeout { self.left = nil }
+            if let right, time - right.confirmedAt > CabinetHandControls.trackingTimeout { self.right = nil }
             if left == nil || right == nil {
                 origin = nil
                 closedSince = nil
@@ -155,25 +207,38 @@ struct CabinetHandControls {
             }
         }
 
-        mutating func update(_ side: CabinetHandSide, fist: SIMD3<Float>?, at time: Double) -> CabinetNudgeDirection? {
+        mutating func update(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) -> CabinetNudgeDirection? {
             expire(at: time)
-            let current = fist.map { Fist(position: SIMD2($0.x, $0.y), time: time) }
+            let previous = side == .left ? left : right
+            var current = previous
+            if sample?.pose == .open {
+                current = nil
+            } else if let palm = sample?.palm {
+                let position = SIMD2(palm.x, palm.y)
+                if sample?.pose == .fist {
+                    current = Fist(position: position, confirmedAt: time, sampledAt: time)
+                } else if let previous {
+                    // Preserve a closed fist briefly when some finger joints
+                    // disappear, using the palm for movement in the meantime.
+                    current = Fist(position: position, confirmedAt: previous.confirmedAt, sampledAt: time)
+                }
+            }
             if side == .left { left = current } else { right = current }
             expire(at: time)
-            guard let left, let right, min(left.time, right.time) > lastPair else { return nil }
-            lastPair = max(left.time, right.time)
+            guard let left, let right, min(left.sampledAt, right.sampledAt) > lastPair else { return nil }
+            lastPair = max(left.sampledAt, right.sampledAt)
 
-            guard let origin else {
-                let began = closedSince ?? time
-                closedSince = began
-                if time - began >= 0.20 { self.origin = (left.position, right.position) }
+            guard let origin, let closedSince else {
+                self.origin = (left.position, right.position)
+                self.closedSince = time
                 return nil
             }
+            guard time - closedSince >= 0.07 else { return nil }
 
             let leftMove = left.position - origin.left
             let rightMove = right.position - origin.right
             if spent {
-                if time - lastNudge >= 0.40, simd_length(leftMove) < 0.032, simd_length(rightMove) < 0.032 {
+                if time - lastNudge >= 0.30, simd_length(leftMove) < 0.012, simd_length(rightMove) < 0.012 {
                     spent = false
                 }
                 return nil
@@ -181,8 +246,8 @@ struct CabinetHandControls {
             let move = (leftMove + rightMove) * 0.5
             let axis = abs(move.x) >= abs(move.y) ? 0 : 1
             let sign: Float = move[axis] < 0 ? -1 : 1
-            guard time - lastNudge >= 0.40, abs(move[axis]) >= 0.065,
-                  sign * leftMove[axis] >= 0.035, sign * rightMove[axis] >= 0.035 else { return nil }
+            guard time - lastNudge >= 0.30, abs(move[axis]) >= 0.025,
+                  sign * leftMove[axis] >= 0.0125, sign * rightMove[axis] >= 0.0125 else { return nil }
             spent = true
             lastNudge = time
             if axis == 0 { return sign < 0 ? .left : .right }
@@ -198,13 +263,13 @@ struct CabinetHandControls {
         private var grabDepth: Float = 0
         private var pull: Float = 0
         private var lastSample: Double = 0
-        // Infer a release from lost tracking only after a deliberate pull.
-        private static let minimumPullOnTrackingLoss: Float = 0.10
+        private var needsOpen: CabinetHandSide?
+        var isPrimed: Bool { pull < 0.10 }
 
         mutating func reset() -> [CabinetInput] {
-            guard hand != nil else { return [] }
+            let wasHeld = hand != nil
             self = PlungerGrip()
-            return [.cancelPlunger]
+            return wasHeld ? [.cancelPlunger] : []
         }
 
         private mutating func release() -> [CabinetInput] {
@@ -214,34 +279,37 @@ struct CabinetHandControls {
         }
 
         mutating func expire(at time: Double) -> [CabinetInput] {
-            guard hand != nil, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
-            return pull >= Self.minimumPullOnTrackingLoss ? release() : reset()
+            guard let hand, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
+            let events = reset()
+            needsOpen = hand
+            return events
         }
 
         mutating func update(
-            _ side: CabinetHandSide, sample: CabinetHandSample?, handle: SIMD3<Float>, time: Double
+            _ side: CabinetHandSide, sample: CabinetHandSample?, handle: SIMD3<Float>, allowGrab: Bool, time: Double
         ) -> [CabinetInput] {
             let expired = expire(at: time)
             guard expired.isEmpty, hand == nil || hand == side else { return expired }
-            // The headset can lose a fingertip or the whole hand before sending
-            // an open pinch. Keep the last usable pull through that grace period.
-            guard let sample, let thumb = sample.thumb, let index = sample.index else { return [] }
-            let gap = simd_distance(thumb, index)
-            let center = (thumb + index) * 0.5
-            let offset = center - handle
+            if sample?.pose == .open {
+                if needsOpen == side { needsOpen = nil }
+                return hand == side ? release() : []
+            }
+            guard let sample, let palm = sample.palm else { return [] }
             if hand == nil {
-                guard let palm = sample.palm, gap <= 0.032,
-                      simd_length_squared(offset) <= 0.060 * 0.060 else { return [] }
+                let offset = palm - handle
+                guard allowGrab, sample.pose == .fist, needsOpen != side,
+                      simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.09 * 0.09,
+                      (-0.06...0.11).contains(offset.z) else { return [] }
                 hand = side
                 grabDepth = palm.z
                 lastSample = time
                 return [.pullPlunger(0)]
             }
 
-            if gap >= 0.048 { return release() }
-            guard gap <= 0.035, let palm = sample.palm,
-                  simd_length_squared(SIMD2(offset.x, offset.y)) <= 0.10 * 0.10 else { return [] }
             lastSample = time
+            // An obscured finger can leave the palm tracked. Hold the saved
+            // pull until the hand clearly closes or opens again.
+            guard sample.pose == .fist else { return [] }
             let newPull = min(max((palm.z - grabDepth) / CabinetHandControls.plungerStroke, 0), 1)
             guard abs(newPull - pull) >= 0.005 else { return [] }
             pull = newPull
@@ -292,7 +360,7 @@ struct CabinetHandControls {
                 events.append(.flipper(side, pressed: flipperDown))
             }
 
-            let fingertip = layout.usesWristGestures && sample.fist ? nil : sample.index
+            let fingertip = layout.usesWristGestures && sample.pose == .fist ? nil : sample.index
             if Self.poke(fingertip, at: layout.start, contactDepth: layout.startFace == nil ? 0.003 : 0.012, armed: &startArmed, contains: {
                 layout.startFace?.contains($0) ?? (simd_length_squared($0) <= 0.034 * 0.034)
             }) {

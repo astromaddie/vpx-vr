@@ -607,10 +607,8 @@ private final class NativePlayer {
         }
 
         if let handle = tracker.layout.plunger {
-            func grip(depth: Float, gap: Float, hideThumb: Bool = false) {
-                send(.right, .init(palm: handle + [0, 0, depth + 0.05],
-                                   index: handle + [gap / 2, 0, depth],
-                                   thumb: hideThumb ? nil : handle + [-gap / 2, 0, depth]))
+            func grip(depth: Float, pose: CabinetHandPose = .fist) {
+                send(.right, .init(palm: handle + [0, 0, depth + 0.05], pose: pose))
             }
             let arguments = CommandLine.arguments
             let shot: Float? = arguments.contains("--check-ball-launch") ? 1
@@ -618,32 +616,26 @@ private final class NativePlayer {
             let pulls: [Float] = shot.map { [$0] } ?? [0.5, 1]
             for expected in pulls {
                 let distance = CabinetHandControls.plungerStroke * expected
-                grip(depth: 0, gap: 0.030)
-                grip(depth: distance, gap: 0.030)
+                grip(depth: 0)
+                grip(depth: distance)
                 try? await Task.sleep(for: .milliseconds(350))
                 guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
                     VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator pull \(expected) never reached the plunger handler")
                     return
                 }
 
-                // Replay the M2 failure: the last usable grip is still closed
-                // when tracking disappears. Keep the pull during a brief gap.
-                if expected == 1 {
-                    send(.right, nil)
-                } else {
-                    grip(depth: distance, gap: 0.030, hideThumb: true)
-                }
+                // The wrist can move forward as the hand opens. Use the
+                // last closed-fist pull even if a frame is incomplete.
+                grip(depth: 0, pose: .unknown)
                 try? await Task.sleep(for: .milliseconds(45))
                 time += 0.045
                 tracker.serviceControls(at: time, playing: true)
                 guard abs(VPinballVisionPlungerPosition() - expected) < 0.02 else {
-                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the stored pull before the tracking grace period expired")
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the held fist before it opened")
                     return
                 }
                 let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
-                try? await Task.sleep(for: .milliseconds(80))
-                time += 0.080
-                tracker.serviceControls(at: time, playing: true)
+                grip(depth: 0, pose: .open)
                 if let ball {
                     var frontmostY = ball.y
                     var peakSpeed: Float = 0
@@ -674,23 +666,28 @@ private final class NativePlayer {
                 }
             }
 
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native plunger travel and release after lost tracking")
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified native fist plunger travel and open-hand release")
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-nudges") {
             let offsets: [(SIMD3<Float>, VPINBALL_VISION_INPUT)] = [
-                ([-0.085, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.085, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
-                ([0, 0.085, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.085, 0], VPINBALL_VISION_NUDGE_BACK)
+                ([-0.027, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.027, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
+                ([0, 0.027, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.027, 0], VPINBALL_VISION_NUDGE_BACK)
             ]
-            func fists(_ offset: SIMD3<Float>) {
-                send(.left, .init(palm: [-0.4, 0, 0.3] + offset, fist: true))
-                send(.right, .init(palm: [0.4, 0, 0.3] + offset, fist: true))
+            func fists(_ offset: SIMD3<Float>, rightPose: CabinetHandPose = .fist) {
+                send(.left, .init(palm: [-0.4, 0, 0.3] + offset, pose: .fist))
+                send(.right, .init(palm: [0.4, 0, 0.3] + offset, pose: rightPose))
             }
             for (offset, button) in offsets {
                 time += 0.42
                 let before = VPinballVisionNudgeCount()
-                for _ in 0..<9 { fists(.zero) }
-                fists(offset)
+                for _ in 0..<4 { fists(.zero) }
+                fists(offset * 0.8)
+                guard VPinballVisionNudgeCount() == before else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator nudge dead zone failed for button \(button.rawValue)")
+                    return
+                }
+                fists(offset, rightPose: .unknown)
                 try? await Task.sleep(for: .milliseconds(30))
                 guard VPinballVisionNudgeCount() == before + 1,
                       button == VPINBALL_VISION_NUDGE_BACK || pressed(button),
@@ -784,6 +781,7 @@ private final class NativePlayer {
         case .pressStart:
             pulse(VPINBALL_VISION_START)
         case let .nudge(direction):
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Vision Pro two-fist nudge \(direction)")
             let button = switch direction {
             case .left: VPINBALL_VISION_NUDGE_LEFT
             case .right: VPINBALL_VISION_NUDGE_RIGHT

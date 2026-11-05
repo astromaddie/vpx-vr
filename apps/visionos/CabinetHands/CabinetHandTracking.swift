@@ -319,8 +319,9 @@ final class CabinetHandTracking {
             return point.x.isFinite && point.y.isFinite && point.z.isFinite ? point : nil
         }
         let palm = joint(.middleFingerKnuckle)
+        let wrist = joint(.wrist)
         let fingerDirection: SIMD3<Float>?
-        if let palm, let wrist = joint(.wrist) {
+        if let palm, let wrist {
             fingerDirection = palm - wrist
         } else {
             fingerDirection = nil
@@ -333,18 +334,20 @@ final class CabinetHandTracking {
             palmNormal = nil
         }
         var forearmDirection: SIMD3<Float>?
-        var fist = false
+        var pose = CabinetHandPose.unknown
         if layout.usesWristGestures {
-            if let arm = joint(.forearmArm), let wrist = joint(.forearmWrist) ?? joint(.wrist) {
-                forearmDirection = wrist - arm
+            let forearmWrist = joint(.forearmWrist) ?? wrist
+            if let arm = joint(.forearmArm), let forearmWrist {
+                forearmDirection = forearmWrist - arm
             }
-            fist = Self.fistJoints.filter { knuckle, bend, next in
-                CabinetHandSample.fingerIsCurled(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
-            }.count >= 3
+            let fingers = Self.fistJoints.map { knuckle, bend, next in
+                CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
+            }
+            pose = CabinetHandPose.classify(wrist: wrist ?? forearmWrist, fingers: fingers)
         }
         let sample = CabinetHandSample(
             palm: palm, index: joint(.indexFingerTip), fingerDirection: fingerDirection, palmNormal: palmNormal,
-            thumb: layout.plunger != nil ? joint(.thumbTip) : nil, forearmDirection: forearmDirection, fist: fist
+            forearmDirection: forearmDirection, pose: pose
         )
         sendControlSample(side, sample: sample, at: time)
     }
