@@ -584,8 +584,10 @@ private final class NativePlayer {
         }
         guard !Task.isCancelled, ready else { return }
 
+        let arguments = CommandLine.arguments
+        let checkLaunchButton = arguments.contains("--check-attack-from-mars-launch") && selectedTable?.title == "Attack from Mars"
         // The ROM can still be starting when the first frame reaches the GPU.
-        try? await Task.sleep(for: .seconds(4))
+        try? await Task.sleep(for: .seconds(checkLaunchButton ? 8 : 4))
         guard let tracker, let start = tracker.layout.startFace, let coin = tracker.layout.coinFace,
               start.halfSize.x > 0, coin.halfSize.x > 0, tracker.layout.usesWristGestures else {
             VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator found missing cabinet button geometry")
@@ -612,11 +614,11 @@ private final class NativePlayer {
             return
         }
 
-        // The Data East script delays the ROM's coin-switch pulse by 750 ms.
-        let inputs: [(VPINBALL_VISION_INPUT, Duration, () -> Void)] = [
-            (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
-            (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) }),
-            (VPINBALL_VISION_START, .seconds(2), { poke(start.position) }),
+        // The table scripts can delay the ROM's coin-switch pulse by 750 ms.
+        let credit: (VPINBALL_VISION_INPUT, Duration, () -> Void) =
+            (VPINBALL_VISION_ADD_CREDIT, .milliseconds(1100), { poke(coin.position) })
+        let inputs = Array(repeating: credit, count: checkLaunchButton ? 5 : 2) + [
+            (VPINBALL_VISION_START, .seconds(checkLaunchButton ? 4 : 2), { poke(start.position) }),
             (VPINBALL_VISION_LEFT_FLIPPER, .milliseconds(150), {
                 let palm: SIMD3<Float> = [-0.65, 0.30, 0.35]
                 send(.left, .init(palm: palm, fingerDirection: [0, 0, -1], forearmDirection: [0, 0, -1]))
@@ -651,8 +653,7 @@ private final class NativePlayer {
             func grip(depth: Float, pose: CabinetPlungerPose = .init(tuck: .grab)) {
                 send(.right, .init(palm: handle + [0, 0, depth + 0.05], plungerPose: pose))
             }
-            let arguments = CommandLine.arguments
-            let shot: Float? = arguments.contains("--check-ball-launch") ? 1
+            let shot: Float? = checkLaunchButton || arguments.contains("--check-ball-launch") ? 1
                 : arguments.contains("--check-half-launch") ? 0.5 : nil
             let pulls: [Float] = shot.map { [$0] } ?? [0.5, 1]
             for expected in pulls {
@@ -675,15 +676,21 @@ private final class NativePlayer {
                     VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator lost the held plunger before release")
                     return
                 }
-                let ball = shot == nil ? nil : VPinballVisionSampleBall(-1)
+                let ball = shot.map { _ in
+                    checkLaunchButton ? VPinballVisionSampleBall(-1, "swplunger") : VPinballVisionSampleBall(-1, nil)
+                }
                 grip(depth: 0, pose: .init(tuck: .release))
+                if checkLaunchButton && !pressed(VPINBALL_VISION_LAUNCH_BALL) {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator plunger release never reached Launch Ball")
+                    return
+                }
                 if let ball {
                     var frontmostY = ball.y
                     var peakSpeed: Float = 0
                     let deadline = ContinuousClock.now + .seconds(2)
                     while ContinuousClock.now < deadline && !Task.isCancelled {
                         try? await Task.sleep(for: .milliseconds(8))
-                        let current = VPinballVisionSampleBall(ball.id)
+                        let current = VPinballVisionSampleBall(ball.id, nil)
                         if current.id == ball.id && ball.id >= 0 {
                             frontmostY = min(frontmostY, current.y)
                             peakSpeed = max(peakSpeed, -current.velocityY)
@@ -692,7 +699,8 @@ private final class NativePlayer {
                     let travel = ball.y - frontmostY
                     // The supplied Time Machine script uses Gate1_Hit to mark the
                     // ball as out of the shooter. The authored gate sits at Y 725.16.
-                    let passed = expected == 1 ? frontmostY < 725.16 : travel > 80
+                    let passed = checkLaunchButton ? travel > 350 && peakSpeed > 0
+                        : expected == 1 ? frontmostY < 725.16 : travel > 80
                     VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator shot \(expected): ball \(ball.id), Y \(ball.y) to \(frontmostY), travel \(travel) VP units, peak up-lane velocity \(peakSpeed)")
                     guard ball.id >= 0, passed else {
                         VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator shot \(expected) did not reach the required point in the shooter lane")
@@ -833,11 +841,13 @@ private final class NativePlayer {
             }
             pulse(button)
         case let .pullPlunger(amount):
-            VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_HOLD, amount)
+            _ = VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_HOLD, amount)
         case let .releasePlunger(amount):
-            VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_RELEASE, amount)
+            if VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_RELEASE, amount) != 0 {
+                pulse(VPINBALL_VISION_LAUNCH_BALL)
+            }
         case .cancelPlunger:
-            VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_CANCEL, 0)
+            _ = VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_CANCEL, 0)
         }
     }
 

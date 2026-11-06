@@ -166,7 +166,7 @@ public:
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
 #ifdef VPX_VISIONOS_HEADSET
-   void ReleaseMechanicalPull(float pull);
+   bool ReleaseMechanicalPull(float pull);
 #endif
 
    PlungerData m_d;

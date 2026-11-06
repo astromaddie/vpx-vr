@@ -54,7 +54,7 @@ The Vision Pro path uses VPX's shared stereo culling, texture budget, and spatia
 
 Open a table and use the non-dominant wrist menu to choose **Calibrate Controls**. Start with **Resting Hands**. Pick a gesture and choose **Record Attempt**. Use the two-second **Get Ready** cue to move your hands into position, then perform the gesture during the five-second **Recording** cue. The next gesture is selected after a successful save. You can repeat any attempt. The table ignores gesture inputs in this mode. **Done** returns to the menu and **Resume** returns to play.
 
-I use **Thumb Tuck Pull** and **Pinch Pull** as separate attempts so I can compare the thumb-tip tracking flag, the thumb-to-index gap, how far the thumb crosses or drops below the palm, and the plunger’s current decision. The report also records wrist angles, hand travel in three axes, and the nudge recognizer’s armed or latched state. Pick a separate direction for each nudge attempt so I can compare intended movement with the action VPX accepted. Time is in milliseconds from the start of each attempt. The app keeps the latest 18 attempts from the current build in **Files → On My Vision Pro → VPX Vision → Control Calibration Build 22.json**. It saves only derived measurements. **Clear Report** deletes the local file.
+I use **Thumb Tuck Pull** and **Pinch Pull** as separate attempts so I can compare the thumb-tip tracking flag, the thumb-to-index gap, how far the thumb crosses or drops below the palm, and the plunger’s current decision. The report also records wrist angles, hand travel in three axes, and the nudge recognizer’s armed or latched state. Pick a separate direction for each nudge attempt so I can compare intended movement with the action VPX accepted. Time is in milliseconds from the start of each attempt. The app keeps the latest 18 attempts from the current build in **Files → On My Vision Pro → VPX Vision → Control Calibration Build 23.json**. It saves only derived measurements. **Clear Report** deletes the local file.
 
 ### Run Time Machine in Simulator
 
@@ -111,6 +111,10 @@ I imported Attack from Mars, Black Hole, Gorgar, Meteor, Middle Earth, The Machi
 Black Hole's table script defaults to the seven-digit conversion. The player uses the original ROM when the conversion is absent and `blckhole.zip` is beside the imported table in `pinmame/roms`. Middle Earth needs `20252-01.bin` in `midearth.zip` (CRC-32 `3D44551D`). The library check used the complete archive. The test also reopened Attack from Mars with its existing texture cache to exercise texture uploads before an immersive eye frame.
 
 For Build 22 I fixed an uninitialized position on the stock meshes. I ran Attack from Mars and Middle Earth separately with their matching directB2S files and complete ROMs. I launched each with `--check-library --check-standard-resolution` and took a `xcrun simctl io <device> screenshot <file>` capture after the library pass. Both captures showed the fitted cabinet, legs, front controls, and artwork in Your Room. The earlier Attack from Mars capture showed only the playfield even though the input check passed.
+
+For Build 23 I set the stock playfield depth from `blankTable.vpz`. The front of the playfield now sits about 6.4 cm below the lockbar on Attack from Mars and Middle Earth. It had been 16.2 cm and 21.6 cm on those tables. I also hid the desktop sidewall overlays on this Attack from Mars table so the stock rails can frame the raised playfield.
+
+I checked Attack from Mars with `--check-library --check-standard-resolution --check-attack-from-mars-launch`, its `afm_113b.zip` ROM and a copy of the M2's initialized `afm_113b.nv`. A fresh Simulator NVRAM did not serve a ball. With the saved state, the hand release pressed Launch Ball and moved the same ball 1,990 VP units up the shooter lane. Time Machine's `--check-ball-launch` still took the ball past the authored gate with a mechanical pull.
 
 ### Build the pinned libraries
 

@@ -226,6 +226,7 @@ void VPinballLib::OnPlayerCreated()
       const unsigned int action = nudgeActions[i];
       m_visionNudges[i] = { action, input.GetInputActions()[action]->NewDirectStateSlot() };
    }
+   m_visionLaunchSlot = input.GetInputActions()[input.GetLaunchBallActionId()]->NewDirectStateSlot();
 #endif
 
    g_pplayer->GameLoop();
@@ -241,6 +242,11 @@ void VPinballLib::SetVisionButton(VPINBALL_VISION_INPUT button, bool pressed)
    if (!m_visionHands || !g_pplayer)
       return;
    auto& input = g_pplayer->m_pininput;
+   if (button == VPINBALL_VISION_LAUNCH_BALL)
+   {
+      input.GetInputActions()[input.GetLaunchBallActionId()]->SetDirectState(m_visionLaunchSlot, pressed);
+      return;
+   }
    if (button >= VPINBALL_VISION_NUDGE_LEFT && button <= VPINBALL_VISION_NUDGE_FORWARD)
    {
       const auto [action, slot] = m_visionNudges[button - VPINBALL_VISION_NUDGE_LEFT];

@@ -21,6 +21,7 @@ namespace
 constexpr float stockWidth = 0.51435f;
 constexpr float stockLength = 1.1684f;
 constexpr float stockHeight = 0.9093f;
+constexpr float stockGlassBottomHeight = 0.0635f; // glass_bottom_height in blankTable.vpz, in metres
 // The centre and outer extents of the three slots in the stock coin door.
 const Vertex3Ds stockCoinCenter { MTOVPU(0.25428f), MTOVPU(1.24361f), MTOVPU(0.81072f) };
 const Vertex3Ds stockCoinHalfExtent { MTOVPU(0.07313f), 0.f, MTOVPU(0.02169f) };
@@ -28,6 +29,18 @@ const Vertex3Ds gorgarCoinScale { 1.f, 1.f, 0.65f };
 // Seat the base of the stock door on the visible front of PinCab_Bottom.
 const Vertex3Ds gorgarCoinOffset { 476.f - stockCoinCenter.x, 2065.71f - MTOVPU(1.21147f),
    -190.f - stockCoinCenter.z * gorgarCoinScale.z };
+
+PartGroup* AddVisionPartGroup(PinTable* table, std::string_view name, PartGroupData::SpaceReference space, unsigned int visibility)
+{
+   auto* group = PartGroup::COMCreate();
+   group->Init(0.f, 0.f, false);
+   group->SetName(table->GetUniqueName(string(name)));
+   group->m_d.m_spaceReference = space;
+   group->m_d.m_playerModeVisibilityMask = visibility;
+   table->AddPart(group);
+   group->Release();
+   return group;
+}
 }
 
 void VRDevice::ConfigureVisionRoom(PinTable* table)
@@ -98,12 +111,21 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    const bool stock = !legacyCabinet && !modernCabinet;
    if (stock)
    {
-      if (auto* sides = getPrimitive("CABINETSIDES_GIOFF");
-          sides && getPrimitive("SIDEWALL_GIOFF") && sides->m_d.m_vSize.y == 42.f)
+      // Legacy desktop tables use the rear glass height at both ends.
+      // Fit the playfield to the depth the stock cabinet was built for.
+      m_visionStockGlassDepth = MTOVPU(stockGlassBottomHeight * height / stockHeight);
+      auto* sides = getPrimitive("CABINETSIDES_GIOFF");
+      auto* litWall = getPrimitive("SIDEWALL");
+      auto* darkWall = getPrimitive("SIDEWALL_GIOFF");
+      if (sides && litWall && darkWall && sides->m_d.m_vSize.y == 42.f)
       {
-         // The desktop overlay extends below the stock cabinet.
-         // The stock side panels and blades take its place in VR.
-         sides->m_d.m_visible = false;
+         // This desktop cabinet and its GI-controlled sidewalls overlap the stock blades.
+         // A group keeps the overlays out of the headset even when the script toggles them.
+         using enum PartGroupData::PlayerModeVisibilityMask;
+         auto* overlays = AddVisionPartGroup(table, "VisionDesktopOverlays", PartGroupData::SpaceReference::SR_PLAYFIELD,
+            PMVM_DESKTOP | PMVM_FSS | PMVM_CABINET);
+         for (auto* part : { sides, litWall, darkWall })
+            part->SetPartGroup(overlays);
       }
    }
    AddVisionStockGeometry(table, stock, !IsVisionMixedReality() && !modernRoom && m_visionLegacyRoomParts.empty(), gorgar);
@@ -272,6 +294,11 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    }
    PLOGI << "Vision Pro cabinet: " << (stock ? "stock" : "authored")
       << ", playfield " << width << " x " << length << " m, placement height " << m_visionLayout.height << " m";
+   if (stock)
+   {
+      PLOGI << "Vision Pro stock playfield depth at lockbar: " << VPUTOCM(m_visionStockGlassDepth)
+         << " cm (table glass depth " << VPUTOCM(table->m_glassBottomHeight) << " cm)";
+   }
    const auto logFace = [](const char* name, const VPINBALL_VISION_BUTTON_FACE& button)
    {
       PLOGI << "Vision Pro " << name << " face: " << button.x << ", " << button.y << ", " << button.z
@@ -298,18 +325,6 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, 
       return;
 
    using enum PartGroupData::SpaceReference;
-   const auto makeGroup = [table](std::string_view name, PartGroupData::SpaceReference space, unsigned int visibility)
-   {
-      auto* group = PartGroup::COMCreate();
-      group->Init(0.f, 0.f, false);
-      group->SetName(table->GetUniqueName(string(name)));
-      group->m_d.m_spaceReference = space;
-      group->m_d.m_playerModeVisibilityMask = visibility;
-      table->AddPart(group);
-      group->Release();
-      return group;
-   };
-
    const auto material = [table](std::string_view name, COLORREF color, float roughness)
    {
       auto* value = new Material();
@@ -350,22 +365,22 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, 
 
    if (room)
    {
-      auto* group = makeGroup("VisionRoom", SR_ROOM, PartGroupData::PMVM_VIRTUAL_REALITY);
+      auto* group = AddVisionPartGroup(table, "VisionRoom", SR_ROOM, PartGroupData::PMVM_VIRTUAL_REALITY);
       auto* floor = material("VisionRoomFloor", RGB(83, 91, 103), 0.9f);
       addMesh(group, "VRGround", floor, { 2.f, 2.f, 1.f });
    }
    constexpr unsigned int modes = PartGroupData::PMVM_MIXED_REALITY | PartGroupData::PMVM_VIRTUAL_REALITY;
    if (gorgarCoinDoor)
    {
-      auto* group = makeGroup("VisionCoinDoor", SR_PLAYFIELD, modes);
+      auto* group = AddVisionPartGroup(table, "VisionCoinDoor", SR_PLAYFIELD, modes);
       auto* metal = material("VisionCoinDoorMetal", RGB(93, 96, 104), 0.44f);
       addMesh(group, "VRCoinDoor", metal, gorgarCoinScale, gorgarCoinOffset);
    }
    if (!cabinet)
       return;
 
-   auto* body = makeGroup("VisionCabinet", SR_CABINET, modes);
-   auto* feet = makeGroup("VisionCabinetFeet", SR_CABINET_FEET, modes);
+   auto* body = AddVisionPartGroup(table, "VisionCabinet", SR_CABINET, modes);
+   auto* feet = AddVisionPartGroup(table, "VisionCabinetFeet", SR_CABINET_FEET, modes);
    auto* wood = material("VisionCabinetBody", RGB(39, 46, 61), 0.67f);
    auto* metal = material("VisionCabinetMetal", RGB(126, 134, 149), 0.34f);
    auto* black = material("VisionCabinetBlack", RGB(25, 27, 31), 0.52f);

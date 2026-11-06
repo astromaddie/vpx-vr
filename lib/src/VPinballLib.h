@@ -97,6 +97,7 @@ private:
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
    std::optional<uint16_t> m_visionHands;
    std::array<std::pair<unsigned int, int>, 3> m_visionNudges{};
+   int m_visionLaunchSlot = -1;
 #endif
    SDL_Window* m_pWindow = nullptr;
 #ifdef __APPLE__

@@ -16,6 +16,7 @@ typedef enum {
    VPINBALL_VISION_NUDGE_RIGHT,
    VPINBALL_VISION_NUDGE_FORWARD,
    VPINBALL_VISION_NUDGE_BACK,
+   VPINBALL_VISION_LAUNCH_BALL,
    VPINBALL_VISION_INPUT_COUNT
 } VPINBALL_VISION_INPUT;
 
@@ -77,7 +78,8 @@ typedef struct {
 VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void);
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed);
 // Pull is measured from the resting position (0) to fully pulled back (1).
-VPINBALLAPI void VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);
+// Returns 1 if the release needs a Launch Ball button pulse.
+VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);
 
 #if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
 // Read resolved native input, on the player thread, for the Simulator check.
@@ -89,6 +91,6 @@ typedef struct {
    int id;
    float y, velocityY;
 } VPINBALL_VISION_BALL_SAMPLE;
-// Use -1 to find the ball at the plunger, then pass its ID to follow it.
-VPINBALLAPI VPINBALL_VISION_BALL_SAMPLE VPinballVisionSampleBall(int ballId);
+// Use -1 to find the ball at the plunger or a named shooter, then pass its ID to follow it.
+VPINBALLAPI VPINBALL_VISION_BALL_SAMPLE VPinballVisionSampleBall(int ballId, const char* shooterName);
 #endif

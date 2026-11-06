@@ -259,6 +259,7 @@ private:
    Matrix3D m_visionLegacyRoomView[2];
    Matrix3D m_visionPlayfieldLevel = Matrix3D::MatrixTranslate(0.f, 0.f, 0.f);
    VPINBALL_VISION_LAYOUT m_visionLayout{};
+   float m_visionStockGlassDepth = 0.f;
    std::array<std::unique_ptr<RenderTarget>, 2> m_visionTargets;
 #endif
 

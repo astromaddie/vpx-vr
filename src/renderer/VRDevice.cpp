@@ -1581,12 +1581,17 @@ void VRDevice::UpdateWorldTransforms()
       // The real world playfield height is then computed by removing the glass distance at the playfield bottom (typically 2 to 3").
       // The m_tableOffset allows to slightly adjust this height on a per table basis.
       // In the end Playfield height = m_tableOffset.z (User adjustement) + m_lockBatHeight (Real world lockbar height) - glass distance * scale
-      const float scaledGlassHeight = m_scale * VPUTOCM(table->m_glassBottomHeight);
+      float glassBottomHeight = table->m_glassBottomHeight;
+      #if defined(VPX_VISIONOS_HEADSET)
+         if (m_visionStockGlassDepth > 0.f)
+            glassBottomHeight = m_visionStockGlassDepth;
+      #endif
+      const float scaledGlassHeight = m_scale * VPUTOCM(glassBottomHeight);
 
       // The table defines the height of the lockbar of its cabinet model, as well as the playfield base inclination.
       // This allows to fit the cabinet & playfield models to the real world space.
       // If user adjust the inclination, then the cab is rotated as it would in real life (still missing the legs stretching a bit using caster adjustments)
-      const float groundToPlayfieldHeight = m_scale * (table->m_groundToLockbarHeight - table->m_glassBottomHeight);
+      const float groundToPlayfieldHeight = m_scale * (table->m_groundToLockbarHeight - glassBottomHeight);
       const float baseSlope = lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty);
 
       // Before 10.8.1, there weren't multiple space reference, so room used to be inclined to compensate the playfield inclination.
