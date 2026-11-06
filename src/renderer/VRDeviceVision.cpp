@@ -322,7 +322,7 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, 
    };
 
    const auto assets = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets, "blankTable.vpz/meshes");
-   const auto addMesh = [table, &assets](PartGroup* group, const char* name, const Material* mat, const Vertex3Ds& scale, const Vertex3Ds& position = {})
+   const auto addMesh = [table, &assets](PartGroup* group, const char* name, const Material* mat, const Vertex3Ds& scale, const Vertex3Ds& position = { 0.f, 0.f, 0.f })
    {
       std::ifstream file(assets / (string(name) + ".glb"), std::ios::binary);
       vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
