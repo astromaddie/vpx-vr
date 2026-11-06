@@ -108,6 +108,7 @@ final class CabinetCalibration {
         let verticalTravelMM: Int?
         let depthTravelMM: Int?
         let nudgePhase: String?
+        let nudgeMotion: String?
         let events: [String]
     }
     struct Attempt: Codable {
@@ -176,7 +177,7 @@ final class CabinetCalibration {
     }
 
     func observe(side: CabinetHandSide, at time: Double, sample: CabinetHandSample?,
-                 metrics: CalibrationMetrics?, events: [CabinetInput], nudgePhase: String? = nil) {
+                 metrics: CalibrationMetrics?, events: [CabinetInput], nudgePhase: String? = nil, nudgeMotion: String? = nil) {
         guard isRecording, time >= startTime, time < startTime + Self.recordTime,
               frames.count < Self.frameLimit else { return }
         guard !events.isEmpty || time - (lastFrame[side] ?? -.infinity) >= 0.032 else { return }
@@ -188,7 +189,8 @@ final class CabinetCalibration {
                             metrics: metrics, lateralTravelMM: CalibrationMetrics.integer(travel.map { $0.x * 1000 }),
                             verticalTravelMM: CalibrationMetrics.integer(travel.map { $0.y * 1000 }),
                             depthTravelMM: CalibrationMetrics.integer(travel.map { $0.z * 1000 }),
-                            nudgePhase: nudgePhase, events: events.map(Self.describe)))
+                            nudgePhase: nudgePhase, nudgeMotion: events.contains(where: { $0.action == .nudge }) ? nudgeMotion : nil,
+                            events: events.map(Self.describe)))
     }
 
     func observeSystemEvents(at time: Double, events: [CabinetInput]) {
@@ -196,7 +198,7 @@ final class CabinetCalibration {
               frames.count < Self.frameLimit else { return }
         frames.append(Frame(ms: Int(((time - startTime) * 1000).rounded()), hand: "system",
                             metrics: nil, lateralTravelMM: nil, verticalTravelMM: nil,
-                            depthTravelMM: nil, nudgePhase: nil, events: events.map(Self.describe)))
+                            depthTravelMM: nil, nudgePhase: nil, nudgeMotion: nil, events: events.map(Self.describe)))
     }
 
     func cancel() {

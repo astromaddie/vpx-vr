@@ -378,7 +378,8 @@ final class CabinetHandTracking {
         _ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double, metrics: CalibrationMetrics? = nil
     ) {
         let events = controls.update(side, sample: sample, at: time)
-        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events, nudgePhase: controls.nudgePhase)
+        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events,
+                             nudgePhase: controls.nudgePhase, nudgeMotion: controls.nudgeMotion)
         events.forEach(send)
     }
 }

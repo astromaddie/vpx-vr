@@ -75,6 +75,7 @@ struct HandControlChecks {
         checkGestureFlippers()
         checkWristFlickTiming()
         checkFistNudges()
+        checkNudgeStrokeRecovery()
         checkOccludedFistInputs()
         checkPlacement()
         checkRoomGrab()
@@ -333,7 +334,7 @@ struct HandControlChecks {
         // A fist slightly ahead of the rail blocks the paired flick
         // without allowing an off-rail nudge.
         _ = controls.reset()
-        let justAhead = SIMD3(leftRail.x, leftRail.y, 0.055)
+        let justAhead = SIMD3(leftRail.x, leftRail.y, 0.115)
         precondition(controls.update(.left, sample: .init(palm: justAhead, pose: .fist), at: 3.0).isEmpty)
         precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
                                                          pose: .fist), at: 3.01).isEmpty)
@@ -419,6 +420,40 @@ struct HandControlChecks {
         precondition(controls.update(.left, sample: left, at: 0.06).isEmpty)
         precondition(controls.update(.right, sample: .init(plungerPose: plungerPose(thumbUntucked: true)), at: 0.08) == [.releasePlunger(1)])
         print("Nudges passed: next paired sample on all axes, shared motion, re-arm at a new position, plunger priority")
+    }
+
+    static func checkNudgeStrokeRecovery() {
+        let layout = CabinetControlsLayout(usesWristGestures: true)
+        var controls = CabinetHandControls(layout: layout)
+        // Both fists start ahead of the old front gate and just inside the side.
+        let left = SIMD3(layout.flipper(.left).x + 0.05, -0.065, 0.055)
+        let right = SIMD3(layout.flipper(.right).x - 0.05, -0.065, 0.055)
+        var time = 0.0
+        func pair(_ lift: Float) -> [CabinetInput] {
+            time += 0.016
+            let events = controls.update(.left, sample: .init(palm: left + [0, lift, 0], pose: .fist), at: time)
+            time += 0.016
+            return events + controls.update(.right, sample: .init(palm: right + [0, lift, 0], pose: .fist), at: time)
+        }
+        precondition(pair(0).isEmpty && controls.nudgePhase == "armed")
+        for step in 1...5 { precondition(pair(Float(step) * 0.01).isEmpty) }
+        precondition(pair(0.086) == [.nudge(.up)])
+        precondition(controls.nudgeMotion == "up")
+        let offRail = left + [0.28, 0.086, 0]
+        for direction: SIMD3<Float> in [[0, 0, -1], [-0.2, 0, -1]] {
+            time += 0.016
+            precondition(controls.update(.left, sample: .init(palm: offRail, pose: .fist), at: time).isEmpty)
+            precondition(controls.nudgePhase == "waitingForFists")
+            time += 0.016
+            precondition(controls.update(.right, sample: .init(palm: right + [0, 0.086, 0],
+                                                               fingerDirection: direction, pose: .fist), at: time).isEmpty)
+        }
+        for _ in 0..<4 { precondition(pair(0.086).isEmpty) }
+        precondition(pair(0.048).isEmpty)
+        precondition(pair(-0.025).isEmpty)
+        for _ in 0..<4 { precondition(pair(-0.025).isEmpty) }
+        precondition(pair(-0.060) == [.nudge(.down)])
+        print("Nudge stroke passed: widened rails, steady motion rejection, accelerating shove, return suppression and opposite shove after reset")
     }
 
     static func checkOccludedFistInputs() {

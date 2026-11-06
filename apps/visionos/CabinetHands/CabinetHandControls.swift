@@ -42,12 +42,12 @@ struct CabinetControlsLayout {
     func isByNudgeRail(_ side: CabinetHandSide, palm: SIMD3<Float>, margin: Float) -> Bool {
         let offset = palm - flipper(side)
         let outward = offset.x * side.sign
-        // Use the actual side of the cabinet. Keep the front of the knob
-        // clear for the plunger, and allow a little room for the shove.
-        return (-0.035 - margin...0.22 + margin).contains(outward)
+        // Allow a shallow reach in front of the cabinet while keeping
+        // each fist near its own side.
+        return (-0.06 - margin...0.22 + margin).contains(outward)
             && abs(offset.y) <= 0.22 + margin
-            && (-0.32 - margin...0.07 + margin).contains(offset.z)
-            && palm.z <= margin
+            && (-0.32 - margin...0.13 + margin).contains(offset.z)
+            && palm.z <= 0.06 + margin
     }
 }
 
@@ -280,6 +280,7 @@ struct CabinetHandControls {
     }
 
     var nudgePhase: String { nudge.phase }
+    var nudgeMotion: String? { nudge.lastMotion }
 
     mutating func expire(at time: Double) -> [CabinetInput] {
         nudge.expire(at: time)
@@ -302,6 +303,17 @@ struct CabinetHandControls {
             let left: SIMD3<Float>
             let right: SIMD3<Float>
             let time: Double
+            var center: SIMD3<Float> { (left + right) * 0.5 }
+        }
+
+        private struct Stroke {
+            let axis: Int
+            let sign: Float
+            let start: Float
+
+            func hasReturned(_ pair: Pair) -> Bool {
+                sign * (pair.center[axis] - start) <= 0.022
+            }
         }
 
         private var left: Fist?
@@ -311,8 +323,10 @@ struct CabinetHandControls {
         private var lastPair = -Double.infinity
         private var history: [Pair] = []
         private var spent = false
+        private var stroke: Stroke?
+        private(set) var lastMotion: String?
         var isArmed: Bool { !history.isEmpty }
-        var blocksFlippers: Bool { isArmed || (leftNearRailAt != nil && rightNearRailAt != nil) }
+        var blocksFlippers: Bool { isArmed || stroke != nil || (leftNearRailAt != nil && rightNearRailAt != nil) }
         var phase: String { isArmed ? (spent ? "latched" : "armed") : "waitingForFists" }
 
         mutating func expire(at time: Double) {
@@ -323,6 +337,7 @@ struct CabinetHandControls {
             if left == nil || right == nil {
                 history.removeAll(keepingCapacity: true)
                 spent = false
+                stroke = nil
             }
         }
 
@@ -350,12 +365,14 @@ struct CabinetHandControls {
             if sample?.pose == .open {
                 current = nil
             } else if let palm = sample?.gripPosition {
+                // Keep the stroke through a rail exit while both fists are
+                // tracked. Otherwise re-entry can count the return as a shove.
                 if !layout.isByNudgeRail(side, palm: palm, margin: isArmed ? 0.04 : 0) {
-                    current = nil
-                } else if sample?.pose == .fist {
+                    history.removeAll(keepingCapacity: true)
+                }
+                if sample?.pose == .fist {
                     current = Fist(position: palm, confirmedAt: time, sampledAt: time)
                 } else if let previous {
-                    // Use the palm through a brief loss of finger evidence.
                     current = Fist(position: palm, confirmedAt: previous.confirmedAt, sampledAt: time)
                 }
             }
@@ -363,6 +380,12 @@ struct CabinetHandControls {
             expire(at: time)
             guard let left, let right, min(left.sampledAt, right.sampledAt) > lastPair else { return nil }
             lastPair = max(left.sampledAt, right.sampledAt)
+            let margin: Float = isArmed ? 0.04 : 0
+            guard layout.isByNudgeRail(.left, palm: left.position, margin: margin),
+                  layout.isByNudgeRail(.right, palm: right.position, margin: margin) else {
+                history.removeAll(keepingCapacity: true)
+                return nil
+            }
             let leftConfirmed = left.confirmedAt == left.sampledAt
             let rightConfirmed = right.confirmedAt == right.sampledAt
             let pair = Pair(left: left.position, right: right.position, time: lastPair)
@@ -371,14 +394,21 @@ struct CabinetHandControls {
                 return nil
             }
 
-            history.removeAll { pair.time - $0.time > 0.10 }
+            history.removeAll { pair.time - $0.time > 0.18 }
+            let recent = history.drop(while: { pair.time - $0.time > 0.10 })
+            let settled = recent.first.map { pair.time - $0.time >= 0.06 } == true
+                && recent.allSatisfy {
+                    simd_distance($0.left, pair.left) < 0.012 && simd_distance($0.right, pair.right) < 0.012
+                }
+            let returned = stroke?.hasReturned(pair) == true
+            if returned && settled {
+                stroke = nil
+                spent = false
+                history = [pair]
+                return nil
+            }
             if spent {
-                // After the shove, re-arm where the fists settle. No need to
-                // return to the location where the hands first closed.
-                if let oldest = history.first, pair.time - oldest.time >= 0.06,
-                   history.allSatisfy({
-                       simd_distance($0.left, pair.left) < 0.012 && simd_distance($0.right, pair.right) < 0.012
-                   }) {
+                if settled || returned {
                     spent = false
                     history.removeAll(keepingCapacity: true)
                 }
@@ -387,29 +417,57 @@ struct CabinetHandControls {
             }
 
             defer { history.append(pair) }
-            guard leftConfirmed || rightConfirmed, let reference = history.first else { return nil }
+            guard leftConfirmed || rightConfirmed, let reference = recent.first else { return nil }
             let leftMove = pair.left - reference.left
             let rightMove = pair.right - reference.right
             let move = (leftMove + rightMove) * 0.5
+            if let stroke, stroke.sign * move[stroke.axis] <= -0.022 { return nil }
+            let acceleration = sharedAcceleration(to: pair)
+            let leftMinimum = max(0.022, 0.55 * simd_length(leftMove))
+            let rightMinimum = max(0.022, 0.55 * simd_length(rightMove))
             var strongestAxis: Int?
             var strongestMove: Float = 0
             for axis in 0..<3 {
                 let sign: Float = move[axis] < 0 ? -1 : 1
                 let distance = abs(move[axis])
-                if distance >= 0.030, distance > strongestMove,
-                   sign * leftMove[axis] >= 0.022, sign * rightMove[axis] >= 0.022 {
-                    strongestAxis = axis
-                    strongestMove = distance
-                }
+                guard distance >= 0.030, distance > strongestMove,
+                      sign * leftMove[axis] >= leftMinimum, sign * rightMove[axis] >= rightMinimum,
+                      sign * acceleration[axis] >= 4 else { continue }
+                strongestAxis = axis
+                strongestMove = distance
             }
             guard let axis = strongestAxis else { return nil }
+            let sign: Float = move[axis] < 0 ? -1 : 1
+            stroke = Stroke(axis: axis, sign: sign, start: reference.center[axis])
             spent = true
             history.removeAll(keepingCapacity: true)
             switch axis {
-            case 0: return move.x < 0 ? .left : .right
-            case 1: return move.y < 0 ? .down : .up
-            default: return move.z < 0 ? .up : .down
+            case 0:
+                lastMotion = sign < 0 ? "left" : "right"
+                return sign < 0 ? .left : .right
+            case 1:
+                lastMotion = sign < 0 ? "down" : "up"
+                return sign < 0 ? .down : .up
+            default:
+                lastMotion = sign < 0 ? "forward" : "back"
+                return sign < 0 ? .up : .down
             }
+        }
+
+        private func sharedAcceleration(to pair: Pair) -> SIMD3<Float> {
+            guard let split = history.min(by: {
+                abs(pair.time - $0.time - 0.05) < abs(pair.time - $1.time - 0.05)
+            }) else { return .zero }
+            let recentDuration = Float(pair.time - split.time)
+            let velocity = (pair.center - split.center) / recentDuration
+            guard let earlier = history.prefix(while: { $0.time < split.time }).min(by: {
+                abs(split.time - $0.time - 0.065) < abs(split.time - $1.time - 0.065)
+            }) else {
+                // The first measurable shove can fire on the next pair.
+                return velocity / recentDuration
+            }
+            let previous = (split.center - earlier.center) / Float(split.time - earlier.time)
+            return (velocity - previous) / Float((pair.time - earlier.time) * 0.5)
         }
     }
 

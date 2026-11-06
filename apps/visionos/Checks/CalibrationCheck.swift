@@ -60,10 +60,11 @@ struct CalibrationCheck {
         model.choose(.nudgeForward)
         model.start(at: 40)
         model.advance(at: 42)
-        model.observe(side: .right, at: 42.1, sample: sample, metrics: metrics, events: [.nudge(.up)], nudgePhase: "latched")
+        model.observe(side: .right, at: 42.1, sample: sample, metrics: metrics, events: [.nudge(.up)], nudgePhase: "latched", nudgeMotion: "forward")
         model.advance(at: 47)
         let directed = try JSONDecoder().decode(CabinetCalibration.Report.self, from: Data(contentsOf: file))
         precondition(directed.attempts.last?.gesture == .nudgeForward && model.selection == .nudgeBack)
+        precondition(directed.attempts.last?.frames.first?.nudgeMotion == "forward")
         for trial in 0..<20 {
             let t = 100 + Double(trial) * 10
             model.start(at: t)
