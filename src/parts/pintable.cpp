@@ -584,6 +584,7 @@ PinTable* PinTable::CopyForPlay() const
    dst->m_screenShot = src->m_screenShot;
    dst->m_glassBottomHeight = src->m_glassBottomHeight;
    dst->m_glassTopHeight = src->m_glassTopHeight;
+   dst->m_loadedFileVersion = src->m_loadedFileVersion;
    dst->m_playfieldMaterial = src->m_playfieldMaterial;
    dst->m_colorbackdrop = src->m_colorbackdrop;
    dst->m_difficulty = src->m_difficulty;
@@ -2152,6 +2153,8 @@ void PinTable::FinalizeLoadedParts(vector<IEditable *> &parts)
 
 void PinTable::ApplyLoadedVersionFixups(const int loadfileversion)
 {
+   m_loadedFileVersion = loadfileversion;
+
    if (loadfileversion < 1030) // the m_fGlossyImageLerp part was included first with 10.3, so set all previously saved materials to the old default
       for (size_t i = 0; i < m_materials.size(); ++i)
          m_materials[i]->m_fGlossyImageLerp = 1.f;

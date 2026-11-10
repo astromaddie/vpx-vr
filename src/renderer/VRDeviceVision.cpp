@@ -8,9 +8,20 @@
 #include "core/VPApp.h"
 #include "parts/Material.h"
 #include "parts/Collection.h"
+#include "parts/bumper.h"
 #include "parts/flasher.h"
+#include "parts/flipper.h"
+#include "parts/gate.h"
+#include "parts/kicker.h"
+#include "parts/light.h"
 #include "parts/pintable.h"
+#include "parts/plunger.h"
 #include "parts/primitive.h"
+#include "parts/ramp.h"
+#include "parts/spinner.h"
+#include "parts/surface.h"
+#include "parts/trigger.h"
+#include "renderer/VisionCabinetFit.h"
 
 #include <chrono>
 #include <fstream>
@@ -109,11 +120,9 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
    }
 
    const bool stock = !legacyCabinet && !modernCabinet;
+   bool neutral = false;
    if (stock)
    {
-      // Legacy desktop tables use the rear glass height at both ends.
-      // Fit the playfield to the depth the stock cabinet was built for.
-      m_visionStockGlassDepth = MTOVPU(stockGlassBottomHeight * height / stockHeight);
       auto* sides = getPrimitive("CABINETSIDES_GIOFF");
       auto* litWall = getPrimitive("SIDEWALL");
       auto* darkWall = getPrimitive("SIDEWALL_GIOFF");
@@ -127,8 +136,15 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
          for (auto* part : { sides, litWall, darkWall })
             part->SetPartGroup(overlays);
       }
+      neutral = AddVisionNeutralCabinet(table);
+      if (!neutral)
+      {
+         // Legacy desktop tables use the rear glass height at both ends.
+         // Fit the playfield to the depth the stock cabinet was built for.
+         m_visionStockGlassDepth = MTOVPU(stockGlassBottomHeight * height / stockHeight);
+      }
    }
-   AddVisionStockGeometry(table, stock, !IsVisionMixedReality() && !modernRoom && m_visionLegacyRoomParts.empty(), gorgar);
+   AddVisionStockGeometry(table, stock && !neutral, !IsVisionMixedReality() && !modernRoom && m_visionLegacyRoomParts.empty(), gorgar);
 
    vector<Primitive*> legs;
    if (timeMachineLegs)
@@ -207,7 +223,24 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
       m_visionLayout.hasPlunger = 1;
    };
 
-   if (stock)
+   if (neutral)
+   {
+      // The fitted anchors are already in the cabinet space of the meshes.
+      const auto& n = m_visionNeutral;
+      const Matrix3D& worldFromCabinet = m_cabWorld.m_toWorld;
+      m_visionLayout.start = face(worldFromCabinet, n.start, n.startHalf);
+      m_visionLayout.coin = face(worldFromCabinet, n.coin, n.coinHalf);
+      m_visionLayout.leftFlipper = flipper(worldFromCabinet, n.leftFlipper);
+      m_visionLayout.rightFlipper = flipper(worldFromCabinet, n.rightFlipper);
+      if (n.launchButton)
+      {
+         m_visionLayout.launch = face(worldFromCabinet, n.launch, n.launchHalf);
+         m_visionLayout.hasLaunchButton = 1;
+      }
+      else
+         plunger(worldFromCabinet, n.plunger);
+   }
+   else if (stock)
    {
       const auto scale = Matrix3D::MatrixScale(width / stockWidth, length / stockLength, height / stockHeight);
       const auto worldFromStock = scale * m_cabWorld.m_toWorld;
@@ -292,9 +325,9 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
       m_visionLayout.coin = face(worldFromDoor, stockCoinCenter, stockCoinHalfExtent);
       plunger(worldFromLegacyCabinet, { 896.8f, 2199.f, -1.f });
    }
-   PLOGI << "Vision Pro cabinet: " << (stock ? "stock" : "authored")
+   PLOGI << "Vision Pro cabinet: " << (neutral ? "neutral" : stock ? "stock" : "authored")
       << ", playfield " << width << " x " << length << " m, placement height " << m_visionLayout.height << " m";
-   if (stock)
+   if (stock && !neutral)
    {
       PLOGI << "Vision Pro stock playfield depth at lockbar: " << VPUTOCM(m_visionStockGlassDepth)
          << " cm (table glass depth " << VPUTOCM(table->m_glassBottomHeight) << " cm)";
@@ -317,6 +350,8 @@ void VRDevice::ConfigureVisionRoom(PinTable* table)
       PLOGI << "Vision Pro plunger grip: " << m_visionLayout.plungerX << ", "
          << m_visionLayout.plungerY << ", " << m_visionLayout.plungerZ << " m";
    }
+   if (m_visionLayout.hasLaunchButton)
+      logFace("Launch Ball", m_visionLayout.launch);
 }
 
 void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, bool gorgarCoinDoor)
@@ -411,6 +446,328 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, 
    display->Scale(MTOVPU(0.65f * scale.x) / 100.f, MTOVPU((backglass ? 0.46f : 0.15f) * scale.z) / 100.f, {}, true);
    table->AddPart(display);
    display->Release();
+}
+
+bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
+{
+   namespace VC = VisionCabinet;
+   const auto fail = [](const string& reason)
+   {
+      PLOGW << "Vision Pro neutral cabinet not used, falling back to the stock cabinet: " << reason;
+      return false;
+   };
+   const auto root = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets, "neutralCabinet");
+   const auto readJson = [&root](const char* name)
+   {
+      std::ifstream file(root / name);
+      return file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json(nlohmann::json::value_t::discarded);
+   };
+   VC::Spec spec;
+   VC::Reference ref;
+   VC::Controls controls;
+   string error;
+   if (!VC::LoadSpec(readJson("cabinet.json"), spec, error) || !VC::LoadReference(readJson("reference.json"), ref, error)
+      || !VC::LoadControls(readJson("controls.json"), controls, error))
+      return fail(error + " in " + PathToUTF8(root));
+
+   // The add-cabinet tool's rules (fit.py choose_variant and glass.py choose) on the loaded table.
+   vector<VC::PlungerInfo> plungers;
+   std::unordered_set<string> usedSurfaces;
+   for (auto* part : table->GetParts())
+   {
+      const string* surface = nullptr;
+      switch (part->GetItemType())
+      {
+      case eItemPlunger:
+      {
+         const auto& d = static_cast<Plunger*>(part)->m_d;
+         plungers.push_back({ part->GetName(), d.m_autoPlunger, d.m_visible, d.m_v.x });
+         surface = &d.m_szSurface;
+         break;
+      }
+      case eItemKicker: surface = &static_cast<Kicker*>(part)->m_d.m_szSurface; break;
+      case eItemTrigger: surface = &static_cast<Trigger*>(part)->m_d.m_szSurface; break;
+      case eItemFlipper: surface = &static_cast<Flipper*>(part)->m_d.m_szSurface; break;
+      case eItemBumper: surface = &static_cast<Bumper*>(part)->m_d.m_szSurface; break;
+      case eItemGate: surface = &static_cast<Gate*>(part)->m_d.m_szSurface; break;
+      case eItemSpinner: surface = &static_cast<Spinner*>(part)->m_d.m_szSurface; break;
+      case eItemLight: surface = &static_cast<Light*>(part)->m_d.m_szSurface; break;
+      default: break;
+      }
+      if (surface && !surface->empty())
+         usedSurfaces.insert(lowerCase(*surface));
+   }
+   string variantReason;
+   const VC::Variant variant = VC::ChooseVariant(plungers, variantReason);
+
+   VC::GlassInput glassInput;
+   glassInput.tableArea = (table->m_right - table->m_left) * (table->m_bottom - table->m_top);
+   glassInput.legacy = table->m_loadedFileVersion < 1080;
+   glassInput.glassTop = table->m_glassTopHeight;
+   glassInput.glassBottom = table->m_glassBottomHeight;
+   for (auto* part : table->GetParts())
+   {
+      const bool referenced = usedSurfaces.contains(lowerCase(part->GetName()));
+      if (part->GetItemType() == eItemSurface && referenced)
+      {
+         const auto* wall = static_cast<Surface*>(part);
+         vector<std::array<double, 2>> points;
+         for (const auto& point : wall->m_curve.GetPoints())
+            points.push_back({ point->GetX(), point->GetY() });
+         glassInput.referencedWalls.push_back({ part->GetName(), wall->m_d.m_heighttop, VC::PolygonArea(points) });
+      }
+      else if (part->GetItemType() == eItemRamp)
+      {
+         const auto& d = static_cast<Ramp*>(part)->m_d;
+         const double top = max(d.m_heighttop, d.m_heightbottom);
+         if (referenced)
+            glassInput.reach.emplace_back(top, part->GetName());
+         if (d.m_collidable)
+            glassInput.reach.emplace_back(top, part->GetName());
+      }
+      else if (part->GetItemType() == eItemPrimitive)
+      {
+         auto* prim = static_cast<Primitive*>(part);
+         if (prim->m_d.m_collidable && !prim->m_d.m_toy && prim->m_d.m_use3DMesh && !prim->m_mesh.m_vertices.empty()
+            && lowerCase(part->GetName() + ' ' + prim->m_d.m_szImage).find("ramp") != string::npos)
+         {
+            const Matrix3D& playfieldFromMesh = prim->RecalculateMatrices();
+            float top = -FLT_MAX;
+            for (const auto& vertex : prim->m_mesh.m_vertices)
+               top = max(top, (playfieldFromMesh * Vertex3Ds { vertex.x, vertex.y, vertex.z }).z);
+            glassInput.reach.emplace_back(top, part->GetName());
+         }
+      }
+   }
+   const VC::GlassChoice glass = VC::ChooseGlass(glassInput, 8.0);
+
+   VC::Table fitTable;
+   fitTable.left = table->m_left;
+   fitTable.top = table->m_top;
+   fitTable.right = table->m_right;
+   fitTable.bottom = table->m_bottom;
+   fitTable.glassTop = glass.newTop;
+   fitTable.glassBottom = glass.newBottom;
+   // The playfield is drawn at the live slope, so fit to it rather than the authored one.
+   fitTable.slope = table->GetPlayfieldSlope();
+   fitTable.groundToLockbar = table->m_groundToLockbarHeight;
+   fitTable.plungerX = VC::PlungerX(plungers);
+   const VC::Fit fit(ref, spec, fitTable, false);
+   if (!fit.Error().empty())
+      return fail(fit.Error());
+
+   // Load and fit every mesh before anything is added to the table.
+   struct LoadedPart
+   {
+      const VC::PartSpec* spec;
+      Primitive* primitive;
+      VC::Point rigidOffset;
+   };
+   vector<LoadedPart> parts;
+   const auto releaseParts = [&parts]
+   {
+      for (auto& part : parts)
+         part.primitive->Release();
+      parts.clear();
+   };
+   size_t triangles = 0;
+   for (const auto& partSpec : spec.parts)
+   {
+      if (!partSpec.InVariant(variant))
+         continue;
+      std::ifstream file(root / "meshes" / (partSpec.mesh + ".glb"), std::ios::binary);
+      const vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      auto* part = Primitive::COMCreate();
+      part->Init(0.f, 0.f, false);
+      if (bytes.empty() || !part->m_mesh.LoadGLB(bytes.data(), bytes.size()) || part->m_mesh.m_vertices.empty())
+      {
+         part->Release();
+         releaseParts();
+         return fail("could not load the mesh " + partSpec.mesh);
+      }
+      vector<VC::Point> vertices;
+      vertices.reserve(part->m_mesh.m_vertices.size());
+      for (const auto& v : part->m_mesh.m_vertices)
+         vertices.push_back({ v.x, v.y, v.z });
+      // The tool keeps the stored normals: the field shear is a few degrees at most.
+      const VC::Point offset = VC::FitVertices(fit, partSpec, vertices);
+      for (size_t i = 0; i < vertices.size(); ++i)
+      {
+         auto& v = part->m_mesh.m_vertices[i];
+         v.x = static_cast<float>(vertices[i][0]);
+         v.y = static_cast<float>(vertices[i][1]);
+         v.z = static_cast<float>(vertices[i][2]);
+      }
+      part->m_mesh.UpdateBounds();
+      triangles += part->m_mesh.NumIndices() / 3;
+      parts.push_back({ &partSpec, part, offset });
+   }
+
+   // Inner walls under the rails and lockbar, two triangles per quad facing inward.
+   auto* walls = Primitive::COMCreate();
+   walls->Init(0.f, 0.f, false);
+   walls->m_mesh.m_vertices.clear(); // Init builds the default prism
+   walls->m_mesh.m_indices.clear();
+   for (const auto& quad : fit.InnerWalls())
+   {
+      const auto& [a, b, c, d] = quad.corners;
+      const VC::Point u { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+      const VC::Point w { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+      const double facing = (u[1] * w[2] - u[2] * w[1]) * quad.normal[0] + (u[2] * w[0] - u[0] * w[2]) * quad.normal[1]
+         + (u[0] * w[1] - u[1] * w[0]) * quad.normal[2];
+      const auto base = static_cast<unsigned int>(walls->m_mesh.m_vertices.size());
+      constexpr float uv[4][2] { { 0.f, 0.f }, { 1.f, 0.f }, { 1.f, 1.f }, { 0.f, 1.f } };
+      for (int k = 0; k < 4; ++k)
+      {
+         Vertex3D_NoTex2 v;
+         v.x = static_cast<float>(quad.corners[k][0]);
+         v.y = static_cast<float>(quad.corners[k][1]);
+         v.z = static_cast<float>(quad.corners[k][2]);
+         v.nx = static_cast<float>(quad.normal[0]);
+         v.ny = static_cast<float>(quad.normal[1]);
+         v.nz = static_cast<float>(quad.normal[2]);
+         v.tu = uv[k][0];
+         v.tv = uv[k][1];
+         walls->m_mesh.m_vertices.push_back(v);
+      }
+      const unsigned int order[2][6] { { 0, 1, 2, 0, 2, 3 }, { 0, 2, 1, 0, 3, 2 } };
+      for (const unsigned int i : order[facing < 0 ? 1 : 0])
+         walls->m_mesh.m_indices.push_back(base + i);
+   }
+   walls->m_mesh.UpdateBounds();
+   triangles += walls->m_mesh.NumIndices() / 3;
+   const VC::PartSpec wallSpec { "InnerWalls", "", "VRCab_Interior", "" };
+   parts.push_back({ &wallSpec, walls, {} });
+   if (std::ranges::none_of(spec.materials, [](const VC::MaterialSpec& m) { return m.name == "VRCab_Interior"; }))
+   {
+      releaseParts();
+      return fail("cabinet.json has no VRCab_Interior material");
+   }
+
+   // Images, then everything else: none of these can fail once the images are in.
+   std::unordered_map<string, string> imageNames;
+   vector<Texture*> addedImages;
+   for (const auto& [name, file] : spec.images)
+   {
+      if (std::ranges::none_of(parts, [&name](const LoadedPart& p) { return p.spec->image == name; }))
+         continue;
+      string unique = name;
+      for (int suffix = 1; table->GetImage(unique); ++suffix)
+         unique = name + std::to_string(suffix);
+      Texture* image = table->ImportImage(root / "textures" / file, unique);
+      if (!image)
+      {
+         for (auto* added : addedImages)
+            table->RemoveImage(added);
+         releaseParts();
+         return fail("could not load the texture " + file);
+      }
+      addedImages.push_back(image);
+      imageNames[name] = image->m_name;
+   }
+
+   table->m_glassTopHeight = static_cast<float>(glass.newTop);
+   table->m_glassBottomHeight = static_cast<float>(glass.newBottom);
+
+   std::unordered_map<string, string> materialNames;
+   for (const auto& m : spec.materials)
+   {
+      if (std::ranges::none_of(parts, [&m](const LoadedPart& p) { return p.spec->material == m.name; }))
+         continue;
+      const auto color = [](unsigned int c) { return static_cast<COLORREF>(RGB((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF)); };
+      auto* mat = new Material(m.metal ? Material::METAL : Material::BASIC, m.wrapLighting, m.roughness, m.glossyImageLerp, m.thickness,
+         m.edge, m.edgeAlpha, m.opacity, color(m.baseColor), color(m.glossyColor), color(m.clearcoatColor), m.opacityActive,
+         0.f, 0.f, 0.f, 0.f, RGB(255, 255, 255));
+      mat->m_name = m.name;
+      table->AddMaterial(mat); // adds a suffix if the table already has the name
+      materialNames[m.name] = mat->m_name;
+   }
+
+   using enum PartGroupData::SpaceReference;
+   constexpr unsigned int modes = PartGroupData::PMVM_MIXED_REALITY | PartGroupData::PMVM_VIRTUAL_REALITY;
+   auto* body = AddVisionPartGroup(table, "VRCab_Cabinet", SR_CABINET, modes);
+   auto* feet = AddVisionPartGroup(table, "VRCab_Feet", SR_CABINET_FEET, modes);
+   std::unordered_map<string, VC::Point> rigidOffsets;
+   for (auto& [partSpec, part, offset] : parts)
+   {
+      part->SetName(table->GetUniqueName("VRCab_" + partSpec->name));
+      part->SetPartGroup(partSpec->feet ? feet : body);
+      part->m_d.m_vPosition = { 0.f, 0.f, 0.f };
+      part->m_d.m_vSize = { 1.f, 1.f, 1.f };
+      std::fill(std::begin(part->m_d.m_aRotAndTra), std::end(part->m_d.m_aRotAndTra), 0.f);
+      part->m_d.m_szMaterial = materialNames[partSpec->material];
+      part->m_d.m_szImage = partSpec->image.empty() ? string() : imageNames[partSpec->image];
+      part->m_d.m_use3DMesh = true;
+      part->m_d.m_visible = true;
+      part->m_d.m_collidable = false;
+      part->m_d.m_toy = true;
+      part->m_d.m_staticRendering = true;
+      part->m_d.m_reflectionEnabled = false;
+      part->m_d.m_backfacesEnabled = false;
+      part->m_d.m_disableLightingTop = 0.f;
+      part->m_d.m_disableLightingBelow = 1.f;
+      table->AddPart(part);
+      part->Release();
+      rigidOffsets[partSpec->name] = offset;
+   }
+
+   // Fit the control anchors with their meshes.
+   const auto anchor = [&](const VC::ButtonAnchor& a)
+   {
+      const auto it = std::ranges::find_if(spec.parts, [&a](const VC::PartSpec& p) { return p.name == a.part; });
+      const VC::Point p = it == spec.parts.end() ? a.point : VC::FitPoint(fit, *it, rigidOffsets[a.part], a.point);
+      return Vertex3Ds { static_cast<float>(p[0]), static_cast<float>(p[1]), static_cast<float>(p[2]) };
+   };
+   const auto half = [](const VC::ButtonAnchor& a) { return Vertex3Ds { static_cast<float>(a.half[0]), 0.f, static_cast<float>(a.half[1]) }; };
+   auto& n = m_visionNeutral;
+   n.active = true;
+   n.launchButton = variant == VC::Variant::LaunchButton;
+   n.fitSlope = table->GetPlayfieldSlope();
+   n.start = anchor(controls.start);
+   n.startHalf = half(controls.start);
+   n.coin = anchor(controls.coin);
+   n.coinHalf = half(controls.coin);
+   n.leftFlipper = anchor(controls.leftFlipper);
+   n.rightFlipper = anchor(controls.rightFlipper);
+   n.plunger = anchor(controls.plunger);
+   n.launch = anchor(controls.launch);
+   n.launchHalf = half(controls.launch);
+
+   // Backglass or DMD on the translite, which follows the head fit.
+   auto companion = table->m_filename;
+   companion.replace_extension(".directb2s");
+   const bool backglass = !find_case_insensitive_file_path(companion).empty();
+   const double frontY = max(controls.transliteFrontYTop, controls.transliteFrontYBottom) + 4.0;
+   const VC::Point low = fit.MapHead({ controls.glassX[0], frontY, controls.glassZ[0] });
+   const VC::Point high = fit.MapHead({ controls.glassX[1], frontY, controls.glassZ[1] });
+   const double glassWidth = high[0] - low[0], glassHeight = high[2] - low[2];
+   // A backglass fills the smoked glass. A DMD keeps its 4:1 shape at the stock cabinet's
+   // size, centred on the glass: the speaker panel's window is too small to read it.
+   const double displayWidth = backglass ? glassWidth * 0.95 : std::min(glassWidth * 0.9, MTOVPU(0.65));
+   const double displayHeight = backglass ? glassHeight * 0.95 : displayWidth / 4.0;
+   auto* display = Flasher::COMCreate();
+   display->Init(static_cast<float>((low[0] + high[0]) * 0.5), static_cast<float>(low[1]), false);
+   display->SetName(table->GetUniqueName("VisionCabinetDisplay"));
+   display->SetPartGroup(body);
+   display->m_d.m_renderMode = backglass ? FlasherData::EXT_RENDER : FlasherData::DMD;
+   display->m_d.m_renderStyle = backglass ? VPXWINDOW_Backglass : 0;
+   display->m_d.m_height = static_cast<float>((low[2] + high[2]) * 0.5);
+   display->m_d.m_rotX = -90.f;
+   display->Scale(static_cast<float>(displayWidth / 100.0), static_cast<float>(displayHeight / 100.0), {}, true);
+   table->AddPart(display);
+   display->Release();
+
+   PLOGI << "Vision Pro neutral cabinet: " << (n.launchButton ? "launch button" : "plunger") << " (" << variantReason << "), "
+         << parts.size() << " parts, " << triangles << " triangles, " << addedImages.size() << " textures";
+   PLOGI << "Vision Pro neutral cabinet glass at the lockbar: " << glassInput.glassBottom << " -> " << glass.height << " VPU ("
+         << VPUTOCM(static_cast<float>(glass.height)) << " cm" << (glass.limitedBy.empty() ? "" : ", kept above " + glass.limitedBy)
+         << (glass.mainSurfaceName.empty() ? "" : ", from the raised playfield " + glass.mainSurfaceName) << "), file version "
+         << table->m_loadedFileVersion << ", top " << glass.newTop << ", bottom " << glass.newBottom;
+   PLOGI << "Vision Pro neutral cabinet fit: playfield " << fitTable.Width() << " x " << fitTable.Length() << " VPU, slope " << fitTable.slope
+         << " deg (authored " << lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty) << "), rail slope "
+         << RADTOANG(static_cast<float>(atan(fit.railSlope))) << " deg, plunger x " << fit.plungerX << ", lockbar " << fit.lockbarZ << " VPU, rail above playfield "
+         << fit.RailTopZ(fit.yFront) - fit.PlayfieldZ(fit.yFront) << " / " << fit.RailTopZ(fit.yBack) - fit.PlayfieldZ(fit.yBack) << " VPU";
+   return true;
 }
 
 void VRDevice::UpdateVisionLegacyRoomPosition(ModelViewProj& mvp) const

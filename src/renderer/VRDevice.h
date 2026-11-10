@@ -254,6 +254,16 @@ public:
 private:
    void ConfigureVisionRoom(PinTable* table);
    void AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, bool gorgarCoinDoor);
+   bool AddVisionNeutralCabinet(PinTable* table);
+   // The neutral cabinet's fitted controls, in cabinet space (VPX units).
+   struct VisionNeutralCabinet
+   {
+      bool active = false;
+      bool launchButton = false;
+      float fitSlope = 0.f; // playfield slope the cabinet was fitted to, kept level
+      Vertex3Ds start, startHalf, coin, coinHalf, leftFlipper, rightFlipper, plunger, launch, launchHalf;
+   };
+   VisionNeutralCabinet m_visionNeutral;
    VPINBALL_VISION_HOST m_visionHost{};
    std::unordered_set<const IEditable*> m_visionLegacyRoomParts;
    Matrix3D m_visionLegacyRoomView[2];

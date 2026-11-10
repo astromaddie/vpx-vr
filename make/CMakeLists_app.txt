@@ -722,7 +722,7 @@ elseif(PLATFORM STREQUAL "ios" OR PLATFORM STREQUAL "ios-simulator" OR PLATFORM 
    endif()
 
    if(PLATFORM STREQUAL "visionos")
-      list(APPEND VPINBALL_SOURCES lib/src/VPinballLib_visionOS.cpp src/renderer/VRDeviceVision.cpp)
+      list(APPEND VPINBALL_SOURCES lib/src/VPinballLib_visionOS.cpp src/renderer/VRDeviceVision.cpp src/renderer/VisionCabinetFit.cpp)
    endif()
 
    if(PLATFORM STREQUAL "android")

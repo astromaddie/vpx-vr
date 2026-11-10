@@ -72,6 +72,9 @@ typedef struct {
    VPINBALL_VISION_POINT leftFlipper, rightFlipper;
    float plungerX, plungerY, plungerZ;
    int hasPlunger;
+   // A launch button pokes Launch Ball. Cabinets have a plunger knob or this button.
+   VPINBALL_VISION_BUTTON_FACE launch;
+   int hasLaunchButton;
 } VPINBALL_VISION_LAYOUT;
 
 // Dimensions and control placement in metres. Read after PLAYER_READY.

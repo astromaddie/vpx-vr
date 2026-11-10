@@ -659,6 +659,7 @@ public:
    Vertex2D EvaluateGlassHeight() const;
    float m_glassBottomHeight = 210.f; // Height of glass above playfield at bottom of playfield
    float m_glassTopHeight = 210.f; // Height of glass above playfield at top of playfield
+   int m_loadedFileVersion = CURRENT_FILE_FORMAT_VERSION; // File format version the table was loaded from (before 10.8, the glass was flat)
 
    float m_defaultBulbIntensityScaleOnBall = 1.f;
 

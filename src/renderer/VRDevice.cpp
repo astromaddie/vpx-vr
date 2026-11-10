@@ -1592,7 +1592,13 @@ void VRDevice::UpdateWorldTransforms()
       // This allows to fit the cabinet & playfield models to the real world space.
       // If user adjust the inclination, then the cab is rotated as it would in real life (still missing the legs stretching a bit using caster adjustments)
       const float groundToPlayfieldHeight = m_scale * (table->m_groundToLockbarHeight - glassBottomHeight);
-      const float baseSlope = lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty);
+      float baseSlope = lerp(table->m_angletiltMin, table->m_angletiltMax, table->m_difficulty);
+      #if defined(VPX_VISIONOS_HEADSET)
+         // The neutral cabinet is fitted to the live slope with a level bottom, so it only
+         // turns if the slope changes after the fit.
+         if (m_visionNeutral.active)
+            baseSlope = m_visionNeutral.fitSlope;
+      #endif
 
       // Before 10.8.1, there weren't multiple space reference, so room used to be inclined to compensate the playfield inclination.
       // This may leads to slight visual artefact for old VR room (that is to say very slightly inclined room).
