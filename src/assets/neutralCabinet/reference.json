@@ -1,0 +1,48 @@
+{
+ "reference": {
+  "donor_playfield": {
+   "width": 1000.0,
+   "length": 1910.0,
+   "slope_deg": 5.5,
+   "glass_height": 250.0
+  },
+  "frame_tilt_deg": 3.8952,
+  "playfield_front_y": 1910.0,
+  "playfield_back_y": 4.412,
+  "playfield_front_z": 1762.855,
+  "lockbar_top_z": 1848.387,
+  "lockbar_inner_y": 1968.575,
+  "lockbar_bottom_z": 1772.362,
+  "rail_front_z": 1854.173,
+  "rail_slope": 0.187727,
+  "body_bottom_z": 1059.421,
+  "body_left_x": -37.381,
+  "body_right_x": 1031.541,
+  "body_front_y": 2086.485,
+  "body_back_y": -377.981,
+  "front_panel_y": 2086.485,
+  "launch_axis": [
+   944.422,
+   1688.341
+  ],
+  "leg_top_z": 1426.847
+ },
+ "triangles": {
+  "Body": 212,
+  "StartButton": 273,
+  "CoinInserts": 6,
+  "Backbox": 198,
+  "Translite": 12,
+  "FlipperButtons": 2386,
+  "CoinDoor": 4913,
+  "CoinDoorHardware": 447,
+  "Hinges": 1620,
+  "Lockbar": 1928,
+  "Rails": 72,
+  "Legs": 6215,
+  "PlungerHousing": 1028,
+  "Plunger": 6578,
+  "LaunchButton": 1024,
+  "LaunchButtonHousing": 1024
+ }
+}

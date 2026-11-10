@@ -1,0 +1,40 @@
+{
+  "frame": "VPX units; x right, y toward the player, z up from the floor. x/y follow the donor playfield (0..1000 by 0..1910); the frame is the donor cabinet levelled on its four feet.",
+  "x_knots": [[110, "left"], [165, "centre"], [825, "centre"], [970, "right"]],
+  "y_knots": [[350, "back"], [1650, "front"]],
+  "leg_knots": [150, 1000],
+  "glass_clamp": [100, 300],
+  "parts": [
+    {"name": "Body", "mesh": "Body", "group": "cabinet", "deform": "field", "material": "VRCab_SatinBlack", "image": "VRCab_Cabinet"},
+    {"name": "StartButton", "mesh": "StartButton", "group": "cabinet", "deform": "rigid", "anchor": "left", "material": "VRCab_SatinBlack", "image": "VRCab_Cabinet"},
+    {"name": "CoinInserts", "mesh": "CoinInserts", "group": "cabinet", "deform": "rigid", "anchor": "centre", "material": "VRCab_Label", "image": "VRCab_Cabinet"},
+    {"name": "CoinDoor", "mesh": "CoinDoor", "group": "cabinet", "deform": "rigid", "anchor": "centre", "material": "VRCab_Powdercoat"},
+    {"name": "CoinDoorHardware", "mesh": "CoinDoorHardware", "group": "cabinet", "deform": "rigid", "anchor": "centre", "material": "VRCab_Chrome"},
+    {"name": "FlipperButtons", "mesh": "FlipperButtons", "group": "cabinet", "deform": "field", "material": "VRCab_ButtonRed"},
+    {"name": "Lockbar", "mesh": "Lockbar", "group": "cabinet", "deform": "field", "material": "VRCab_Chrome"},
+    {"name": "Rails", "mesh": "Rails", "group": "cabinet", "deform": "field", "material": "VRCab_Chrome"},
+    {"name": "Backbox", "mesh": "Backbox", "group": "cabinet", "deform": "head", "material": "VRCab_SatinBlack", "image": "VRCab_Satin"},
+    {"name": "Translite", "mesh": "Translite", "group": "cabinet", "deform": "head", "material": "VRCab_Translite", "image": "VRCab_Translite"},
+    {"name": "Hinges", "mesh": "Hinges", "group": "cabinet", "deform": "head", "material": "VRCab_Powdercoat"},
+    {"name": "Legs", "mesh": "Legs", "group": "feet", "deform": "legs", "material": "VRCab_Chrome"},
+    {"name": "PlungerHousing", "mesh": "PlungerHousing", "group": "cabinet", "deform": "rigid", "anchor": "plunger", "material": "VRCab_Chrome", "variants": ["plunger"]},
+    {"name": "Plunger", "mesh": "Plunger", "group": "cabinet", "deform": "rigid", "anchor": "plunger", "material": "VRCab_Chrome", "variants": ["plunger"]},
+    {"name": "LaunchButton", "mesh": "LaunchButton", "group": "cabinet", "deform": "rigid", "anchor": "plunger", "material": "VRCab_ButtonRed", "variants": ["launch-button"]},
+    {"name": "LaunchButtonHousing", "mesh": "LaunchButtonHousing", "group": "cabinet", "deform": "rigid", "anchor": "plunger", "material": "VRCab_BlackPlastic", "variants": ["launch-button"]}
+  ],
+  "images": {
+    "VRCab_Cabinet": "VRCab_Cabinet.jpg",
+    "VRCab_Satin": "VRCab_Satin.jpg",
+    "VRCab_Translite": "VRCab_Translite.jpg"
+  },
+  "materials": {
+    "VRCab_SatinBlack": {"type": "basic", "base_color": "#ffffff", "glossy_color": "#2a2a2c", "clearcoat_color": "#000000", "wrap_lighting": 0.2, "roughness": 0.35, "glossy_image_lerp": 1.0, "edge": 0.6, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_Interior": {"type": "basic", "base_color": "#141414", "glossy_color": "#101010", "clearcoat_color": "#000000", "wrap_lighting": 0.3, "roughness": 0.2, "glossy_image_lerp": 1.0, "edge": 0.5, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_Label": {"type": "basic", "base_color": "#ffffff", "glossy_color": "#404040", "clearcoat_color": "#000000", "wrap_lighting": 0.2, "roughness": 0.5, "glossy_image_lerp": 1.0, "edge": 0.6, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_Powdercoat": {"type": "basic", "base_color": "#0d0d0e", "glossy_color": "#3a3a3c", "clearcoat_color": "#000000", "wrap_lighting": 0.3, "roughness": 0.25, "glossy_image_lerp": 1.0, "edge": 0.5, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_Chrome": {"type": "metal", "base_color": "#c8c8ca", "glossy_color": "#000000", "clearcoat_color": "#ffffff", "wrap_lighting": 0.3, "roughness": 0.85, "glossy_image_lerp": 1.0, "edge": 1.0, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_ButtonRed": {"type": "basic", "base_color": "#8c0c0a", "glossy_color": "#b0b0b0", "clearcoat_color": "#300000", "wrap_lighting": 0.2, "roughness": 0.7, "glossy_image_lerp": 1.0, "edge": 0.9, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_BlackPlastic": {"type": "basic", "base_color": "#0c0c0c", "glossy_color": "#606060", "clearcoat_color": "#000000", "wrap_lighting": 0.2, "roughness": 0.7, "glossy_image_lerp": 1.0, "edge": 0.8, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05},
+    "VRCab_Translite": {"type": "basic", "base_color": "#ffffff", "glossy_color": "#9a9aa0", "clearcoat_color": "#202024", "wrap_lighting": 0.0, "roughness": 0.9, "glossy_image_lerp": 1.0, "edge": 1.0, "edge_alpha": 1.0, "opacity": 1.0, "opacity_active": false, "thickness": 0.05}
+  }
+}

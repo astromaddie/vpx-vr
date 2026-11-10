@@ -1,0 +1,88 @@
+{
+ "frame": "VPX units in the canonical cabinet frame, before fitting. 'part' is the mesh whose fit moves the anchor.",
+ "start": {
+  "part": "StartButton",
+  "point": [
+   70.0993,
+   2085.0761,
+   1632.30895
+  ],
+  "half": [
+   28.254,
+   27.77634999999998
+  ]
+ },
+ "coin": {
+  "part": "CoinInserts",
+  "point": [
+   490.451,
+   2101.13935,
+   1635.94795
+  ],
+  "half": [
+   129.3049,
+   30.163150000000087
+  ]
+ },
+ "leftFlipper": {
+  "part": "FlipperButtons",
+  "point": [
+   -52.8969,
+   1934.26885,
+   1731.8303
+  ]
+ },
+ "rightFlipper": {
+  "part": "FlipperButtons",
+  "point": [
+   1043.0972,
+   1934.26885,
+   1731.8303
+  ]
+ },
+ "plunger": {
+  "part": "Plunger",
+  "point": [
+   946.8224,
+   2202.36575,
+   1727.6370499999998
+  ]
+ },
+ "launch": {
+  "part": "LaunchButton",
+  "point": [
+   944.5373500000001,
+   2123.3065,
+   1688.80015
+  ],
+  "half": [
+   50.04064999999997,
+   50.04065000000003
+  ]
+ },
+ "translite": {
+  "part": "Translite",
+  "front_y_top": 7.0939,
+  "front_y_bottom": -7.9648,
+  "glass": {
+   "x": [
+    -129.7431,
+    1121.097
+   ],
+   "z": [
+    2461.142777017115,
+    3316.8762
+   ]
+  },
+  "window": {
+   "x": [
+    343.7781109981531,
+    646.3408390912626
+   ],
+   "z": [
+    2270.24839804401,
+    2430.8629789731053
+   ]
+  }
+ }
+}
