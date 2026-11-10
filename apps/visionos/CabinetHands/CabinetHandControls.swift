@@ -23,6 +23,8 @@ struct CabinetControlsLayout {
     var coinFace: CabinetButtonFace? = nil
     var leftFlipperCap: SIMD3<Float>? = nil
     var rightFlipperCap: SIMD3<Float>? = nil
+    /// A Launch Ball button on the front panel, for cabinets without a plunger knob.
+    var launchFace: CabinetButtonFace? = nil
     var usesWristGestures = false
 
     // VPX's lockbar calculation leaves 2 1/4 inches around the playfield.
@@ -230,7 +232,7 @@ enum CabinetAction: Hashable {
 
 enum CabinetInput: Equatable {
     case flipper(CabinetHandSide, pressed: Bool)
-    case insertCoin, pressStart
+    case insertCoin, pressStart, pressLaunchBall
     case nudge(CabinetNudgeDirection)
     case pullPlunger(Float), releasePlunger(Float), cancelPlunger
 
@@ -241,7 +243,7 @@ enum CabinetInput: Equatable {
         case .insertCoin: .addCredit
         case .pressStart: .start
         case .nudge: .nudge
-        case .pullPlunger, .releasePlunger, .cancelPlunger: .launchBall
+        case .pullPlunger, .releasePlunger, .cancelPlunger, .pressLaunchBall: .launchBall
         }
     }
 }
@@ -555,6 +557,7 @@ struct CabinetHandControls {
         var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown || wristFlick.isDown }
         private var startArmed = false
         private var coinArmed = false
+        private var launchArmed = false
 
         mutating func reset(_ side: CabinetHandSide) -> [CabinetInput] {
             let events: [CabinetInput] = flipperDown ? [.flipper(side, pressed: false)] : []
@@ -598,6 +601,10 @@ struct CabinetHandControls {
                 return face.contains($0)
             }) {
                 events.append(.insertCoin)
+            }
+            if let launch = layout.launchFace,
+               Self.poke(fingertip, at: launch.position, contactDepth: 0.012, armed: &launchArmed, contains: launch.contains) {
+                events.append(.pressLaunchBall)
             }
             return events
         }

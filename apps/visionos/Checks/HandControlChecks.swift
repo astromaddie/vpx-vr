@@ -81,6 +81,39 @@ struct HandControlChecks {
         checkRoomGrab()
         checkWristMenu()
         checkPlunger()
+        checkLaunchButton()
+    }
+
+    static func checkLaunchButton() {
+        // The neutral cabinet's launch button, roughly where Attack from Mars puts it.
+        let face = CabinetButtonFace(position: [0.24, -0.12, 0.08], halfSize: [0.044, 0.044])
+        let layout = CabinetControlsLayout(
+            startFace: CabinetButtonFace(position: [-0.24, -0.20, 0.06], halfSize: [0.032, 0.032]),
+            coinFace: CabinetButtonFace(position: [0, -0.20, 0.07], halfSize: [0.087, 0.033]),
+            launchFace: face, usesWristGestures: true)
+        var controls = CabinetHandControls(layout: layout)
+        var time = 0.0
+        func poke(_ offset: SIMD3<Float>, pose: CabinetHandPose = .unknown) -> [CabinetInput] {
+            time += 0.016
+            return controls.update(.right, sample: .init(index: face.position + offset, pose: pose), at: time)
+        }
+        precondition(CabinetInput.pressLaunchBall.action == .launchBall)
+        precondition(poke([0, 0, 0.04]).isEmpty)
+        precondition(poke([0.03, -0.02, 0.006]) == [.pressLaunchBall])
+        precondition(poke([0.03, -0.02, 0]).isEmpty)
+        precondition(poke([0, 0, 0.012]).isEmpty)
+        precondition(poke([0, 0, 0.04]).isEmpty)
+        precondition(poke([0, 0, 0.004]) == [.pressLaunchBall])
+        // Beside the button, or with a closed fist, nothing fires.
+        precondition(poke([0, 0, 0.04]).isEmpty)
+        precondition(poke([0.06, 0, 0.004]).isEmpty)
+        precondition(poke([0, 0, 0.04]).isEmpty)
+        precondition(poke([0, 0, 0.004], pose: .fist).isEmpty)
+        // Without a launch face the same pokes do nothing.
+        var plain = CabinetHandControls(layout: CabinetControlsLayout(usesWristGestures: true))
+        precondition(plain.update(.right, sample: .init(index: face.position + [0, 0, 0.04]), at: 1).isEmpty)
+        precondition(plain.update(.right, sample: .init(index: face.position), at: 1.016).isEmpty)
+        print("Hand controls passed: launch button poke, re-arm, edge and closed-fist rejection")
     }
 
     static func plungerPose(

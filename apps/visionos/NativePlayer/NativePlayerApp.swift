@@ -304,6 +304,10 @@ private final class NativePlayer {
             simulatorSequence = arguments.contains("--check-library")
             if simulatorSequence {
                 simulatorTables = tables
+                // Run the library checks on one table, for example to capture it.
+                if let index = arguments.firstIndex(of: "--only-table"), arguments.indices.contains(index + 1) {
+                    simulatorTables = tables.filter { $0.title == arguments[index + 1] }
+                }
             } else if arguments.contains("--play-time-machine") {
                 simulatorTables = Array(tables.filter { $0.title == "Time Machine" }.prefix(1))
             }
@@ -519,6 +523,7 @@ private final class NativePlayer {
                         startFace: face(dimensions.start), coinFace: face(dimensions.coin),
                         leftFlipperCap: dimensions.leftFlipper.x < 0 ? SIMD3(dimensions.leftFlipper.x, dimensions.leftFlipper.y, dimensions.leftFlipper.z) : nil,
                         rightFlipperCap: dimensions.rightFlipper.x > 0 ? SIMD3(dimensions.rightFlipper.x, dimensions.rightFlipper.y, dimensions.rightFlipper.z) : nil,
+                        launchFace: dimensions.hasLaunchButton == 0 ? nil : face(dimensions.launch),
                         usesWristGestures: true))
                     let height = dimensions.height
                     #if targetEnvironment(simulator)
@@ -647,6 +652,62 @@ private final class NativePlayer {
                 VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator button \(button.rawValue) stayed pressed")
                 return
             }
+        }
+
+        if let launch = tracker.layout.launchFace {
+            // A launch button cabinet: the poke pulses Launch Ball and the table's
+            // script fires the ball. Follow the ball at the shooter on Attack from Mars.
+            var ball = checkLaunchButton ? VPinballVisionSampleBall(-1, "swplunger") : nil
+            // A fresh NVRAM makes Attack from Mars clear its totals before it serves
+            // a ball. Credit and start again until the ball reaches the shooter.
+            var attempts = 0
+            while let waiting = ball, waiting.id < 0, attempts < 4, !Task.isCancelled {
+                attempts += 1
+                VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator waiting for a ball at the shooter, attempt \(attempts)")
+                poke(coin.position)
+                try? await Task.sleep(for: .milliseconds(1100))
+                poke(start.position)
+                try? await Task.sleep(for: .seconds(6))
+                ball = VPinballVisionSampleBall(-1, "swplunger")
+            }
+            poke(launch.position - [launch.halfSize.x + 0.03, 0, 0])
+            try? await Task.sleep(for: .milliseconds(30))
+            guard !pressed(VPINBALL_VISION_LAUNCH_BALL) else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator registered a poke beside the launch button")
+                return
+            }
+            poke(launch.position)
+            try? await Task.sleep(for: .milliseconds(30))
+            guard pressed(VPINBALL_VISION_LAUNCH_BALL) else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator launch button poke never reached Launch Ball")
+                return
+            }
+            if let ball {
+                var frontmostY = ball.y
+                var peakSpeed: Float = 0
+                let deadline = ContinuousClock.now + .seconds(2)
+                while ContinuousClock.now < deadline && !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(8))
+                    let current = VPinballVisionSampleBall(ball.id, nil)
+                    if current.id == ball.id && ball.id >= 0 {
+                        frontmostY = min(frontmostY, current.y)
+                        peakSpeed = max(peakSpeed, -current.velocityY)
+                    }
+                }
+                let travel = ball.y - frontmostY
+                VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator launch button shot: ball \(ball.id), Y \(ball.y) to \(frontmostY), travel \(travel) VP units, peak up-lane velocity \(peakSpeed)")
+                guard ball.id >= 0, travel > 350, peakSpeed > 0 else {
+                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator launch button shot did not reach the required point in the shooter lane")
+                    return
+                }
+            } else {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            guard !pressed(VPINBALL_VISION_LAUNCH_BALL) else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator Launch Ball stayed pressed")
+                return
+            }
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified the launch button poke and Launch Ball release")
         }
 
         if let handle = tracker.layout.plunger {
@@ -831,6 +892,8 @@ private final class NativePlayer {
             pulse(VPINBALL_VISION_ADD_CREDIT)
         case .pressStart:
             pulse(VPINBALL_VISION_START)
+        case .pressLaunchBall:
+            pulse(VPINBALL_VISION_LAUNCH_BALL)
         case let .nudge(direction):
             VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Vision Pro two-fist nudge \(direction)")
             let button = switch direction {

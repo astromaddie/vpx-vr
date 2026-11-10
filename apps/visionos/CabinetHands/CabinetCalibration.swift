@@ -247,6 +247,7 @@ final class CabinetCalibration {
         case let .flipper(side, pressed): "\(side == .left ? "left" : "right")Flipper:\(pressed ? "down" : "up")"
         case .insertCoin: "coin"
         case .pressStart: "start"
+        case .pressLaunchBall: "launchBall"
         case let .nudge(direction): "nudge:\(direction)"
         case let .pullPlunger(amount): "plungerHold:\(CalibrationMetrics.integer(amount * 100) ?? 0)"
         case let .releasePlunger(amount): "plungerRelease:\(CalibrationMetrics.integer(amount * 100) ?? 0)"
