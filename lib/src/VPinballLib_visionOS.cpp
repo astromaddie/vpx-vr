@@ -11,6 +11,7 @@
 #include "physics/cabinet/NudgeHandler.h"
 #include "renderer/VRDevice.h"
 #include "pinmame/libpinmame.h"
+#include <bgfx/bgfx.h>
 #include "VPinballLib.h"
 #include "../include/vpinball/VPinballVision.h"
 
@@ -85,6 +86,14 @@ VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int press
       return;
    }
    VPinballLib::VPinballLib::Instance().SetVisionButton(button, pressed != 0);
+}
+
+VPINBALLAPI float VPinballVisionLastGpuMilliseconds(void)
+{
+   const bgfx::Stats* const stats = bgfx::getStats();
+   if (stats == nullptr || stats->gpuTimerFreq <= 0 || stats->gpuTimeEnd <= stats->gpuTimeBegin)
+      return -1.f;
+   return static_cast<float>(static_cast<double>(stats->gpuTimeEnd - stats->gpuTimeBegin) * 1000. / static_cast<double>(stats->gpuTimerFreq));
 }
 
 VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull)

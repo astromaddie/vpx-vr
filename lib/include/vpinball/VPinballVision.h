@@ -80,6 +80,9 @@ typedef struct {
 // Dimensions and control placement in metres. Read after PLAYER_READY.
 VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void);
 VPINBALLAPI void VPinballVisionSetButton(VPINBALL_VISION_INPUT button, int pressed);
+// GPU time of the newest frame BGFX has finished, in milliseconds, or -1 when
+// none has finished yet. Call it from endFrame, which runs on BGFX's API thread.
+VPINBALLAPI float VPinballVisionLastGpuMilliseconds(void);
 // Pull is measured from the resting position (0) to fully pulled back (1).
 // Returns 1 if the release needs a Launch Ball button pulse.
 VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);

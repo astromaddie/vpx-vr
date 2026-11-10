@@ -11,9 +11,25 @@ import SwiftUI
 struct NativeLayerConfiguration: CompositorLayerConfiguration {
     private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
 
+    /// Launch with `-Foveation NO` to compare against the uniform drawable.
+    static var foveationAllowed: Bool { UserDefaults.standard.object(forKey: "Foveation") as? Bool ?? true }
+
+    /// Launch with `-RenderQuality 0.5` to try a lower drawable resolution.
+    static var renderQuality: Float {
+        let value = UserDefaults.standard.object(forKey: "RenderQuality") as? Double ?? 1
+        return Float(min(max(value, 0), 1))
+    }
+
     func makeConfiguration(capabilities: LayerRenderer.Capabilities, configuration: inout LayerRenderer.Configuration) {
-        let layouts = capabilities.supportedLayouts(options: [])
-        configuration.isFoveationEnabled = false
+        // Foveation gives the drawable a rate map that spends more physical
+        // pixels where the eye looks, and render quality raises its resolution.
+        // Both need foveation, so the fallback is today's uniform drawable.
+        let foveation = capabilities.supportsFoveation && Self.foveationAllowed
+        let layouts = capabilities.supportedLayouts(options: foveation ? [.foveationEnabled] : [])
+        configuration.isFoveationEnabled = foveation
+        if foveation {
+            configuration.maxRenderQuality = .init(rawValue: Self.renderQuality)
+        }
         if layouts.contains(.layered) {
             configuration.layout = .layered
         } else if !layouts.contains(configuration.layout), let layout = layouts.first {
@@ -27,6 +43,10 @@ struct NativeLayerConfiguration: CompositorLayerConfiguration {
         }
         let selection = "layout \(configuration.layout), color \(configuration.colorFormat.rawValue), depth \(configuration.depthFormat.rawValue), near \(configuration.defaultDepthRange.y)"
         Self.log.info("Layer: \(selection, privacy: .public)")
+        let quality = foveation ? String(format: "%.2f", configuration.maxRenderQuality.rawValue) : "n/a"
+        let defaultQuality = String(format: "%.2f", capabilities.defaultRenderQuality.rawValue)
+        let support = "supported \(capabilities.supportsFoveation), allowed \(Self.foveationAllowed)"
+        Self.log.info("Layer foveation: \(foveation ? "on" : "off", privacy: .public) (\(support, privacy: .public)), max render quality \(quality, privacy: .public), default \(defaultQuality, privacy: .public)")
     }
 }
 
@@ -49,6 +69,31 @@ final class NativeCompositor: @unchecked Sendable {
         let anchor: DeviceAnchor?
     }
 
+    private enum CopyPath: Equatable {
+        case uniform
+        case viewMaps(Int)
+        case layeredMap
+        case unsupportedMaps(Int)
+    }
+
+    /// Counters for the periodic timing line. Times are host seconds, the
+    /// same clock as `CACurrentMediaTime` and command buffer GPU times.
+    private struct Timing {
+        var windowStart = 0.0
+        var lastPresentation: Double?
+        var frameInterval = Double.infinity
+        var presented = 0
+        var missed = 0
+        var copies = 0
+        var lateCopies = 0
+        var copySeconds = 0.0
+        var copyMax = 0.0
+        var vpxFrames = 0
+        var vpxSamples = 0
+        var vpxMilliseconds = 0.0
+        var vpxMax = 0.0
+    }
+
     private struct Handoff {
         var originFromCabinet: simd_float4x4?
         var originFromRoom: simd_float4x4?
@@ -68,11 +113,15 @@ final class NativeCompositor: @unchecked Sendable {
     private let mixedReality: Bool
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let layeredPipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
     private let pictures: [Picture]
     private let handoff = OSAllocatedUnfairLock(uncheckedState: Handoff())
+    private let timing = OSAllocatedUnfairLock(initialState: Timing())
+    private static let timingPeriod = 5.0
     // Only touched by the presentation thread.
     private var pictureCount = 0
+    private var copyPath: CopyPath?
     #if targetEnvironment(simulator)
     // Only accessed by VPX's render thread.
     private var checkFirstRenderStall = CommandLine.arguments.contains("--check-render-stall")
@@ -108,17 +157,26 @@ final class NativeCompositor: @unchecked Sendable {
             return Picture(color: color, depth: depth)
         }
 
-        let library = try device.makeLibrary(source: Self.blitSource, options: nil)
+        let library = try device.makeLibrary(source: CompositorShaders.source, options: nil)
         let pass = MTLRenderPipelineDescriptor()
-        pass.vertexFunction = library.makeFunction(name: "fullScreen")
-        pass.fragmentFunction = library.makeFunction(name: "copyEye")
+        pass.vertexFunction = library.makeFunction(name: CompositorShaders.fullScreen)
+        pass.fragmentFunction = library.makeFunction(name: CompositorShaders.copyEye)
         pass.colorAttachments[0].pixelFormat = layer.configuration.colorFormat
         pass.depthAttachmentPixelFormat = layer.configuration.depthFormat
         pipeline = try device.makeRenderPipelineState(descriptor: pass)
+        pass.vertexFunction = library.makeFunction(name: CompositorShaders.fullScreenLayered)
+        pass.fragmentFunction = library.makeFunction(name: CompositorShaders.copyLayeredEye)
+        pass.inputPrimitiveTopology = .triangle
+        layeredPipeline = try device.makeRenderPipelineState(descriptor: pass)
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.isDepthWriteEnabled = true
         guard let depthState = device.makeDepthStencilState(descriptor: depthDescriptor) else { throw SetupError.metal }
         self.depthState = depthState
+
+        if layer.configuration.isFoveationEnabled {
+            layer.renderQuality = .init(rawValue: NativeLayerConfiguration.renderQuality)
+            Self.log.info("Render quality: \(String(format: "%.2f", layer.renderQuality.rawValue), privacy: .public)")
+        }
     }
 
     // Called after the player can service a frame request without blocking on table load.
@@ -201,6 +259,18 @@ final class NativeCompositor: @unchecked Sendable {
     }
 
     private func end(rendered: Bool) {
+        if rendered {
+            // BGFX's GPU time for its newest finished frame, read on its API thread.
+            let milliseconds = Double(VPinballVisionLastGpuMilliseconds())
+            timing.withLock { counters in
+                counters.vpxFrames += 1
+                if milliseconds >= 0 {
+                    counters.vpxSamples += 1
+                    counters.vpxMilliseconds += milliseconds
+                    counters.vpxMax = max(counters.vpxMax, milliseconds)
+                }
+            }
+        }
         handoff.withLock { state in
             if rendered, let drawing = state.drawing {
                 state.latest = drawing
@@ -217,8 +287,8 @@ final class NativeCompositor: @unchecked Sendable {
         }
         frame.startUpdate()
         frame.endUpdate()
-        guard let timing = frame.predictTiming() else { return }
-        LayerRenderer.Clock().wait(until: timing.optimalInputTime)
+        guard let predicted = frame.predictTiming() else { return }
+        LayerRenderer.Clock().wait(until: predicted.optimalInputTime)
         guard let command = queue.makeCommandBuffer() else { return }
         frame.startSubmission()
 
@@ -228,6 +298,19 @@ final class NativeCompositor: @unchecked Sendable {
 
         let drawable = drawables[chosen]
         let time = Self.seconds(LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.presentationTime))
+        let deadline = Self.seconds(LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.renderingDeadline))
+        recordPresentation(at: time)
+        command.addCompletedHandler { [timing] buffer in
+            guard buffer.status == .completed, buffer.gpuEndTime > 0 else { return }
+            let seconds = buffer.gpuEndTime - buffer.gpuStartTime
+            let late = buffer.gpuEndTime > deadline
+            timing.withLock { counters in
+                counters.copies += 1
+                counters.copySeconds += seconds
+                counters.copyMax = max(counters.copyMax, seconds)
+                if late { counters.lateCopies += 1 }
+            }
+        }
         let anchor = world.state == .running ? world.queryDeviceAnchor(atTimestamp: time) : nil
         let request = makeRequest(drawable, anchor: anchor, presentationTime: time)
         // Hold the slot until the copy is queued. VPX can then reuse it on
@@ -241,6 +324,7 @@ final class NativeCompositor: @unchecked Sendable {
                 if pictureCount == 1, let viewport = drawable.views.first?.textureMap.viewport {
                     Self.log.info("Compositor eye viewport: \(Int(viewport.width)) × \(Int(viewport.height)), \(drawable.views.count) views")
                 }
+                logCopyPath(drawable)
                 #if targetEnvironment(simulator)
                 let report = pictureCount == 1 || pictureCount.isMultiple(of: 120)
                 #else
@@ -263,6 +347,86 @@ final class NativeCompositor: @unchecked Sendable {
             #if targetEnvironment(simulator)
             state.submittedFrames += 1
             #endif
+        }
+        reportTiming()
+    }
+
+    private func recordPresentation(at time: Double) {
+        timing.withLock { counters in
+            counters.presented += 1
+            if let last = counters.lastPresentation {
+                let interval = time - last
+                // The shortest step seen is the display's frame interval.
+                if interval > 0.004 { counters.frameInterval = min(counters.frameInterval, interval) }
+                if counters.frameInterval.isFinite {
+                    counters.missed += max(0, Int((interval / counters.frameInterval).rounded()) - 1)
+                }
+            }
+            counters.lastPresentation = time
+        }
+    }
+
+    private func reportTiming() {
+        let now = CACurrentMediaTime()
+        let line: String? = timing.withLock { counters in
+            if counters.windowStart == 0 {
+                counters.windowStart = now
+                return nil
+            }
+            let span = now - counters.windowStart
+            guard span >= Self.timingPeriod else { return nil }
+            let copyAverage = counters.copies > 0 ? counters.copySeconds * 1000 / Double(counters.copies) : 0
+            let vpxAverage = counters.vpxSamples > 0 ? counters.vpxMilliseconds / Double(counters.vpxSamples) : 0
+            let vpxGPU = counters.vpxSamples > 0
+                ? String(format: "VPX GPU %.2f ms avg %.2f max", vpxAverage, counters.vpxMax) : "VPX GPU unavailable"
+            let line = String(
+                format: "Timing over %.1f s: presented %.1f Hz, %d missed, %d late copies, VPX %.1f fps, copy GPU %.2f ms avg %.2f max, %@",
+                span, Double(counters.presented) / span, counters.missed, counters.lateCopies,
+                Double(counters.vpxFrames) / span, copyAverage, counters.copyMax * 1000, vpxGPU)
+            counters = Timing(windowStart: now, lastPresentation: counters.lastPresentation,
+                              frameInterval: counters.frameInterval)
+            return line
+        }
+        guard let line else { return }
+        let quality = layer.configuration.isFoveationEnabled ? String(format: ", render quality %.2f", layer.renderQuality.rawValue) : ""
+        Self.log.info("\(line, privacy: .public)\(quality, privacy: .public)")
+    }
+
+    private static func copyPath(for drawable: LayerRenderer.Drawable) -> CopyPath {
+        let maps = drawable.rasterizationRateMaps
+        let views = drawable.views
+        guard !maps.isEmpty else { return .uniform }
+        // Layered foveation has one map with a layer per slice. Each layer
+        // applies to the slice the vertex stage routes the view to, so both
+        // views are drawn in one layered pass.
+        let textures = Set(views.map(\.textureMap.textureIndex))
+        let slices = Set(views.map(\.textureMap.sliceIndex))
+        if maps.count == 1, views.count > 1, textures.count == 1, slices.count == views.count,
+           maps[0].layerCount > slices.max() ?? 0 {
+            return .layeredMap
+        }
+        // Dedicated textures, or a single view, get one map per view.
+        if maps.count == views.count { return .viewMaps(maps.count) }
+        return .unsupportedMaps(maps.count)
+    }
+
+    private func logCopyPath(_ drawable: LayerRenderer.Drawable) {
+        let path = Self.copyPath(for: drawable)
+        guard path != copyPath else { return }
+        copyPath = path
+        let texture = drawable.colorTextures[drawable.views.first?.textureMap.textureIndex ?? 0]
+        let size = "drawable texture \(texture.width) × \(texture.height) × \(texture.arrayLength)"
+        switch path {
+        case .uniform:
+            Self.log.info("Compositor path: uniform, no rate map, \(size, privacy: .public)")
+        case .viewMaps, .layeredMap:
+            let maps = drawable.rasterizationRateMaps
+            let map = maps[0]
+            let physical = map.physicalSize(layer: 0)
+            let kind = path == .layeredMap ? "layered pass with one map of \(map.layerCount) layers" : "a pass per view with \(maps.count) maps"
+            Self.log.info("Compositor path: foveated, \(kind, privacy: .public), logical \(map.screenSize.width) × \(map.screenSize.height), physical \(physical.width) × \(physical.height), \(size, privacy: .public)")
+        case .unsupportedMaps(let count):
+            Self.log.error("Compositor path: \(count) rate maps for \(drawable.views.count) views is not handled, drawing without them, \(size, privacy: .public)")
         }
     }
 
@@ -310,7 +474,10 @@ final class NativeCompositor: @unchecked Sendable {
         var drewTable = false
         for (index, drawable) in drawables.enumerated() {
             drawable.deviceAnchor = index == chosen ? completed?.anchor ?? anchor : anchor
-            if index == chosen {
+            let path = index == chosen ? Self.copyPath(for: drawable) : .uniform
+            if index == chosen, path == .layeredMap {
+                drewTable = encodeLayered(drawable, completed: completed, command: command)
+            } else if index == chosen {
                 for (eye, view) in drawable.views.enumerated() {
                     let map = view.textureMap
                     let pass = MTLRenderPassDescriptor()
@@ -328,6 +495,7 @@ final class NativeCompositor: @unchecked Sendable {
                     pass.depthAttachment.loadAction = alreadyCleared ? .load : .clear
                     pass.depthAttachment.storeAction = .store
                     pass.depthAttachment.clearDepth = 0
+                    if case .viewMaps = path { pass.rasterizationRateMap = drawable.rasterizationRateMaps[eye] }
 
                     guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { continue }
                     if let completed {
@@ -350,6 +518,40 @@ final class NativeCompositor: @unchecked Sendable {
         return drewTable
     }
 
+    private func encodeLayered(_ drawable: LayerRenderer.Drawable, completed: Submission?, command: MTLCommandBuffer) -> Bool {
+        let views = drawable.views
+        let first = views[0].textureMap
+        let color = drawable.colorTextures[first.textureIndex]
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = color
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, mixedReality ? 0 : 1)
+        pass.depthAttachment.texture = drawable.depthTextures[first.textureIndex]
+        pass.depthAttachment.loadAction = .clear
+        pass.depthAttachment.storeAction = .store
+        pass.depthAttachment.clearDepth = 0
+        pass.renderTargetArrayLength = color.arrayLength
+        pass.rasterizationRateMap = drawable.rasterizationRateMaps[0]
+
+        guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return false }
+        defer { encoder.endEncoding() }
+        guard let completed else { return false }
+        let picture = pictures[completed.buffer]
+        // Viewports stay in the logical (screen) space of the rate map.
+        encoder.setViewports(views.map(\.textureMap.viewport))
+        encoder.setRenderPipelineState(layeredPipeline)
+        encoder.setDepthStencilState(depthState)
+        var slices = views.map { UInt32($0.textureMap.sliceIndex) }
+        encoder.setVertexBytes(&slices, length: MemoryLayout<UInt32>.stride * slices.count, index: 0)
+        var copyOptions = SIMD2<UInt32>(0, mixedReality ? 1 : 0)
+        encoder.setFragmentTexture(picture.color, index: 0)
+        encoder.setFragmentTexture(picture.depth, index: 1)
+        encoder.setFragmentBytes(&copyOptions, length: MemoryLayout<SIMD2<UInt32>>.size, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3, instanceCount: views.count)
+        return true
+    }
+
     private static func seconds(_ duration: Duration) -> Double {
         let value = duration.components
         return Double(value.seconds) + Double(value.attoseconds) / 1e18
@@ -362,33 +564,4 @@ final class NativeCompositor: @unchecked Sendable {
     }
 
     private enum SetupError: Error { case metal }
-
-    private static let blitSource = """
-    #include <metal_stdlib>
-    using namespace metal;
-
-    struct EyeVertex { float4 position [[position]]; float2 uv; };
-    struct EyePixel { half4 color [[color(0)]]; float depth [[depth(any)]]; };
-
-    vertex EyeVertex fullScreen(uint id [[vertex_id]]) {
-        float2 uv = float2((id << 1) & 2, id & 2);
-        return { float4(uv.x * 2 - 1, 1 - uv.y * 2, 0, 1), uv };
-    }
-
-    fragment EyePixel copyEye(EyeVertex v [[stage_in]],
-                              texture2d_array<half> color [[texture(0)]],
-                              depth2d_array<float> depth [[texture(1)]],
-                              constant uint2& options [[buffer(0)]]) {
-        constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
-        constexpr sampler depthSampler(coord::normalized, address::clamp_to_edge, filter::nearest);
-        const uint eye = options.x;
-        const float reverseDepth = 1.0 - depth.sample(depthSampler, v.uv, eye);
-        // VPX clears its conventional depth to 1. Keep the passthrough visible
-        // there and submit opaque premultiplied color wherever VPX drew geometry.
-        if (options.y && reverseDepth <= 0.0)
-            return { half4(0), 0.0 };
-        half3 linear = color.sample(colorSampler, v.uv, eye).rgb;
-        return { half4(linear, 1), reverseDepth };
-    }
-    """
 }

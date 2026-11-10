@@ -15,8 +15,17 @@ private enum TableEnvironment: String, CaseIterable {
 private enum EyeResolution: Int, CaseIterable {
     case standard = 1536
     case high = 1792
+    case veryHigh = 2304
+    case highest = 2816
 
-    var title: String { self == .standard ? "Standard · 1536 px" : "High · 1792 px" }
+    var title: String {
+        switch self {
+        case .standard: "Standard · 1536 px"
+        case .high: "High · 1792 px"
+        case .veryHigh: "Very High · 2304 px"
+        case .highest: "Highest · 2816 px"
+        }
+    }
 }
 
 @main
@@ -202,7 +211,15 @@ private struct TableWindow: View {
         }
         let renderResolution: EyeResolution
         #if targetEnvironment(simulator)
-        renderResolution = CommandLine.arguments.contains("--check-standard-resolution") ? .standard : resolution
+        let arguments = CommandLine.arguments
+        if arguments.contains("--check-standard-resolution") {
+            renderResolution = .standard
+        } else if let flag = arguments.firstIndex(of: "--check-eye-size"), flag + 1 < arguments.count,
+                  let size = Int(arguments[flag + 1]), let option = EyeResolution(rawValue: size) {
+            renderResolution = option
+        } else {
+            renderResolution = resolution
+        }
         #else
         renderResolution = resolution
         #endif
