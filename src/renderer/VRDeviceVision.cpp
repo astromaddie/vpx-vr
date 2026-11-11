@@ -449,6 +449,44 @@ void VRDevice::AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, 
    display->Release();
 }
 
+// The size of a directB2S's score view, its 'DMD' image, when that carries score digits as on
+// alphanumeric machines like Bride of Pinbot. Zero when the file has no such section.
+static std::pair<int, int> VisionB2SScoreView(const std::filesystem::path& path)
+{
+   std::ifstream file(path, std::ios::binary);
+   const string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+   constexpr std::string_view imageTag = "<DMDImage Value=\"";
+   const auto image = text.find(imageTag);
+   if (image == string::npos || text.find("Parent=\"DMD\"") == string::npos)
+      return { 0, 0 };
+   // The PNG's IHDR width and height are bytes 16 to 23, the first 32 base64 characters.
+   const std::string_view b64 = std::string_view(text).substr(image + imageTag.size(), 32);
+   const auto value = [](char c) -> int
+   {
+      if (c >= 'A' && c <= 'Z') return c - 'A';
+      if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+      if (c >= '0' && c <= '9') return c - '0' + 52;
+      return c == '+' ? 62 : c == '/' ? 63 : -1;
+   };
+   if (b64.size() < 32)
+      return { 0, 0 };
+   uint8_t bytes[24];
+   for (size_t i = 0; i < 8; ++i)
+   {
+      int quad[4];
+      for (int k = 0; k < 4; ++k)
+         if ((quad[k] = value(b64[i * 4 + k])) < 0)
+            return { 0, 0 };
+      bytes[i * 3] = static_cast<uint8_t>((quad[0] << 2) | (quad[1] >> 4));
+      bytes[i * 3 + 1] = static_cast<uint8_t>(((quad[1] & 15) << 4) | (quad[2] >> 2));
+      bytes[i * 3 + 2] = static_cast<uint8_t>(((quad[2] & 3) << 6) | quad[3]);
+   }
+   if (memcmp(bytes + 12, "IHDR", 4) != 0)
+      return { 0, 0 };
+   const auto be32 = [&bytes](int at) { return (bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]; };
+   return { be32(16), be32(20) };
+}
+
 bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
 {
    namespace VC = VisionCabinet;
@@ -821,8 +859,14 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
       const double t = (z - controls.transliteZ[0]) / max(controls.transliteZ[1] - controls.transliteZ[0], 1.0);
       return controls.transliteFrontYBottom + (controls.transliteFrontYTop - controls.transliteFrontYBottom) * t + 3.0;
    };
-   const auto addDisplay = [&](const std::array<double, 2>& xs, const std::array<double, 2>& zs, bool dmd, double& width, double& height)
+   // An alphanumeric machine's directB2S puts its score digits in a score view. That goes in the
+   // panel's window in place of the DMD.
+   const auto [scoreViewWidth, scoreViewHeight] = backglass ? VisionB2SScoreView(find_case_insensitive_file_path(companion)) : std::pair { 0, 0 };
+   const bool scoreView = scoreViewWidth > 0 && scoreViewHeight > 0;
+   enum class Display { Backglass, Dmd, ScoreView };
+   const auto addDisplay = [&](const std::array<double, 2>& xs, const std::array<double, 2>& zs, Display kind, double& width, double& height)
    {
+      const bool dmd = kind == Display::Dmd;
       const double y = frontY((zs[0] + zs[1]) * 0.5);
       const VC::Point low = fit.MapHead({ xs[0], y, zs[0] });
       const VC::Point high = fit.MapHead({ xs[1], y, zs[1] });
@@ -833,6 +877,12 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
          width = std::min(regionWidth * (35.0 / 37.5), regionHeight * 0.875 * 4.0);
          height = width / 4.0;
       }
+      else if (kind == Display::ScoreView)
+      {
+         const double aspect = static_cast<double>(scoreViewWidth) / scoreViewHeight;
+         width = std::min(regionWidth * 0.95, regionHeight * 0.92 * aspect);
+         height = width / aspect;
+      }
       else
       {
          width = regionWidth * 0.95;
@@ -840,13 +890,15 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
       }
       auto* display = Flasher::COMCreate();
       display->Init(static_cast<float>((low[0] + high[0]) * 0.5), static_cast<float>((low[1] + high[1]) * 0.5), false);
-      display->SetName(table->GetUniqueName(dmd ? "VisionCabinetDMD" : "VisionCabinetBackglass"));
+      display->SetName(table->GetUniqueName(dmd ? "VisionCabinetDMD" : kind == Display::ScoreView ? "VisionCabinetScoreView" : "VisionCabinetBackglass"));
       display->SetPartGroup(body);
       display->m_d.m_renderMode = dmd ? FlasherData::DMD : FlasherData::EXT_RENDER;
-      display->m_d.m_renderStyle = dmd ? 0 : VPXWINDOW_Backglass;
+      display->m_d.m_renderStyle = dmd ? 0 : kind == Display::ScoreView ? VPXWINDOW_ScoreView : VPXWINDOW_Backglass;
       // The default DMD profile uses the legacy renderer, which tints the dots with the flasher color.
-      // Plasma orange instead of the editor's green flasher default.
-      display->m_d.m_color = RGB(255, 88, 32);
+      // Neon plasma orange-red instead of the editor's green flasher default, a little over full
+      // intensity since the legacy shader's dot falloff darkens it.
+      display->m_d.m_color = RGB(255, 36, 6);
+      display->m_d.m_intensity_scale = dmd ? 1.25f : 1.f;
       display->m_d.m_height = static_cast<float>((low[2] + high[2]) * 0.5);
       display->m_d.m_rotX = -90.f;
       display->Scale(static_cast<float>(width / 100.0), static_cast<float>(height / 100.0), {}, true);
@@ -855,11 +907,13 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
    };
    double backglassWidth = 0, backglassHeight = 0, dmdWidth = 0, dmdHeight = 0;
    if (backglass)
-      addDisplay(controls.glassX, controls.glassZ, false, backglassWidth, backglassHeight);
-   // Segment and EM tables have no DMD source, so the window stays dark and their scores show on the backglass.
-   addDisplay(controls.windowX, controls.windowZ, true, dmdWidth, dmdHeight);
+      addDisplay(controls.glassX, controls.glassZ, Display::Backglass, backglassWidth, backglassHeight);
+   // Segment and EM tables without a score view have no DMD source, so the window stays dark and
+   // their scores show on the backglass.
+   addDisplay(controls.windowX, controls.windowZ, scoreView ? Display::ScoreView : Display::Dmd, dmdWidth, dmdHeight);
    PLOGI << "Vision Pro neutral cabinet displays: " << (backglass ? "backglass " : "no backglass") << (backglass ? std::to_string(VPUTOCM(static_cast<float>(backglassWidth))) + " x " + std::to_string(VPUTOCM(static_cast<float>(backglassHeight))) + " cm" : string())
-         << ", DMD " << VPUTOCM(static_cast<float>(dmdWidth)) << " x " << VPUTOCM(static_cast<float>(dmdHeight)) << " cm in the speaker panel";
+         << (scoreView ? ", directB2S score view (" + std::to_string(scoreViewWidth) + " x " + std::to_string(scoreViewHeight) + ") " : string(", DMD ")) << VPUTOCM(static_cast<float>(dmdWidth)) << " x " << VPUTOCM(static_cast<float>(dmdHeight)) << " cm in the speaker panel";
+   n.dmdLogged = scoreView; // the score view is drawn by the backglass plugin, not from a DMD source
 
    PLOGI << "Vision Pro neutral cabinet: " << (n.launchButton ? "launch button" : "plunger") << " (" << variantReason << "), "
          << parts.size() << " parts, " << triangles << " triangles, " << addedImages.size() << " textures";
@@ -906,6 +960,12 @@ void VRDevice::UpdateVisionNeutralControls()
          n.dmdLogged = true;
          PLOGI << "Vision Pro cabinet DMD source: " << dmd.source->width << " x " << dmd.source->height << ", format " << dmd.source->frameFormat
                << ", first seen after " << n.dmdProbe << " frames";
+      }
+      else if (n.dmdProbe == 60 * 5)
+      {
+         const auto any = g_pplayer->m_resURIResolver.GetDisplayState("ctrl://default/display");
+         PLOGI << "Vision Pro cabinet DMD source: none yet. Any display: " << (any.state.frame ? std::to_string(any.source->width) + " x " + std::to_string(any.source->height) + ", hardware " + std::to_string(any.source->hardware) : string("none"))
+               << ". Sources:\n" << g_pplayer->m_resURIResolver.DumpDisplaySources();
       }
       else if (n.dmdProbe >= 60 * 30)
       {

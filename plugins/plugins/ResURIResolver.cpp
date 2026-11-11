@@ -452,8 +452,8 @@ std::string ResURIResolver::DumpDisplaySources() const
       {
          std::stringstream ss;
          for (const auto &source : items)
-            ss << std::format("Id:{}.{} Override:{}.{} {}x{} {}\n", source.id.endpointId, source.id.resId, source.overrideId.endpointId, source.overrideId.resId, source.width, source.height,
-               source.frameFormat);
+            ss << std::format("Id:{}.{} Override:{}.{} {}x{} {} hardware 0x{:08X}\n", source.id.endpointId, source.id.resId, source.overrideId.endpointId, source.overrideId.resId, source.width, source.height,
+               source.frameFormat, source.hardware);
          return ss.str();
       });
 }
