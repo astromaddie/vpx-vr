@@ -443,7 +443,6 @@ private final class NativePlayer {
                 needsDismissal = true
                 return
             }
-            CompositorLog.vpxLogStarted()
             self.compositor = compositor
             self.tracker = tracker
             isOpen = true

@@ -10,18 +10,29 @@ import SwiftUI
 
 /// Compositor lines go to os_log and to VPX's own `vpinball.log`, which can be
 /// pulled from the app container after a session nobody was watching live.
-/// Lines from before VPX starts its log wait until `vpxLogStarted()`.
+/// VPX starts a new log file when it loads a table, so lines from before a
+/// table's first frame wait for that frame.
 enum CompositorLog {
+    private struct State {
+        var pending: [(String, Bool)] = []
+        var live = false
+    }
+
     private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
-    private static let pending = OSAllocatedUnfairLock<[(String, Bool)]?>(initialState: [])
+    private static let state = OSAllocatedUnfairLock(initialState: State())
 
     static func info(_ message: String) { write(message, error: false) }
     static func error(_ message: String) { write(message, error: true) }
 
-    static func vpxLogStarted() {
-        let lines = pending.withLock { state -> [(String, Bool)] in
-            defer { state = nil }
-            return state ?? []
+    /// A new layer is being set up for a table, so hold lines until it shows.
+    static func tableOpening() {
+        state.withLock { $0 = State() }
+    }
+
+    static func tablePresented() {
+        let lines = state.withLock { state -> [(String, Bool)] in
+            defer { state = State(pending: [], live: true) }
+            return state.pending
         }
         for (message, error) in lines { send(message, error: error) }
     }
@@ -32,12 +43,11 @@ enum CompositorLog {
         } else {
             log.info("\(message, privacy: .public)")
         }
-        let waiting = pending.withLock { state -> Bool in
-            guard state != nil else { return false }
-            state?.append((message, error))
-            return true
+        let live = state.withLock { state -> Bool in
+            if !state.live { state.pending.append((message, error)) }
+            return state.live
         }
-        if !waiting { send(message, error: error) }
+        if live { send(message, error: error) }
     }
 
     private static func send(_ message: String, error: Bool) {
@@ -56,6 +66,7 @@ struct NativeLayerConfiguration: CompositorLayerConfiguration {
     }
 
     func makeConfiguration(capabilities: LayerRenderer.Capabilities, configuration: inout LayerRenderer.Configuration) {
+        CompositorLog.tableOpening()
         // Foveation gives the drawable a rate map that spends more physical
         // pixels where the eye looks, and render quality raises its resolution.
         // Both need foveation, so the fallback is today's uniform drawable.
@@ -372,7 +383,10 @@ final class NativeCompositor: @unchecked Sendable {
                         if let error = buffer.error {
                             Self.log.error("Table frame \(count) failed: \(error.localizedDescription, privacy: .public)")
                         } else {
-                            if count == 1 { handoff.withLock { $0.presentedPicture = true } }
+                            if count == 1 {
+                                handoff.withLock { $0.presentedPicture = true }
+                                CompositorLog.tablePresented()
+                            }
                             Self.log.info("Table frame \(count) completed, \(rendered) VPX frames submitted")
                         }
                     }
