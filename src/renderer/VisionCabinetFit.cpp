@@ -200,7 +200,7 @@ bool LoadReference(const nlohmann::json& reference, Reference& ref, std::string&
    };
    if (!number(dp, "width", ref.donorWidth) || !number(dp, "length", ref.donorLength) || !number(r, "playfield_front_y", ref.playfieldFrontY)
       || !number(r, "playfield_back_y", ref.playfieldBackY) || !number(r, "lockbar_top_z", ref.lockbarTopZ)
-      || !number(r, "lockbar_bottom_z", ref.lockbarBottomZ) || !number(r, "rail_front_z", ref.railFrontZ) || !number(r, "rail_slope", ref.railSlope)
+      || !number(r, "lockbar_bottom_z", ref.lockbarBottomZ) || !number(r, "lockbar_inner_y", ref.lockbarInnerY) || !number(r, "rail_front_z", ref.railFrontZ) || !number(r, "rail_slope", ref.railSlope)
       || !number(r, "body_bottom_z", ref.bodyBottomZ) || !ReadPair(r.value("launch_axis", nlohmann::json()), ref.launchAxis))
    {
       error = "reference.json is incomplete";
@@ -245,7 +245,10 @@ Fit::Fit(const Reference& ref, const Spec& spec, const Table& table, bool clampG
    m_sxCentre = (table.left + table.right) / 2 - ref.donorWidth / 2;
    yFront = table.bottom;
    yBack = table.bottom - table.Length() * cos(theta);
-   m_syFront = yFront - ref.playfieldFrontY;
+   // The lockbar's inner edge reaches just over the playfield's front edge, as on a real cabinet.
+   yAnchor = ref.lockbarInnerY + LockbarOverlap;
+   railAnchorZ = ref.railFrontZ - ref.railSlope * (yAnchor - ref.playfieldFrontY);
+   m_syFront = yFront - yAnchor;
    m_syBack = yBack - ref.playfieldBackY;
 
    const double lo = clampGlass ? spec.glassClamp[0] : -1e9;
@@ -324,12 +327,12 @@ double Fit::MapY(double y) const { return y + Piecewise(y, m_spec.yKnots); }
 
 double Fit::Shear(double ySource, double yDest) const
 {
-   return railSlope * std::max(0.0, yFront - yDest) - m_ref.railSlope * std::max(0.0, m_ref.playfieldFrontY - ySource);
+   return railSlope * std::max(0.0, yFront - yDest) - m_ref.railSlope * std::max(0.0, yAnchor - ySource);
 }
 
 double Fit::ShearWeight(double y, double z) const
 {
-   const double top = m_ref.railFrontZ + m_ref.railSlope * std::max(0.0, m_ref.playfieldFrontY - y);
+   const double top = railAnchorZ + m_ref.railSlope * std::max(0.0, yAnchor - y);
    const double bottom = m_ref.bodyBottomZ;
    return Clamp((z - bottom) / std::max(1.0, top - bottom), 0.0, 1.0);
 }
@@ -379,7 +382,7 @@ Point Fit::Map(Deform deform, const Point& p) const
 
 double Fit::PlayfieldZ(double y) const { return playfieldFrontZ + (yFront - y) * tan(theta); }
 
-double Fit::RailTopZ(double y) const { return m_ref.railFrontZ + dz + railSlope * std::max(0.0, yFront - y); }
+double Fit::RailTopZ(double y) const { return railAnchorZ + dz + railSlope * std::max(0.0, yFront - y); }
 
 std::vector<Fit::Quad> Fit::InnerWalls() const
 {
@@ -387,7 +390,7 @@ std::vector<Fit::Quad> Fit::InnerWalls() const
    const double yb = yBack - 1.0, yf = yFront;
    constexpr double drop = 30.0, railIn = 40.0;
    const double lockBottom = m_ref.lockbarBottomZ + dz + 5.0;
-   const double yfw = yFront + 40.0;
+   const double yfw = yFront + 1.0; // closes the playfield's front edge under the lockbar
    return {
       { { { { l, yb, PlayfieldZ(yb) - drop }, { l, yfw, PlayfieldZ(yf) - drop }, { l, yfw, RailTopZ(yf) - railIn }, { l, yb, RailTopZ(yb) - railIn } } }, { 1, 0, 0 } },
       { { { { r, yfw, PlayfieldZ(yf) - drop }, { r, yb, PlayfieldZ(yb) - drop }, { r, yb, RailTopZ(yb) - railIn }, { r, yfw, RailTopZ(yf) - railIn } } }, { -1, 0, 0 } },

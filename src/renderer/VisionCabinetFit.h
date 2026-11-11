@@ -67,12 +67,15 @@ struct Spec
    std::vector<std::pair<std::string, std::string>> images; // image name, file name
 };
 
+// How far the lockbar's inner edge reaches over the playfield's front edge, in VPU (fit.py LOCKBAR_OVERLAP).
+constexpr double LockbarOverlap = 12.0;
+
 // The donor cabinet frame, from reference.json.
 struct Reference
 {
    double donorWidth = 0, donorLength = 0;
    double playfieldFrontY = 0, playfieldBackY = 0;
-   double lockbarTopZ = 0, lockbarBottomZ = 0;
+   double lockbarTopZ = 0, lockbarBottomZ = 0, lockbarInnerY = 0;
    double railFrontZ = 0, railSlope = 0;
    double bodyBottomZ = 0;
    std::array<double, 2> launchAxis {};
@@ -141,6 +144,8 @@ public:
    double yFront = 0, yBack = 0;
    double glassUsed = 0, playfieldFrontZ = 0, lockbarZ = 0, dz = 0;
    double railSlope = 0;
+   // The donor point that lands on the playfield front edge, under the lockbar, and the rail height there.
+   double yAnchor = 0, railAnchorZ = 0;
    double plungerX = 0;
    double theta = 0;
 
