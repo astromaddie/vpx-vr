@@ -13,18 +13,33 @@ private enum TableEnvironment: String, CaseIterable {
 }
 
 private enum EyeResolution: Int, CaseIterable {
+    // The raw values are the old square sizes, so a stored choice keeps its level.
     case standard = 1536
     case high = 1792
     case veryHigh = 2304
     case highest = 2816
+    case maximum = 3072
+
+    /// Width over height of the Vision Pro's logical views (6261 × 5023 on the M2).
+    static let viewAspect = 1.25
+
+    /// The same pixel count as the square size, shaped like the view, in multiples of 8.
+    var eyeSize: (width: Int, height: Int) {
+        let pixels = Double(rawValue * rawValue)
+        let height = Int(((pixels / Self.viewAspect).squareRoot() / 8).rounded()) * 8
+        let width = Int((Double(height) * Self.viewAspect / 8).rounded()) * 8
+        return (width, height)
+    }
 
     var title: String {
-        switch self {
-        case .standard: "Standard · 1536 px"
-        case .high: "High · 1792 px"
-        case .veryHigh: "Very High · 2304 px"
-        case .highest: "Highest · 2816 px"
+        let name = switch self {
+        case .standard: "Standard"
+        case .high: "High"
+        case .veryHigh: "Very High"
+        case .highest: "Highest"
+        case .maximum: "Maximum"
         }
+        return "\(name) · \(eyeSize.width) × \(eyeSize.height)"
     }
 }
 
@@ -437,7 +452,7 @@ private final class NativePlayer {
                 self?.isMovingCabinet = moving
             }, watchSide: watchSide, showMenu: { [weak self] in self?.showMenu() }, send: handle)
             let compositor = try NativeCompositor(layer: layer, world: tracker.world, mixedReality: mixedReality,
-                                                  eyeSize: resolution.rawValue)
+                                                  eyeWidth: resolution.eyeSize.width, eyeHeight: resolution.eyeSize.height)
             guard compositor.configurePlayer(), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
                 status = "Couldn’t initialize VPX."
                 needsDismissal = true

@@ -1,6 +1,6 @@
 // license:GPLv3+
 
-/// Copies VPX's square eye pictures into the compositor drawable. The Mac check
+/// Copies VPX's eye pictures into the compositor drawable. The Mac check
 /// in `Checks/FoveatedCopyCheck.swift` compiles the same source.
 enum CompositorShaders {
     static let copyEye = "copyEye"

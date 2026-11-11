@@ -134,6 +134,12 @@ final class NativeCompositor: @unchecked Sendable {
         var lateCopies = 0
         var copySeconds = 0.0
         var copyMax = 0.0
+        // GPU timestamps at the start of the copy's vertex stage and the end of its
+        // fragment stage, in ticks. The command buffer's own GPU times also count
+        // the wait behind VPX's work on the shared queue.
+        var passes = 0
+        var passTicks = 0.0
+        var passMaxTicks = 0.0
         var vpxFrames = 0
         var vpxSamples = 0
         var vpxMilliseconds = 0.0
@@ -168,6 +174,13 @@ final class NativeCompositor: @unchecked Sendable {
     // Only touched by the presentation thread.
     private var pictureCount = 0
     private var copyPath: CopyPath?
+    private var viewAspectLogged = false
+    // Stage boundary timestamps for the copy pass, two per slot, when the GPU supports them.
+    private static let counterSlots = 8
+    private let copyCounters: MTLCounterSampleBuffer?
+    private var counterSlot = 0
+    // GPU ticks against host nanoseconds, to convert the counter timestamps.
+    private let clockStart: (gpu: MTLTimestamp, nanoseconds: UInt64)
     #if targetEnvironment(simulator)
     // Only accessed by VPX's render thread.
     private var checkFirstRenderStall = CommandLine.arguments.contains("--check-render-stall")
@@ -177,7 +190,7 @@ final class NativeCompositor: @unchecked Sendable {
     var isClosed: Bool { layer.state == .invalidated }
     var hasPresentedTable: Bool { handoff.withLock { $0.presentedPicture } }
 
-    init(layer: LayerRenderer, world: WorldTrackingProvider, mixedReality: Bool, eyeSize: Int) throws {
+    init(layer: LayerRenderer, world: WorldTrackingProvider, mixedReality: Bool, eyeWidth: Int, eyeHeight: Int) throws {
         self.layer = layer
         self.world = world
         self.mixedReality = mixedReality
@@ -187,9 +200,9 @@ final class NativeCompositor: @unchecked Sendable {
 
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type2DArray
-        descriptor.width = eyeSize
-        descriptor.height = eyeSize
-        CompositorLog.info("VPX eye targets: \(eyeSize) × \(eyeSize)")
+        descriptor.width = eyeWidth
+        descriptor.height = eyeHeight
+        CompositorLog.info("VPX eye targets: \(eyeWidth) × \(eyeHeight)")
         descriptor.arrayLength = 2
         descriptor.storageMode = .private
         descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
@@ -218,6 +231,20 @@ final class NativeCompositor: @unchecked Sendable {
         depthDescriptor.isDepthWriteEnabled = true
         guard let depthState = device.makeDepthStencilState(descriptor: depthDescriptor) else { throw SetupError.metal }
         self.depthState = depthState
+
+        if device.supportsCounterSampling(.atStageBoundary),
+           let set = device.counterSets?.first(where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }) {
+            let counters = MTLCounterSampleBufferDescriptor()
+            counters.counterSet = set
+            counters.storageMode = .shared
+            counters.sampleCount = Self.counterSlots * 2
+            counters.label = "Copy Pass Timestamps"
+            copyCounters = try? device.makeCounterSampleBuffer(descriptor: counters)
+        } else {
+            copyCounters = nil
+        }
+        CompositorLog.info("Copy pass timestamps: \(copyCounters == nil ? "unavailable" : "stage boundary counters")")
+        clockStart = (device.sampleTimestamps().gpu, DispatchTime.now().uptimeNanoseconds)
 
         if layer.configuration.isFoveationEnabled {
             layer.renderQuality = .init(rawValue: NativeLayerConfiguration.renderQuality)
@@ -346,6 +373,8 @@ final class NativeCompositor: @unchecked Sendable {
         let time = Self.seconds(LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.presentationTime))
         let deadline = Self.seconds(LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.renderingDeadline))
         recordPresentation(at: time)
+        let slot = counterSlot
+        counterSlot = (counterSlot + 1) % Self.counterSlots
         command.addCompletedHandler { [timing] buffer in
             guard buffer.status == .completed, buffer.gpuEndTime > 0 else { return }
             let seconds = buffer.gpuEndTime - buffer.gpuStartTime
@@ -364,7 +393,25 @@ final class NativeCompositor: @unchecked Sendable {
         handoff.withLockUnchecked { state in
             state.request = request
             let completed = state.latest
-            let drewTable = encode(drawables, chosen: chosen, anchor: anchor, completed: completed, command: command)
+            let drewTable = encode(drawables, chosen: chosen, anchor: anchor, completed: completed, command: command, slot: slot)
+            if drewTable, let copyCounters {
+                command.addCompletedHandler { [timing] buffer in
+                    guard buffer.status == .completed else { return }
+                    if let data = try? copyCounters.resolveCounterRange(slot * 2..<slot * 2 + 2),
+                       data.count >= 2 * MemoryLayout<MTLCounterResultTimestamp>.stride {
+                        let stamps = data.withUnsafeBytes { Array($0.bindMemory(to: MTLCounterResultTimestamp.self).prefix(2)) }
+                        if stamps[0].timestamp != MTLCounterErrorValue, stamps[1].timestamp != MTLCounterErrorValue,
+                           stamps[1].timestamp > stamps[0].timestamp {
+                            let ticks = Double(stamps[1].timestamp - stamps[0].timestamp)
+                            timing.withLock { counters in
+                                counters.passes += 1
+                                counters.passTicks += ticks
+                                counters.passMaxTicks = max(counters.passMaxTicks, ticks)
+                            }
+                        }
+                    }
+                }
+            }
             if drewTable {
                 pictureCount += 1
                 if pictureCount == 1, let viewport = drawable.views.first?.textureMap.viewport {
@@ -417,6 +464,9 @@ final class NativeCompositor: @unchecked Sendable {
 
     private func reportTiming() {
         let now = CACurrentMediaTime()
+        let gpu = layer.device.sampleTimestamps().gpu
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - clockStart.nanoseconds)
+        let millisecondsPerTick = gpu > clockStart.gpu ? elapsed / Double(gpu - clockStart.gpu) / 1e6 : 0
         let line: String? = timing.withLock { counters in
             if counters.windowStart == 0 {
                 counters.windowStart = now
@@ -428,10 +478,14 @@ final class NativeCompositor: @unchecked Sendable {
             let vpxAverage = counters.vpxSamples > 0 ? counters.vpxMilliseconds / Double(counters.vpxSamples) : 0
             let vpxGPU = counters.vpxSamples > 0
                 ? String(format: "VPX GPU %.2f ms avg %.2f max", vpxAverage, counters.vpxMax) : "VPX GPU unavailable"
+            let pass = counters.passes > 0 && millisecondsPerTick > 0
+                ? String(format: "copy pass %.2f ms avg %.2f max", counters.passTicks / Double(counters.passes) * millisecondsPerTick,
+                         counters.passMaxTicks * millisecondsPerTick)
+                : "copy pass unavailable"
             let line = String(
-                format: "Timing over %.1f s: presented %.1f Hz, %d missed, %d late copies, VPX %.1f fps, copy GPU %.2f ms avg %.2f max, %@",
+                format: "Timing over %.1f s: presented %.1f Hz, %d missed, %d late copies, VPX %.1f fps, %@, copy buffer %.2f ms avg %.2f max, %@",
                 span, Double(counters.presented) / span, counters.missed, counters.lateCopies,
-                Double(counters.vpxFrames) / span, copyAverage, counters.copyMax * 1000, vpxGPU)
+                Double(counters.vpxFrames) / span, pass, copyAverage, counters.copyMax * 1000, vpxGPU)
             counters = Timing(windowStart: now, lastPresentation: counters.lastPresentation,
                               frameInterval: counters.frameInterval)
             return line
@@ -468,15 +522,25 @@ final class NativeCompositor: @unchecked Sendable {
         switch path {
         case .uniform:
             CompositorLog.info("Compositor path: uniform, no rate map, \(size)")
+            if let viewport = drawable.views.first?.textureMap.viewport { logAspect(viewport.width / max(viewport.height, 1)) }
         case .viewMaps, .layeredMap:
             let maps = drawable.rasterizationRateMaps
             let map = maps[0]
             let physical = map.physicalSize(layer: 0)
             let kind = path == .layeredMap ? "layered pass with one map of \(map.layerCount) layers" : "a pass per view with \(maps.count) maps"
             CompositorLog.info("Compositor path: foveated, \(kind), logical \(map.screenSize.width) × \(map.screenSize.height), physical \(physical.width) × \(physical.height), \(size)")
+            logAspect(Double(map.screenSize.width) / Double(max(map.screenSize.height, 1)))
         case .unsupportedMaps(let count):
             CompositorLog.error("Compositor path: \(count) rate maps for \(drawable.views.count) views is not handled, drawing without them, \(size)")
         }
+    }
+
+    private func logAspect(_ view: Double) {
+        guard !viewAspectLogged else { return }
+        viewAspectLogged = true
+        let eyes = pictures[0].color
+        CompositorLog.info(String(format: "View aspect %.3f, VPX eye targets %d × %d (aspect %.3f)",
+                                  view, eyes.width, eyes.height, Double(eyes.width) / Double(eyes.height)))
     }
 
     private func makeRequest(
@@ -518,14 +582,14 @@ final class NativeCompositor: @unchecked Sendable {
 
     private func encode(
         _ drawables: [LayerRenderer.Drawable], chosen: Int, anchor: DeviceAnchor?,
-        completed: Submission?, command: MTLCommandBuffer
+        completed: Submission?, command: MTLCommandBuffer, slot: Int
     ) -> Bool {
         var drewTable = false
         for (index, drawable) in drawables.enumerated() {
             drawable.deviceAnchor = index == chosen ? completed?.anchor ?? anchor : anchor
             let path = index == chosen ? Self.copyPath(for: drawable) : .uniform
             if index == chosen, path == .layeredMap {
-                drewTable = encodeLayered(drawable, completed: completed, command: command)
+                drewTable = encodeLayered(drawable, completed: completed, command: command, slot: slot)
             } else if index == chosen {
                 for (eye, view) in drawable.views.enumerated() {
                     let map = view.textureMap
@@ -545,6 +609,9 @@ final class NativeCompositor: @unchecked Sendable {
                     pass.depthAttachment.storeAction = .store
                     pass.depthAttachment.clearDepth = 0
                     if case .viewMaps = path { pass.rasterizationRateMap = drawable.rasterizationRateMaps[eye] }
+                    if completed != nil {
+                        attachCounters(pass, slot: slot, start: eye == 0, end: eye == drawable.views.count - 1)
+                    }
 
                     guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { continue }
                     if let completed {
@@ -567,7 +634,7 @@ final class NativeCompositor: @unchecked Sendable {
         return drewTable
     }
 
-    private func encodeLayered(_ drawable: LayerRenderer.Drawable, completed: Submission?, command: MTLCommandBuffer) -> Bool {
+    private func encodeLayered(_ drawable: LayerRenderer.Drawable, completed: Submission?, command: MTLCommandBuffer, slot: Int) -> Bool {
         let views = drawable.views
         let first = views[0].textureMap
         let color = drawable.colorTextures[first.textureIndex]
@@ -582,6 +649,7 @@ final class NativeCompositor: @unchecked Sendable {
         pass.depthAttachment.clearDepth = 0
         pass.renderTargetArrayLength = color.arrayLength
         pass.rasterizationRateMap = drawable.rasterizationRateMaps[0]
+        if completed != nil { attachCounters(pass, slot: slot, start: true, end: true) }
 
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return false }
         defer { encoder.endEncoding() }
@@ -599,6 +667,16 @@ final class NativeCompositor: @unchecked Sendable {
         encoder.setFragmentBytes(&copyOptions, length: MemoryLayout<SIMD2<UInt32>>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3, instanceCount: views.count)
         return true
+    }
+
+    /// Samples the start of the first pass's vertex stage and the end of the last pass's fragment stage.
+    private func attachCounters(_ pass: MTLRenderPassDescriptor, slot: Int, start: Bool, end: Bool) {
+        guard let copyCounters, start || end, let attachment = pass.sampleBufferAttachments[0] else { return }
+        attachment.sampleBuffer = copyCounters
+        attachment.startOfVertexSampleIndex = start ? slot * 2 : MTLCounterDontSample
+        attachment.endOfVertexSampleIndex = MTLCounterDontSample
+        attachment.startOfFragmentSampleIndex = MTLCounterDontSample
+        attachment.endOfFragmentSampleIndex = end ? slot * 2 + 1 : MTLCounterDontSample
     }
 
     private static func seconds(_ duration: Duration) -> Double {
