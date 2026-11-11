@@ -137,6 +137,7 @@ final class NativeCompositor: @unchecked Sendable {
         // GPU timestamps at the start of the copy's vertex stage and the end of its
         // fragment stage, in ticks. The command buffer's own GPU times also count
         // the wait behind VPX's work on the shared queue.
+        var copyErrors = 0
         var passes = 0
         var passTicks = 0.0
         var passMaxTicks = 0.0
@@ -154,6 +155,10 @@ final class NativeCompositor: @unchecked Sendable {
         var latest: Submission?
         var presentedPicture = false
         var renderedFrames = 0
+        // Host times of VPX's last frame request and hand-back, for the stall watch.
+        var begins = 0
+        var lastBegin = 0.0
+        var lastEnd = 0.0
         #if targetEnvironment(simulator)
         var submittedFrames = 0
         #endif
@@ -175,6 +180,12 @@ final class NativeCompositor: @unchecked Sendable {
     private var pictureCount = 0
     private var copyPath: CopyPath?
     private var viewAspectLogged = false
+    // Stall watch, only touched by the presentation thread.
+    private let openedAt = CACurrentMediaTime()
+    private var watchedFrames = 0
+    private var lastNewFrame = 0.0
+    private var stalledSince: Double?
+    private var firstFrameWarned = false
     // Stage boundary timestamps for the copy pass, two per slot, when the GPU supports them.
     private static let counterSlots = 8
     private let copyCounters: MTLCounterSampleBuffer?
@@ -260,8 +271,13 @@ final class NativeCompositor: @unchecked Sendable {
         }
     }
 
-    func configurePlayer() -> Bool {
+    func configurePlayer(session: String) -> Bool {
         var host = VPINBALL_VISION_HOST()
+        withUnsafeMutableBytes(of: &host.session) { buffer in
+            let bytes = Array(session.utf8.prefix(buffer.count - 1))
+            buffer.copyBytes(from: bytes)
+            buffer[bytes.count] = 0
+        }
         host.user = Unmanaged.passUnretained(self).toOpaque()
         host.metalDevice = Unmanaged.passUnretained(layer.device as AnyObject).toOpaque()
         host.metalQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
@@ -311,6 +327,8 @@ final class NativeCompositor: @unchecked Sendable {
             result.eyeBuffer = UInt32(buffer)
             result.secondsUntilPresentation = Float(max(0, request.presentationTime - CACurrentMediaTime()))
             state.drawing = Submission(buffer: buffer, anchor: request.anchor)
+            state.begins += 1
+            state.lastBegin = CACurrentMediaTime()
             return result
         }
         guard let acquired else { return false }
@@ -345,6 +363,7 @@ final class NativeCompositor: @unchecked Sendable {
             }
         }
         handoff.withLock { state in
+            state.lastEnd = CACurrentMediaTime()
             if rendered, let drawing = state.drawing {
                 state.latest = drawing
                 state.renderedFrames += 1
@@ -376,6 +395,16 @@ final class NativeCompositor: @unchecked Sendable {
         let slot = counterSlot
         counterSlot = (counterSlot + 1) % Self.counterSlots
         command.addCompletedHandler { [timing] buffer in
+            if buffer.status == .error {
+                // A failing copy usually means the GPU is out of memory or VPX's work faulted first.
+                let report = timing.withLock { counters -> Bool in
+                    counters.copyErrors += 1
+                    return counters.copyErrors == 1 || counters.copyErrors.isMultiple(of: 90)
+                }
+                if report {
+                    CompositorLog.error("Copy command buffer failed: \(buffer.error.map { String(describing: $0) } ?? "no error"), \(Double(os_proc_available_memory()) / 1_048_576) MB available")
+                }
+            }
             guard buffer.status == .completed, buffer.gpuEndTime > 0 else { return }
             let seconds = buffer.gpuEndTime - buffer.gpuStartTime
             let late = buffer.gpuEndTime > deadline
@@ -445,6 +474,7 @@ final class NativeCompositor: @unchecked Sendable {
             #endif
         }
         reportTiming()
+        watchForStalls()
     }
 
     private func recordPresentation(at time: Double) {
@@ -459,6 +489,39 @@ final class NativeCompositor: @unchecked Sendable {
                 }
             }
             counters.lastPresentation = time
+        }
+    }
+
+    /// Logs when VPX stops handing over new pictures for more than a second while the compositor
+    /// keeps presenting (the table freezes but the head still tracks), and when they come back.
+    private func watchForStalls() {
+        let now = CACurrentMediaTime()
+        let state = handoff.withLock { ($0.renderedFrames, $0.begins, $0.lastBegin, $0.lastEnd, $0.drawing != nil, $0.presentedPicture) }
+        let (rendered, begins, lastBegin, lastEnd, drawing, presented) = state
+        func detail() -> String {
+            let memory = Double(os_proc_available_memory()) / 1_048_576
+            func ago(_ time: Double) -> String { time > 0 ? String(format: "%.1f s ago", now - time) : "never" }
+            return String(format: "%d VPX frames, %d requests, last request %@, last hand-back %@, VPX %@, %.0f MB available",
+                          rendered, begins, ago(lastBegin), ago(lastEnd), drawing ? "holding a frame" : "not drawing", memory)
+        }
+        if !presented {
+            if !firstFrameWarned, now - openedAt > 20 {
+                firstFrameWarned = true
+                // Sent straight to VPX's log: held lines only go out once a table frame shows.
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Compositor: no table frame 20 s after opening: " + detail())
+            }
+            return
+        }
+        if rendered != watchedFrames {
+            if let since = stalledSince {
+                CompositorLog.info(String(format: "VPX frames resumed after %.1f s", now - since))
+                stalledSince = nil
+            }
+            watchedFrames = rendered
+            lastNewFrame = now
+        } else if stalledSince == nil, lastNewFrame > 0, now - lastNewFrame > 1 {
+            stalledSince = lastNewFrame
+            CompositorLog.error("VPX frames stopped for 1 s while the compositor keeps presenting: " + detail())
         }
     }
 

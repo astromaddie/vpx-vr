@@ -287,6 +287,7 @@ private:
    Matrix3D m_visionPlayfieldLevel = Matrix3D::MatrixTranslate(0.f, 0.f, 0.f);
    VPINBALL_VISION_LAYOUT m_visionLayout{};
    float m_visionStockGlassDepth = 0.f;
+   unsigned int m_visionFrameCount = 0;
    std::array<std::unique_ptr<RenderTarget>, 2> m_visionTargets;
 #endif
 

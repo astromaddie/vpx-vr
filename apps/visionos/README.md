@@ -79,7 +79,7 @@ VPX renders a picture for each eye and the player copies it into the compositor'
 
 Every five seconds the player logs a line starting with `Timing over 5.0 s:`. It has the presented frame rate, frames the compositor missed, copies that finished after the rendering deadline, how many new VPX frames arrived per second, the copy pass's GPU time, the copy's whole command buffer, and VPX's own GPU time from BGFX's frame stats (average and worst for both). The player also writes these lines, with the layer, eye size and compositor path lines, into VPX's own `vpinball.log` once the table's first frame is on screen. VPX starts that file fresh for each table, so after an unattended session you can pull it from the app container and read the last table's timing. To read the lines live from the headset over Wi-Fi, launch the app with `xcrun devicectl device process launch --console --environment-variables '{"OS_ACTIVITY_DT_MODE": "enable"}' --device <name> org.vpinball.vpxvision.player`, which copies the app's log to the terminal.
 
-The copy pass time comes from GPU timestamps at the start of its vertex stage and the end of its fragment stage. The command buffer time also counts waiting behind VPX's frame on the shared queue, which is why Build 27 logged about 6 ms for the copy on the M2. To time the copy alone on a Mac at the M2's view and rate map sizes, from this directory:
+The copy pass time comes from GPU timestamps at the start of its vertex stage and the end of its fragment stage. On the M2 that span still overlaps VPX's own GPU work, so it reads 5 to 8 ms while the copy alone costs about 1 ms. The command buffer time also counts waiting behind VPX's frame on the shared queue. To time the copy alone on a Mac at the M2's view and rate map sizes, from this directory:
 
 ```sh
 check_dir=$(mktemp -d)
@@ -185,6 +185,17 @@ The DMD moved into the speaker panel at a real 128 × 32 size, with the backglas
 For Build 28 I looked at why Bride of Pinbot's panel stayed dark. It's an alphanumeric machine, so PinMAME has no DMD for it, and the resolver's display list was empty. Its two 16-character displays live in the directB2S score view, so the panel now shows that. In the Simulator the panel showed "FACTORY SETTINGS RESTORED" in the score view's orange segments, and Attack from Mars showed the same message in orange-red dots. Black Hole kept its scores on the backglass. Middle Earth's directB2S has no score digits at all. The table draws its four player scores, ball and credit as 7-segment lights (`Light1` to `Light196`) on its own apron, set from `Controller.ChangedLEDs` in `DisplayTimer_Timer`, with apron flashers for Game Over, Ball, Match and Tilt. Those show on the neutral cabinet as they are. With the complete ROM (the one with `20252-01.bin`) and the headset's NVRAM, the library check passed, and the apron went from the power-on test's 8s to 5,100 points on ball 2 with one credit.
 
 The eye pictures are 3152 × 2520 at Highest now. Bride of Pinbot's center wheel kept the same shape at the same pose as in the Build 26 capture with square Standard pictures, only sharper.
+
+For Build 29 the player keeps the last three table sessions' logs as `vpinball-1.log` (newest) to `vpinball-3.log` next to `vpinball.log`, so a session that went wrong survives opening the next table. Each log starts with a `Vision Pro session:` line giving the build, table, eye size, room and the memory left to the app. After 300 frames it logs BGFX's render target and texture memory. It also logs these when they happen:
+
+- `Vision Pro main loop blocked`: VPX's game loop, which also takes the hand input, hasn't come back for a second. `Vision Pro main loop resumed` follows. A table load blocks it for a few seconds too.
+- `VPX frames stopped for 1 s while the compositor keeps presenting`: the picture froze but the head still tracks. It says whether VPX is holding a frame, when it last asked for and handed back one, and the memory left. `VPX frames resumed` follows.
+- `no table frame 20 s after opening`, written straight to the log.
+- `Vision Pro input not reaching VPX`: a flipper or button press didn't show up in VPX's input state within 300 ms.
+- `Vision Pro hand tracking stopped updating`, and resumed.
+- `Copy command buffer failed`, with the Metal error.
+
+In the Simulator, Attack from Mars and Bride of Pinbot both passed their library checks at Maximum. Bride of Pinbot logged 578 MB of render targets and 85 MB of textures after 300 frames. On top of that come 287 MB for the two eye pictures. VPX's scene, reflection and bloom targets now use packed HDR by default on the Vision Pro, as on the Frame. That halves their memory traffic. On a 600 × 360 crop of Attack from Mars at the same pose, the two formats differed by 2 of 255 on average, and only 1.5% of pixels by more than 8, which includes the lights that were flashing. Launch with `VPX_PACKED_HDR=0` to compare.
 
 ### Build the pinned libraries
 

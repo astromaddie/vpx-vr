@@ -1,6 +1,7 @@
 // license:GPLv3+
 
 import CompositorServices
+import os
 import simd
 import SwiftUI
 import UniformTypeIdentifiers
@@ -352,6 +353,13 @@ private final class NativePlayer {
     private var ready = false
     private var stopping = false
     private var pulses: [VPINBALL_VISION_INPUT: Task<Void, Never>] = [:]
+    // Input diagnostics: presses sent to VPX that it hasn't shown yet, and the last warnings.
+    private var unseenPresses: [VPINBALL_VISION_INPUT: Double] = [:]
+    private var lastInputWarning = 0.0
+    private var handsStalledSince: Double?
+    // Heartbeat of the main-thread pump that runs VPX's game loop, watched from another thread.
+    private let pumpBeat = OSAllocatedUnfairLock(initialState: 0.0)
+    private var pumpWatch: Thread?
 
     func setLauncherActions(hide: @escaping () -> Void, show: @escaping () -> Void,
                             showPlacement: @escaping () -> Void, hidePlacement: @escaping () -> Void) {
@@ -453,7 +461,9 @@ private final class NativePlayer {
             }, watchSide: watchSide, showMenu: { [weak self] in self?.showMenu() }, send: handle)
             let compositor = try NativeCompositor(layer: layer, world: tracker.world, mixedReality: mixedReality,
                                                   eyeWidth: resolution.eyeSize.width, eyeHeight: resolution.eyeSize.height)
-            guard compositor.configurePlayer(), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+            let session = "build \(build), table \(table.title), eye size \(resolution.title), \(mixedReality ? "Your Room" : "Virtual Room")"
+            guard compositor.configurePlayer(session: session), VPinballVisionInit(nativePlayerEvent) == VPINBALL_STATUS_SUCCESS else {
                 status = "Couldn’t initialize VPX."
                 needsDismissal = true
                 return
@@ -461,8 +471,10 @@ private final class NativePlayer {
             self.compositor = compositor
             self.tracker = tracker
             isOpen = true
+            startPumpWatch()
             pump = Task {
                 while !Task.isCancelled {
+                    pumpBeat.withLock { $0 = CACurrentMediaTime() }
                     VPinballVisionTick()
                     step()
                     try? await Task.sleep(for: .milliseconds(2))
@@ -520,7 +532,74 @@ private final class NativePlayer {
         }
     }
 
+    /// Logs when VPX's game loop, which runs on the main thread with the hand controls, stops
+    /// coming back for more than a second, and when it resumes.
+    private func startPumpWatch() {
+        let beat = pumpBeat
+        beat.withLock { $0 = CACurrentMediaTime() }
+        let watch = Thread {
+            var blockedSince: Double?
+            while !Thread.current.isCancelled {
+                Thread.sleep(forTimeInterval: 0.25)
+                let last = beat.withLock { $0 }
+                let now = CACurrentMediaTime()
+                if now - last > 1 {
+                    if blockedSince == nil {
+                        blockedSince = last
+                        VPinballLog(VPINBALL_LOG_LEVEL_ERROR, String(format: "Vision Pro main loop blocked: no VPX tick for %.1f s, so hand input can't reach VPX, %.0f MB available",
+                                                                      now - last, Double(os_proc_available_memory()) / 1_048_576))
+                    }
+                } else if let since = blockedSince {
+                    blockedSince = nil
+                    VPinballLog(VPINBALL_LOG_LEVEL_INFO, String(format: "Vision Pro main loop resumed after %.1f s", last - since))
+                }
+            }
+        }
+        watch.name = "VPX Main Loop Watch"
+        watch.qualityOfService = .utility
+        watch.start()
+        pumpWatch = watch
+    }
+
+    /// Notes a press sent to VPX, so `checkInput` can tell if VPX never showed it.
+    private func expectPress(_ button: VPINBALL_VISION_INPUT) {
+        guard button != VPINBALL_VISION_NUDGE_BACK else { return }
+        unseenPresses[button] = CACurrentMediaTime()
+    }
+
+    private func checkInput() {
+        guard ready, !stopping else { return }
+        let now = CACurrentMediaTime()
+        if !unseenPresses.isEmpty {
+            let pressed = VPinballVisionPressedButtons()
+            var late: [String] = []
+            for (button, sent) in unseenPresses {
+                if pressed & (UInt32(1) << button.rawValue) != 0 {
+                    unseenPresses.removeValue(forKey: button)
+                } else if now - sent > 0.3 {
+                    unseenPresses.removeValue(forKey: button)
+                    late.append("\(button.rawValue)")
+                }
+            }
+            if !late.isEmpty, now - lastInputWarning > 5 {
+                lastInputWarning = now
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Vision Pro input not reaching VPX: buttons \(late.joined(separator: ", ")) sent but not seen pressed within 300 ms, VPX pressed buttons \(pressed)")
+            }
+        }
+        if let tracker, tracker.lastHandUpdate > 0 {
+            let age = now - tracker.lastHandUpdate
+            if age > 3, handsStalledSince == nil {
+                handsStalledSince = tracker.lastHandUpdate
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, String(format: "Vision Pro hand tracking stopped updating %.1f s ago", age))
+            } else if age < 1, let since = handsStalledSince {
+                handsStalledSince = nil
+                VPinballLog(VPINBALL_LOG_LEVEL_INFO, String(format: "Vision Pro hand tracking resumed after %.1f s", tracker.lastHandUpdate - since))
+            }
+        }
+    }
+
     private func step() {
+        checkInput()
         guard let compositor else { return }
         if !compositor.isClosed {
             if !launcherHidden, !menuVisible, compositor.hasPresentedTable {
@@ -594,6 +673,10 @@ private final class NativePlayer {
         tracking = nil
         pump?.cancel()
         pump = nil
+        pumpWatch?.cancel()
+        pumpWatch = nil
+        unseenPresses.removeAll()
+        handsStalledSince = nil
         #if targetEnvironment(simulator)
         inputCheck?.cancel()
         inputCheck = nil
@@ -984,8 +1067,9 @@ private final class NativePlayer {
         guard ready, !stopping, !isCalibrating else { return }
         switch input {
         case let .flipper(side, pressed):
-            VPinballVisionSetButton(side == .left ? VPINBALL_VISION_LEFT_FLIPPER : VPINBALL_VISION_RIGHT_FLIPPER,
-                                   pressed ? 1 : 0)
+            let button = side == .left ? VPINBALL_VISION_LEFT_FLIPPER : VPINBALL_VISION_RIGHT_FLIPPER
+            VPinballVisionSetButton(button, pressed ? 1 : 0)
+            if pressed { expectPress(button) } else { unseenPresses.removeValue(forKey: button) }
         case .insertCoin:
             pulse(VPINBALL_VISION_ADD_CREDIT)
         case .pressStart:
@@ -1015,6 +1099,7 @@ private final class NativePlayer {
     private func pulse(_ button: VPINBALL_VISION_INPUT) {
         guard pulses[button] == nil else { return }
         VPinballVisionSetButton(button, 1)
+        expectPress(button)
         pulses[button] = Task {
             try? await Task.sleep(for: .milliseconds(75))
             guard !Task.isCancelled else { return }

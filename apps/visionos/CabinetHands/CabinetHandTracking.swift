@@ -18,6 +18,8 @@ final class CabinetHandTracking {
     var calibration: CabinetCalibration?
     private var controls: CabinetHandControls
     private(set) var layout: CabinetControlsLayout
+    /// Host time of the latest hand anchor update, for the player's input diagnostics.
+    private(set) var lastHandUpdate = 0.0
     private let moveCabinet: ((simd_float4x4) -> Void)?
     private let placementMoving: (Bool) -> Void
     private var placementIsMoving = false
@@ -237,6 +239,7 @@ final class CabinetHandTracking {
         defer { watchdog.cancel() }
         for await change in hands.anchorUpdates {
             guard !Task.isCancelled else { return }
+            lastHandUpdate = CACurrentMediaTime()
             if acceptsInput() && hands.state == .running {
                 let now = CACurrentMediaTime()
                 if roomPlacement != nil {

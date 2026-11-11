@@ -139,6 +139,7 @@ public:
 Logger* Logger::m_pInstance = nullptr;
 
 static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>>* s_fileAppender = nullptr;
+static std::filesystem::path s_logPath;
 
 Logger* Logger::GetInstance()
 {
@@ -158,6 +159,7 @@ void Logger::SetupLogger(const bool enable)
       {
          initialized = true;
          const std::filesystem::path logPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences, "vpinball.log");
+         s_logPath = logPath;
          static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>> fileAppender(PathToUTF8(logPath).c_str(), 1024 * 1024 * 5, 1); // Opened as UTF-8
          s_fileAppender = &fileAppender;
          static DebugAppender debugAppender;
@@ -200,6 +202,24 @@ void Logger::Init()
 
 void Logger::Truncate()
 {
-   if (s_fileAppender)
-      s_fileAppender->truncate();
+   if (!s_fileAppender)
+      return;
+#ifdef VPX_VISIONOS_HEADSET
+   // Keep the last three sessions as vpinball-1.log (newest) to vpinball-3.log, so a session that
+   // went wrong survives opening the next table. Lines still being written land in the renamed file.
+   std::error_code error;
+   const auto rotated = [](int index)
+   {
+      auto path = s_logPath;
+      path.replace_filename("vpinball-" + std::to_string(index) + ".log");
+      return path;
+   };
+   std::filesystem::remove(rotated(3), error);
+   for (int index = 2; index >= 1; --index)
+      if (std::filesystem::exists(rotated(index), error))
+         std::filesystem::rename(rotated(index), rotated(index + 1), error);
+   if (std::filesystem::exists(s_logPath, error))
+      std::filesystem::rename(s_logPath, rotated(1), error);
+#endif
+   s_fileAppender->truncate();
 }

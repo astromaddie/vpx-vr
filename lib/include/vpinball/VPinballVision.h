@@ -46,6 +46,8 @@ typedef struct {
    void* depth[2];
    unsigned int width, height;
    int mixedReality;
+   // One line on the app build, table, eye size and room, logged at the top of each table's log.
+   char session[256];
    // Called on VPX's render thread. Return 1 for an eye pose and a writable buffer.
    int (*beginFrame)(void* user, VPINBALL_VISION_FRAME* frame);
    void (*endFrame)(void* user, int rendered);

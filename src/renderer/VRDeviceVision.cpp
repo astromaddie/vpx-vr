@@ -27,6 +27,7 @@
 #include <chrono>
 #include <fstream>
 #include <thread>
+#include <os/proc.h>
 
 namespace
 {
@@ -1066,6 +1067,14 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
    m_predictedDisplayTimestamp = static_cast<float>(usec() / 1e6) + frame.secondsUntilPresentation;
    const bool rendered = submit(target.get());
    m_visionHost.endFrame(m_visionHost.user, rendered);
+   if (rendered && ++m_visionFrameCount == 300)
+   {
+      // BGFX's own totals once the table's passes have all run, with the eye pictures included.
+      const bgfx::Stats* stats = bgfx::getStats();
+      PLOGI << "Vision Pro GPU memory after 300 frames: render targets " << stats->rtMemoryUsed / (1024 * 1024) << " MB, textures "
+            << stats->textureMemoryUsed / (1024 * 1024) << " MB, " << stats->numTextures << " textures, " << stats->numFrameBuffers << " framebuffers, "
+            << os_proc_available_memory() / (1024 * 1024) << " MB available to the app";
+   }
 }
 
 void VRDevice::ReleaseVisionTarget()

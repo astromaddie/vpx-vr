@@ -17,6 +17,7 @@
 
 #ifdef VPX_VISIONOS_HEADSET
 #include "lib/src/VPinballLib.h"
+#include <os/proc.h>
 #endif
 
 // MSVC Concurrency Viewer support
@@ -362,6 +363,11 @@ VRDevice::VRDevice(const Settings& settings)
       {
          m_eyeWidth = m_visionHost.width;
          m_eyeHeight = m_visionHost.height;
+         m_visionHost.session[sizeof(m_visionHost.session) - 1] = 0;
+         // Two pictures of two layers each, BGRA8 color and 32-bit depth.
+         const double eyeTargetsMB = 2.0 * 2.0 * m_eyeWidth * m_eyeHeight * 8.0 / (1024.0 * 1024.0);
+         PLOGI << "Vision Pro session: " << m_visionHost.session << "; eye targets " << m_eyeWidth << " x " << m_eyeHeight << " ("
+               << static_cast<int>(eyeTargetsMB) << " MB for both pictures), " << os_proc_available_memory() / (1024 * 1024) << " MB available to the app";
          auto* table = g_pplayer->m_ptable;
          m_lockbarWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
          m_lockbarHeight = VPUTOCM(table->m_groundToLockbarHeight);
