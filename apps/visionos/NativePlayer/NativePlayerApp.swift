@@ -65,7 +65,7 @@ private struct TableWindow: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @AppStorage("LeftHandDominant") private var leftHandDominant = false
-    @AppStorage("EyeResolution") private var resolution = EyeResolution.high
+    @AppStorage("EyeResolution") private var resolution = EyeResolution.highest
     @State private var selection: LibraryTable?
     @State private var transitioning = false
     @State private var importing = false
@@ -282,7 +282,7 @@ private final class NativePlayer {
     }()
     var isEditingPlacement = false
     var isMovingCabinet = false
-    private var resolution = EyeResolution.high
+    private var resolution = EyeResolution.highest
     private var watchSide: CabinetHandSide = .left
     var isOpen = false
     var needsDismissal = false
@@ -604,7 +604,8 @@ private final class NativePlayer {
     /// `--check-view side` turns the cabinet so its left side faces the camera,
     /// `--check-view front` brings its front panel close, `--check-view corner` shows the
     /// front left corner, and `--check-view top` tips it back to look down at the front
-    /// of the playfield, all for screenshots.
+    /// of the playfield. `head` brings the backbox close and `inside` puts the camera inside
+    /// the cabinet's near wall. All of them are for screenshots.
     private static func applySimulatorView(_ transform: inout simd_float4x4) {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--check-view"), arguments.indices.contains(index + 1) else { return }
@@ -619,6 +620,14 @@ private final class NativePlayer {
             // Front left corner, to see the left flipper button on the side.
             transform = simd_mul(transform, simd_float4x4(simd_quatf(angle: -0.9, axis: [0, 1, 0])))
             transform.columns.3 = [0.1, 0, -2.1, 1]
+        case "head":
+            // Lower and closer, to read the backglass and the DMD in the speaker panel.
+            transform.columns.3 = [0, -0.7, -0.45, 1]
+        case "inside":
+            // Side on, with the camera just inside the near wall, looking at the far wall's inner side.
+            let yaw = simd_float4x4(simd_quatf(angle: -.pi / 2, axis: [0, 1, 0]))
+            transform = simd_mul(transform, yaw)
+            transform.columns.3 = [-0.45, -0.12, -0.2, 1]
         case "top":
             // Tip the cabinet back so the level Simulator camera looks down into the front of the playfield.
             transform = simd_mul(transform, simd_float4x4(simd_quatf(angle: 0.9, axis: [1, 0, 0])))
