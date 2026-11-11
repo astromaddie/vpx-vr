@@ -89,10 +89,13 @@ VPINBALLAPI float VPinballVisionLastGpuMilliseconds(void);
 // Returns 1 if the release needs a Launch Ball button pulse.
 VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);
 
+// The buttons VPX's input manager sees pressed, one bit per VPINBALL_VISION_INPUT, on the main thread.
+// The player uses it to log presses that never reach VPX.
+VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
+
 #if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
 // Read resolved native input, on the player thread, for the Simulator check.
 VPINBALLAPI int VPinballVisionRomRunning(void);
-VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);
 VPINBALLAPI int VPinballVisionNudgeCount(void);
 VPINBALLAPI float VPinballVisionPlungerPosition(void);
 typedef struct {

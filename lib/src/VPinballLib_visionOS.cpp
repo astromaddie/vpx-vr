@@ -127,12 +127,6 @@ VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, 
    return action == VPINBALL_VISION_PLUNGER_RELEASE && pull > 0.f && !mechanical;
 }
 
-#if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
-VPINBALLAPI int VPinballVisionRomRunning(void)
-{
-   return SDL_IsMainThread() && g_pplayer && PinmameIsRunning() == 1;
-}
-
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void)
 {
    if (!SDL_IsMainThread() || !g_pplayer)
@@ -149,6 +143,12 @@ VPINBALLAPI unsigned int VPinballVisionPressedButtons(void)
       if (input.IsPressed(actions[button]))
          pressed |= 1u << button;
    return pressed;
+}
+
+#if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
+VPINBALLAPI int VPinballVisionRomRunning(void)
+{
+   return SDL_IsMainThread() && g_pplayer && PinmameIsRunning() == 1;
 }
 
 VPINBALLAPI int VPinballVisionNudgeCount(void)
