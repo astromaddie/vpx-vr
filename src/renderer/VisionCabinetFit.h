@@ -93,6 +93,7 @@ struct Controls
 {
    ButtonAnchor start, coin, leftFlipper, rightFlipper, plunger, launch;
    double transliteFrontYTop = 0, transliteFrontYBottom = 0;
+   std::array<double, 2> transliteZ {}; // bottom and top of the translite's front, where the two front y values apply
    std::array<double, 2> glassX {}, glassZ {}, windowX {}, windowZ {};
 };
 

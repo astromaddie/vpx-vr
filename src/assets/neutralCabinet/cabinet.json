@@ -6,6 +6,7 @@
   "glass_clamp": [100, 300],
   "parts": [
     {"name": "Body", "mesh": "Body", "group": "cabinet", "deform": "field", "material": "VRCab_SatinBlack", "image": "VRCab_Cabinet"},
+    {"name": "BodyInside", "mesh": "BodyInside", "group": "cabinet", "deform": "field", "material": "VRCab_Interior"},
     {"name": "StartButton", "mesh": "StartButton", "group": "cabinet", "deform": "rigid", "anchor": "left", "material": "VRCab_SatinBlack", "image": "VRCab_Cabinet"},
     {"name": "CoinInserts", "mesh": "CoinInserts", "group": "cabinet", "deform": "rigid", "anchor": "centre", "material": "VRCab_Label", "image": "VRCab_Cabinet"},
     {"name": "CoinDoor", "mesh": "CoinDoor", "group": "cabinet", "deform": "rigid", "anchor": "centre", "material": "VRCab_Powdercoat"},
@@ -14,6 +15,7 @@
     {"name": "Lockbar", "mesh": "Lockbar", "group": "cabinet", "deform": "field", "material": "VRCab_Chrome"},
     {"name": "Rails", "mesh": "Rails", "group": "cabinet", "deform": "field", "material": "VRCab_Chrome"},
     {"name": "Backbox", "mesh": "Backbox", "group": "cabinet", "deform": "head", "material": "VRCab_SatinBlack", "image": "VRCab_Satin"},
+    {"name": "BackboxInside", "mesh": "BackboxInside", "group": "cabinet", "deform": "head", "material": "VRCab_Interior"},
     {"name": "Translite", "mesh": "Translite", "group": "cabinet", "deform": "head", "material": "VRCab_Translite", "image": "VRCab_Translite"},
     {"name": "Hinges", "mesh": "Hinges", "group": "cabinet", "deform": "head", "material": "VRCab_Powdercoat"},
     {"name": "Legs", "mesh": "Legs", "group": "feet", "deform": "legs", "material": "VRCab_Chrome"},

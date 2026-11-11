@@ -276,6 +276,9 @@ private:
       };
       Moving leftFlipperButton, rightFlipperButton, startButton, coinInserts, launchCap, knob;
       Plunger* tablePlunger = nullptr;
+      // Frames probed for a DMD source, so the log says whether the panel DMD has anything to show.
+      unsigned int dmdProbe = 0;
+      bool dmdLogged = false;
    };
    VisionNeutralCabinet m_visionNeutral;
    VPINBALL_VISION_HOST m_visionHost{};

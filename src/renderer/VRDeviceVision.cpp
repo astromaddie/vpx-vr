@@ -811,29 +811,55 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
    n.launch = anchor(controls.launch);
    n.launchHalf = half(controls.launch);
 
-   // Backglass or DMD on the translite, which follows the head fit.
+   // Backglass in the smoked glass and DMD in the speaker panel's window, both following the head fit.
    auto companion = table->m_filename;
    companion.replace_extension(".directb2s");
    const bool backglass = !find_case_insensitive_file_path(companion).empty();
-   const double frontY = max(controls.transliteFrontYTop, controls.transliteFrontYBottom) + 4.0;
-   const VC::Point low = fit.MapHead({ controls.glassX[0], frontY, controls.glassZ[0] });
-   const VC::Point high = fit.MapHead({ controls.glassX[1], frontY, controls.glassZ[1] });
-   const double glassWidth = high[0] - low[0], glassHeight = high[2] - low[2];
-   // A backglass fills the smoked glass. A DMD keeps its 4:1 shape at the stock cabinet's
-   // size, centred on the glass: the speaker panel's window is too small to read it.
-   const double displayWidth = backglass ? glassWidth * 0.95 : std::min(glassWidth * 0.9, MTOVPU(0.65));
-   const double displayHeight = backglass ? glassHeight * 0.95 : displayWidth / 4.0;
-   auto* display = Flasher::COMCreate();
-   display->Init(static_cast<float>((low[0] + high[0]) * 0.5), static_cast<float>(low[1]), false);
-   display->SetName(table->GetUniqueName("VisionCabinetDisplay"));
-   display->SetPartGroup(body);
-   display->m_d.m_renderMode = backglass ? FlasherData::EXT_RENDER : FlasherData::DMD;
-   display->m_d.m_renderStyle = backglass ? VPXWINDOW_Backglass : 0;
-   display->m_d.m_height = static_cast<float>((low[2] + high[2]) * 0.5);
-   display->m_d.m_rotX = -90.f;
-   display->Scale(static_cast<float>(displayWidth / 100.0), static_cast<float>(displayHeight / 100.0), {}, true);
-   table->AddPart(display);
-   display->Release();
+   // The translite leans back slightly. Each display stands just in front of it at its own height.
+   const auto frontY = [&controls](double z)
+   {
+      const double t = (z - controls.transliteZ[0]) / max(controls.transliteZ[1] - controls.transliteZ[0], 1.0);
+      return controls.transliteFrontYBottom + (controls.transliteFrontYTop - controls.transliteFrontYBottom) * t + 3.0;
+   };
+   const auto addDisplay = [&](const std::array<double, 2>& xs, const std::array<double, 2>& zs, bool dmd, double& width, double& height)
+   {
+      const double y = frontY((zs[0] + zs[1]) * 0.5);
+      const VC::Point low = fit.MapHead({ xs[0], y, zs[0] });
+      const VC::Point high = fit.MapHead({ xs[1], y, zs[1] });
+      const double regionWidth = high[0] - low[0], regionHeight = high[2] - low[2];
+      if (dmd)
+      {
+         // A 128 x 32 DMD is about 35 x 9 cm. The window is painted 37.5 x 10 cm around it.
+         width = std::min(regionWidth * (35.0 / 37.5), regionHeight * 0.875 * 4.0);
+         height = width / 4.0;
+      }
+      else
+      {
+         width = regionWidth * 0.95;
+         height = regionHeight * 0.95;
+      }
+      auto* display = Flasher::COMCreate();
+      display->Init(static_cast<float>((low[0] + high[0]) * 0.5), static_cast<float>((low[1] + high[1]) * 0.5), false);
+      display->SetName(table->GetUniqueName(dmd ? "VisionCabinetDMD" : "VisionCabinetBackglass"));
+      display->SetPartGroup(body);
+      display->m_d.m_renderMode = dmd ? FlasherData::DMD : FlasherData::EXT_RENDER;
+      display->m_d.m_renderStyle = dmd ? 0 : VPXWINDOW_Backglass;
+      // The default DMD profile uses the legacy renderer, which tints the dots with the flasher color.
+      // Plasma orange instead of the editor's green flasher default.
+      display->m_d.m_color = RGB(255, 88, 32);
+      display->m_d.m_height = static_cast<float>((low[2] + high[2]) * 0.5);
+      display->m_d.m_rotX = -90.f;
+      display->Scale(static_cast<float>(width / 100.0), static_cast<float>(height / 100.0), {}, true);
+      table->AddPart(display);
+      display->Release();
+   };
+   double backglassWidth = 0, backglassHeight = 0, dmdWidth = 0, dmdHeight = 0;
+   if (backglass)
+      addDisplay(controls.glassX, controls.glassZ, false, backglassWidth, backglassHeight);
+   // Segment and EM tables have no DMD source, so the window stays dark and their scores show on the backglass.
+   addDisplay(controls.windowX, controls.windowZ, true, dmdWidth, dmdHeight);
+   PLOGI << "Vision Pro neutral cabinet displays: " << (backglass ? "backglass " : "no backglass") << (backglass ? std::to_string(VPUTOCM(static_cast<float>(backglassWidth))) + " x " + std::to_string(VPUTOCM(static_cast<float>(backglassHeight))) + " cm" : string())
+         << ", DMD " << VPUTOCM(static_cast<float>(dmdWidth)) << " x " << VPUTOCM(static_cast<float>(dmdHeight)) << " cm in the speaker panel";
 
    PLOGI << "Vision Pro neutral cabinet: " << (n.launchButton ? "launch button" : "plunger") << " (" << variantReason << "), "
          << parts.size() << " parts, " << triangles << " triangles, " << addedImages.size() << " textures";
@@ -871,6 +897,21 @@ void VRDevice::UpdateVisionNeutralControls()
       // back with the plunger's own physics. A full pull matches the 6 cm the
       // hand controls take for a full pull, in real-world size.
       push(n.knob, n.tablePlunger->GetPullFromRest() * MTOVPU(0.06f) / max(m_scale, 0.1f));
+   }
+   if (!n.dmdLogged && (++n.dmdProbe % 60) == 0)
+   {
+      const auto dmd = g_pplayer->m_resURIResolver.GetDisplayState(PinballPlugin::ResURIResolver::DefaultDmdUri);
+      if (dmd.state.frame != nullptr)
+      {
+         n.dmdLogged = true;
+         PLOGI << "Vision Pro cabinet DMD source: " << dmd.source->width << " x " << dmd.source->height << ", format " << dmd.source->frameFormat
+               << ", first seen after " << n.dmdProbe << " frames";
+      }
+      else if (n.dmdProbe >= 60 * 30)
+      {
+         n.dmdLogged = true;
+         PLOGI << "Vision Pro cabinet DMD source: none after " << n.dmdProbe << " frames, so the panel DMD stays dark";
+      }
    }
 }
 

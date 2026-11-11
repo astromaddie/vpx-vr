@@ -29,9 +29,11 @@
  },
  "triangles": {
   "Body": 212,
+  "BodyInside": 212,
   "StartButton": 273,
   "CoinInserts": 6,
   "Backbox": 198,
+  "BackboxInside": 198,
   "Translite": 12,
   "FlipperButtons": 2386,
   "CoinDoor": 4913,

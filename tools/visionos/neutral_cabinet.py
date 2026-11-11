@@ -150,7 +150,8 @@ def measure_controls(M, assets):
     klo, khi = bounds([p for p in knob_v if p[1] > kfront - 28.6])
 
     # Translite: the front quad and its UV layout (tools/build_assets.py translite_texture:
-    # 1024 x 818, smoked glass above a 20.5% speaker panel with a 24% wide display window).
+    # 1024 x 818, smoked glass above a 20.5% speaker panel with a 55.6% wide DMD window
+    # and 8% of the panel's height above and below it).
     tm = M.read_obj(os.path.join(assets, "meshes", "Translite.obj"))
     front = [i for i, n in enumerate(tm.n) if n[1] > 0.9]  # the quad facing the player
     xs = [tm.v[i][0] for i in front]
@@ -170,8 +171,8 @@ def measure_controls(M, assets):
     w, h = 1024, 818
     th = int(h * (1 - 0.205))
     ph = h - th
-    pad = int(ph * 0.14)
-    disp_w = int(w * 0.24)
+    pad = int(ph * 0.08)
+    disp_w = int(w * 0.556)
     dx0 = (w - disp_w) // 2
     return {
         "frame": "VPX units in the canonical cabinet frame, before fitting. 'part' is the mesh whose fit moves the anchor.",
@@ -182,7 +183,7 @@ def measure_controls(M, assets):
         "rightFlipper": flipper(1),
         "plunger": {"part": "Plunger", "point": [(klo[0] + khi[0]) / 2, (klo[1] + khi[1]) / 2, (klo[2] + khi[2]) / 2]},
         "launch": front_face("LaunchButton", 3.0),
-        "translite": {"part": "Translite", "front_y_top": y_top, "front_y_bottom": y_bottom,
+        "translite": {"part": "Translite", "front_y_top": y_top, "front_y_bottom": y_bottom, "z": [z0, z1],
                       "glass": {"x": [x0, x1], "z": [z_at(th / h), z1]},
                       "window": {"x": [x_at(dx0 / w), x_at((dx0 + disp_w) / w)],
                                  "z": [z_at((th + ph - pad) / h), z_at((th + pad) / h)]}},

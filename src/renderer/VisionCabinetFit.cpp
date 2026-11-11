@@ -223,6 +223,7 @@ bool LoadControls(const nlohmann::json& controls, Controls& out, std::string& er
    if (!anchor("start", out.start, true) || !anchor("coin", out.coin, true) || !anchor("leftFlipper", out.leftFlipper, false)
       || !anchor("rightFlipper", out.rightFlipper, false) || !anchor("plunger", out.plunger, false) || !anchor("launch", out.launch, true)
       || !t.is_object() || !t.contains("front_y_top") || !t.contains("front_y_bottom") || !t.contains("glass") || !t.contains("window")
+      || !ReadPair(t.value("z", nlohmann::json()), out.transliteZ)
       || !ReadPair(t["glass"].value("x", nlohmann::json()), out.glassX) || !ReadPair(t["glass"].value("z", nlohmann::json()), out.glassZ)
       || !ReadPair(t["window"].value("x", nlohmann::json()), out.windowX) || !ReadPair(t["window"].value("z", nlohmann::json()), out.windowZ))
    {
