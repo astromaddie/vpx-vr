@@ -3,23 +3,30 @@
 import ARKit
 import OSLog
 import QuartzCore
+import os
 import simd
 
 /// A preview and the eventual player can both use this adapter. Its action sink runs on the main actor.
 @MainActor
 final class CabinetHandTracking {
     private static let log = Logger(subsystem: "org.vpinball.cabinethands.preview", category: "Placement")
-    private static let fistJoints: [(HandSkeleton.JointName, HandSkeleton.JointName, HandSkeleton.JointName)] = [
-        (.indexFingerKnuckle, .indexFingerIntermediateBase, .indexFingerIntermediateTip),
-        (.middleFingerKnuckle, .middleFingerIntermediateBase, .middleFingerIntermediateTip),
-        (.ringFingerKnuckle, .ringFingerIntermediateBase, .ringFingerIntermediateTip),
-        (.littleFingerKnuckle, .littleFingerIntermediateBase, .littleFingerIntermediateTip)
-    ]
-    var calibration: CabinetCalibration?
-    private var controls: CabinetHandControls
+    var calibration: CabinetCalibration? {
+        didSet {
+            calibration?.layout = layout
+            input.setRecorder(calibration?.recorder)
+        }
+    }
+    /// The recognizers run on the hand-tracking thread, so a slow VPX frame on
+    /// the main thread doesn't hold them up. `deliver()` hands their inputs over.
+    let input: CabinetHandInput
     private(set) var layout: CabinetControlsLayout
     /// Host time of the latest hand anchor update, for the player's input diagnostics.
-    private(set) var lastHandUpdate = 0.0
+    var lastHandUpdate: Double { input.lastHandUpdate }
+    /// How old the hand data behind the input being sent was, and how long it
+    /// waited for the main thread, in seconds. Set during each `send`.
+    private(set) var deliveryTiming: (age: Double, queued: Double, lead: Double)?
+    /// Diagnostic lines from the recognizers, such as dropped flipper holds.
+    var note: ((String) -> Void)?
     private let moveCabinet: ((simd_float4x4) -> Void)?
     private let placementMoving: (Bool) -> Void
     private var placementIsMoving = false
@@ -36,7 +43,7 @@ final class CabinetHandTracking {
          placementMoving: @escaping (Bool) -> Void = { _ in },
          watchSide: CabinetHandSide? = nil, showMenu: (() -> Void)? = nil,
          send: @escaping (CabinetInput) -> Void) {
-        controls = CabinetHandControls(layout: layout)
+        input = CabinetHandInput(layout: layout)
         self.layout = layout
         self.moveCabinet = moveCabinet
         self.placementMoving = placementMoving
@@ -48,6 +55,7 @@ final class CabinetHandTracking {
     func place(originFromCabinet: simd_float4x4) {
         reset()
         cabinetFromOrigin = originFromCabinet.inverse
+        input.place(cabinetFromOrigin)
     }
 
     func setWatchSide(_ side: CabinetHandSide) {
@@ -58,7 +66,8 @@ final class CabinetHandTracking {
     func setLayout(_ layout: CabinetControlsLayout) {
         reset()
         self.layout = layout
-        controls = CabinetHandControls(layout: layout)
+        calibration?.layout = layout
+        input.setLayout(layout)
     }
 
     func placeForPlay(_ initial: simd_float4x4, height: Float, trackFloor: Bool, simulatedFloor: Float? = nil) -> simd_float4x4 {
@@ -97,21 +106,36 @@ final class CabinetHandTracking {
     }
 
     func reset() {
-        let events = controls.reset()
+        let events = input.reset()
         if events.contains(.cancelPlunger) {
             Self.log.info("Plunger grip cancelled by cabinet input reset")
         }
+        deliver()
         events.forEach(send)
     }
 
     func serviceControls(at time: Double, playing: Bool) {
         if playing && roomPlacement == nil {
-            let events = controls.expire(at: time)
-            calibration?.observeSystemEvents(at: time, events: events)
-            events.forEach(send)
+            input.setEnabled(true)
+            input.expire(at: time)
+            deliver()
         } else {
+            input.setEnabled(false)
             reset()
         }
+    }
+
+    /// Sends the inputs the recognizers have queued. Call it on every main-loop turn.
+    func deliver() {
+        let (deliveries, notes) = input.drain()
+        notes.forEach { note?($0) }
+        guard !deliveries.isEmpty else { return }
+        let now = CACurrentMediaTime()
+        for delivery in deliveries {
+            deliveryTiming = (now - delivery.dataTime, now - delivery.recognizedAt, delivery.lead)
+            send(delivery.input)
+        }
+        deliveryTiming = nil
     }
 
     func run(
@@ -132,6 +156,7 @@ final class CabinetHandTracking {
             session.stop()
             reset()
             cabinetFromOrigin = nil
+            input.place(nil)
         }
 
         var canTrackHands = false
@@ -229,6 +254,7 @@ final class CabinetHandTracking {
             while !Task.isCancelled {
                 let now = CACurrentMediaTime()
                 let running = acceptsInput()
+                inputAccepted = running
                 roomPlacement?.expire(at: running ? now : .infinity)
                 reportMovement()
                 serviceControls(at: now, playing: running && allowsControls() && hands.state == .running)
@@ -237,25 +263,47 @@ final class CabinetHandTracking {
             }
         }
         defer { watchdog.cancel() }
-        for await change in hands.anchorUpdates {
-            guard !Task.isCancelled else { return }
-            lastHandUpdate = CACurrentMediaTime()
-            if acceptsInput() && hands.state == .running {
-                let now = CACurrentMediaTime()
-                if roomPlacement != nil {
-                    let anchor = change.anchor
-                    let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
-                    let joint = anchor.handSkeleton?.joint(.wrist)
-                    let wrist = change.event != .removed && anchor.isTracked && joint?.isTracked == true
-                        ? joint.map { (anchor.originFromAnchorTransform * $0.anchorFromJointTransform).columns.3.xyz } : nil
-                    updatePlacement(side, wrist: wrist, at: now)
-                } else {
-                    checkWrist(change.anchor, removed: change.event == .removed, at: now)
-                    if allowsControls() {
-                        update(change.anchor, removed: change.event == .removed, at: now)
-                    }
+        // Recognize off the main thread. The main thread only gets the
+        // anchors it needs for the wrist menu and placement editing.
+        let input = input
+        let recognition = Task.detached(priority: .userInitiated) { [weak self] in
+            for await change in hands.anchorUpdates {
+                guard !Task.isCancelled else { return }
+                let side: CabinetHandSide = change.anchor.chirality == .left ? .left : .right
+                let removed = change.event == .removed
+                input.process(side, update: change.anchor, removed: removed, captured: change.timestamp,
+                              predicted: CabinetHandTracking.usesPrediction ? hands : nil)
+                let anchor = change.anchor
+                Task { @MainActor [weak self] in
+                    self?.handleOnMain(anchor, removed: removed)
                 }
             }
+        }
+        await withTaskCancellationHandler {
+            await recognition.value
+        } onCancel: {
+            recognition.cancel()
+        }
+    }
+
+    /// Predict the hand pose at the moment the recognizers run, from ARKit's
+    /// `handAnchors(at:)` (visionOS 2 and later). It makes up for the hand
+    /// tracking delay. Each input logs how old its hand data was.
+    nonisolated static let usesPrediction = true
+
+    private var inputAccepted = false
+
+    private func handleOnMain(_ anchor: HandAnchor, removed: Bool) {
+        guard inputAccepted else { return }
+        let now = CACurrentMediaTime()
+        if roomPlacement != nil {
+            let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
+            let joint = anchor.handSkeleton?.joint(.wrist)
+            let wrist = !removed && anchor.isTracked && joint?.isTracked == true
+                ? joint.map { (anchor.originFromAnchorTransform * $0.anchorFromJointTransform).columns.3.xyz } : nil
+            updatePlacement(side, wrist: wrist, at: now)
+        } else {
+            checkWrist(anchor, removed: removed, at: now)
         }
     }
 
@@ -273,7 +321,10 @@ final class CabinetHandTracking {
     var simulatorRoomPose: simd_float4x4? { cabinetFromOrigin?.inverse }
 
     func simulateControl(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double) {
-        if roomPlacement == nil { sendControlSample(side, sample: sample, at: time) }
+        guard roomPlacement == nil else { return }
+        input.setEnabled(true)
+        input.process(side, sample: sample, at: time, captured: CACurrentMediaTime())
+        deliver()
     }
     #endif
 
@@ -310,80 +361,156 @@ final class CabinetHandTracking {
         }
     }
 
-    private func update(_ anchor: HandAnchor, removed: Bool, at time: Double) {
-        let side: CabinetHandSide = anchor.chirality == .left ? .left : .right
-        let trackedSkeleton = !removed && anchor.isTracked ? anchor.handSkeleton : nil
-        guard let cabinetFromOrigin, let skeleton = trackedSkeleton else {
-            sendControlSample(side, sample: nil, at: time)
-            return
-        }
-        let cabinetFromHand = cabinetFromOrigin * anchor.originFromAnchorTransform
-        func joint(_ name: HandSkeleton.JointName) -> CabinetHandJoint {
-            let joint = skeleton.joint(name)
-            let point = (cabinetFromHand * joint.anchorFromJointTransform).columns.3.xyz
-            return CabinetHandJoint(point: point, isTracked: joint.isTracked)
-        }
-        let palm = joint(.middleFingerKnuckle)
-        let wrist = joint(.wrist)
-        let indexKnuckle = joint(.indexFingerKnuckle)
-        let littleKnuckle = joint(.littleFingerKnuckle)
-        let fingerDirection: SIMD3<Float>?
-        if let palm = palm.trackedPosition, let wrist = wrist.trackedPosition {
-            fingerDirection = palm - wrist
-        } else {
-            fingerDirection = nil
-        }
-        let palmNormal: SIMD3<Float>?
-        if let fingerDirection, let index = indexKnuckle.trackedPosition,
-           let little = littleKnuckle.trackedPosition {
-            // This order gives both palms the same outward-facing normal relative to their joints.
-            palmNormal = side.sign * simd_cross(index - little, fingerDirection)
-        } else {
-            palmNormal = nil
-        }
-        let indexTip = joint(.indexFingerTip)
-        var sample = CabinetHandSample(
-            palm: palm.trackedPosition, index: indexTip.trackedPosition,
-            fingerDirection: fingerDirection, palmNormal: palmNormal
-        )
-        if layout.usesWristGestures {
-            let wristPosition = wrist.estimatedPosition ?? cabinetFromHand.columns.3.xyz
-            if let palmPosition = palm.estimatedPosition {
-                sample.fingerDirection = palmPosition - wristPosition
-            }
-            let forearmWrist = joint(.forearmWrist).estimatedPosition ?? wristPosition
-            if let arm = joint(.forearmArm).estimatedPosition {
-                sample.forearmDirection = forearmWrist - arm
-            }
-            let fingers = Self.fistJoints.map { knuckle, bend, next in
-                CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint(bend), next: joint(next))
-            }
-            sample.recognizeGrip(wrist: wristPosition,
-                                 palm: palm, fingers: fingers)
-        }
-        let metrics: CalibrationMetrics?
-        if layout.plunger != nil || calibration?.isRecording == true {
-            let thumb = joint(.thumbTip)
-            let geometry = CabinetPlungerGeometry(side: side, wrist: wrist, palm: palm, index: indexKnuckle,
-                                                  little: littleKnuckle, indexTip: indexTip, thumb: thumb)
-            if layout.plunger != nil { sample.plungerPose = geometry.pose }
-            metrics = calibration?.isRecording == true
-                ? CalibrationMetrics(side: side, sample: sample, layout: layout, geometry: geometry,
-                                     thumbTipTracked: thumb.isTracked)
-                : nil
-        } else {
-            metrics = nil
-        }
-        sendControlSample(side, sample: sample, at: time, metrics: metrics)
+}
+
+/// The hand recognizers and the inputs they have queued for the main thread.
+/// Any thread can call it.
+final class CabinetHandInput: @unchecked Sendable {
+    struct Delivery {
+        let input: CabinetInput
+        /// When the hand data behind the input was captured or predicted for, in host time.
+        let dataTime: Double
+        let recognizedAt: Double
+        /// How far ahead of the tracked capture the predicted pose was, in seconds.
+        let lead: Double
     }
 
-    private func sendControlSample(
-        _ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double, metrics: CalibrationMetrics? = nil
-    ) {
-        let events = controls.update(side, sample: sample, at: time)
-        calibration?.observe(side: side, at: time, sample: sample, metrics: metrics, events: events,
-                             nudgePhase: controls.nudgePhase, nudgeMotion: controls.nudgeMotion)
-        events.forEach(send)
+    private struct State {
+        var controls: CabinetHandControls
+        var cabinetFromOrigin: simd_float4x4?
+        var enabled = false
+        var pending: [Delivery] = []
+        var notes: [String] = []
+        var lastTime: [Double] = [-.infinity, -.infinity]
+        var lastHandUpdate = 0.0
+        var recorder: CabinetHandRecorder?
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+
+    init(layout: CabinetControlsLayout) {
+        state = OSAllocatedUnfairLock(initialState: State(controls: CabinetHandControls(layout: layout)))
+    }
+
+    var lastHandUpdate: Double { state.withLock { $0.lastHandUpdate } }
+
+    func setLayout(_ layout: CabinetControlsLayout) {
+        state.withLock { $0.controls = CabinetHandControls(layout: layout) }
+    }
+
+    func place(_ cabinetFromOrigin: simd_float4x4?) {
+        state.withLock { $0.cabinetFromOrigin = cabinetFromOrigin }
+    }
+
+    func setRecorder(_ recorder: CabinetHandRecorder?) {
+        state.withLock { $0.recorder = recorder }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        state.withLock { $0.enabled = enabled }
+    }
+
+    func reset() -> [CabinetInput] {
+        state.withLock { state in
+            state.pending.removeAll()
+            return state.controls.reset()
+        }
+    }
+
+    func expire(at time: Double) {
+        state.withLock { state in
+            guard state.enabled else { return }
+            let events = state.controls.expire(at: time)
+            state.notes += state.controls.takeNotes()
+            state.pending += events.map { Delivery(input: $0, dataTime: time, recognizedAt: time, lead: 0) }
+        }
+    }
+
+    func drain() -> ([Delivery], [String]) {
+        state.withLock { state in
+            defer {
+                state.pending.removeAll(keepingCapacity: true)
+                state.notes.removeAll(keepingCapacity: true)
+            }
+            return (state.pending, state.notes)
+        }
+    }
+
+    /// Converts an anchor update to cabinet space and runs the recognizers.
+    func process(_ side: CabinetHandSide, update anchor: HandAnchor, removed: Bool, captured: Double,
+                 predicted hands: HandTrackingProvider?) {
+        let now = CACurrentMediaTime()
+        var source = anchor
+        var time = captured
+        if let hands, !removed {
+            let pose = hands.handAnchors(at: now)
+            if let latest = side == .left ? pose.leftHand : pose.rightHand, latest.isTracked {
+                source = latest
+                time = now
+            }
+        }
+        let cabinetFromOrigin = state.withLock { $0.cabinetFromOrigin }
+        let frame: CabinetHandFrame?
+        if !removed, source.isTracked, let skeleton = source.handSkeleton, let cabinetFromOrigin {
+            let cabinetFromHand = cabinetFromOrigin * source.originFromAnchorTransform
+            frame = CabinetHandFrame(origin: cabinetFromHand.columns.3.xyz, joints: CabinetJoint.allCases.map { name in
+                let joint = skeleton.joint(Self.jointName(name))
+                return CabinetHandJoint(point: (cabinetFromHand * joint.anchorFromJointTransform).columns.3.xyz,
+                                        isTracked: joint.isTracked)
+            })
+        } else {
+            frame = nil
+        }
+        process(side, frame: frame, at: time, captured: time, lead: time - captured)
+    }
+
+    func process(_ side: CabinetHandSide, frame: CabinetHandFrame?, at time: Double, captured: Double, lead: Double = 0) {
+        state.withLock { state in
+            state.lastHandUpdate = CACurrentMediaTime()
+            let sample = frame.map { CabinetHandSample(side, frame: $0, layout: state.controls.layout) }
+            let events = Self.run(&state, side, sample: sample, at: time, captured: captured, lead: lead)
+            state.recorder?.record(side, at: time, frame: frame, events: events)
+        }
+    }
+
+    func process(_ side: CabinetHandSide, sample: CabinetHandSample?, at time: Double, captured: Double) {
+        state.withLock { _ = Self.run(&$0, side, sample: sample, at: time, captured: captured) }
+    }
+
+    private static func run(_ state: inout State, _ side: CabinetHandSide, sample: CabinetHandSample?,
+                            at time: Double, captured: Double, lead: Double = 0) -> [CabinetInput] {
+        // Keep each hand's clock moving forward when predicted and captured times mix.
+        let index = side == .left ? 0 : 1
+        let time = max(time, state.lastTime[index] + 0.0005)
+        state.lastTime[index] = time
+        guard state.enabled else { return [] }
+        let events = state.controls.update(side, sample: sample, at: time)
+        state.notes += state.controls.takeNotes()
+        let now = CACurrentMediaTime()
+        state.pending += events.map { Delivery(input: $0, dataTime: captured, recognizedAt: now, lead: lead) }
+        return events
+    }
+
+    private static func jointName(_ joint: CabinetJoint) -> HandSkeleton.JointName {
+        switch joint {
+        case .wrist: .wrist
+        case .forearmWrist: .forearmWrist
+        case .forearmArm: .forearmArm
+        case .thumbTip: .thumbTip
+        case .indexKnuckle: .indexFingerKnuckle
+        case .indexBend: .indexFingerIntermediateBase
+        case .indexNext: .indexFingerIntermediateTip
+        case .indexTip: .indexFingerTip
+        case .middleKnuckle: .middleFingerKnuckle
+        case .middleBend: .middleFingerIntermediateBase
+        case .middleNext: .middleFingerIntermediateTip
+        case .ringKnuckle: .ringFingerKnuckle
+        case .ringBend: .ringFingerIntermediateBase
+        case .ringNext: .ringFingerIntermediateTip
+        case .littleKnuckle: .littleFingerKnuckle
+        case .littleBend: .littleFingerIntermediateBase
+        case .littleNext: .littleFingerIntermediateTip
+        }
     }
 }
 

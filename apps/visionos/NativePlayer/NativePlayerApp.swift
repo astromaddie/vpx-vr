@@ -142,7 +142,7 @@ private struct TableWindow: View {
             } else if player.isOpen {
                 HStack {
                     Button("Edit Placement", systemImage: "move.3d") { player.beginEditing() }
-                    Button("Calibrate Controls", systemImage: "hand.raised") { player.beginCalibration() }
+                    Button("Record Hands", systemImage: "hand.raised") { player.beginCalibration() }
                 }
             } else {
                 Text("Look toward your non-dominant wrist during play to switch tables or edit placement.")
@@ -293,7 +293,7 @@ private final class NativePlayer {
     private(set) var isCalibrating = false
     let calibration: CabinetCalibration = {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        return CabinetCalibration(url: URL.documentsDirectory.appending(path: CabinetCalibration.filename(build: build)),
+        return CabinetCalibration(folder: URL.documentsDirectory.appending(path: CabinetCalibration.folder(build: build)),
                                   build: build)
     }()
     var isEditingPlacement = false
@@ -353,6 +353,10 @@ private final class NativePlayer {
     private var ready = false
     private var stopping = false
     private var pulses: [VPINBALL_VISION_INPUT: Task<Void, Never>] = [:]
+    private var flipperPressed: [CabinetHandSide: Double] = [:]
+    #if targetEnvironment(simulator)
+    private var simulatorShoves: [SIMD2<Float>] = []
+    #endif
     // Input diagnostics: presses sent to VPX that it hasn't shown yet, and the last warnings.
     private var unseenPresses: [VPINBALL_VISION_INPUT: Double] = [:]
     private var lastInputWarning = 0.0
@@ -468,6 +472,7 @@ private final class NativePlayer {
                 needsDismissal = true
                 return
             }
+            tracker.note = { VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Vision Pro \($0)") }
             self.compositor = compositor
             self.tracker = tracker
             isOpen = true
@@ -475,6 +480,8 @@ private final class NativePlayer {
             pump = Task {
                 while !Task.isCancelled {
                     pumpBeat.withLock { $0 = CACurrentMediaTime() }
+                    // Hand inputs recognized on the tracking thread since the last turn.
+                    self.tracker?.deliver()
                     VPinballVisionTick()
                     step()
                     try? await Task.sleep(for: .milliseconds(2))
@@ -960,38 +967,7 @@ private final class NativePlayer {
         }
         VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified coin, Start and both wrist flippers from cabinet-space hand samples")
         if CommandLine.arguments.contains("--check-nudges") {
-            let offsets: [(SIMD3<Float>, VPINBALL_VISION_INPUT)] = [
-                ([-0.032, 0, 0], VPINBALL_VISION_NUDGE_LEFT), ([0.032, 0, 0], VPINBALL_VISION_NUDGE_RIGHT),
-                ([0, 0.032, 0], VPINBALL_VISION_NUDGE_FORWARD), ([0, -0.032, 0], VPINBALL_VISION_NUDGE_BACK)
-            ]
-            let leftRail = tracker.layout.flipper(.left) + [-0.07, 0.06, -0.08]
-            let rightRail = tracker.layout.flipper(.right) + [0.07, 0.06, -0.08]
-            func fists(_ offset: SIMD3<Float>, rightPose: CabinetHandPose = .fist) {
-                send(.left, .init(palm: leftRail + offset, pose: .fist))
-                send(.right, .init(palm: rightRail + offset, pose: rightPose))
-            }
-            for (offset, button) in offsets {
-                time += 0.42
-                let before = VPinballVisionNudgeCount()
-                fists(.zero)
-                fists(offset * 0.8)
-                guard VPinballVisionNudgeCount() == before else {
-                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator nudge dead zone failed for button \(button.rawValue)")
-                    return
-                }
-                fists(offset, rightPose: .unknown)
-                try? await Task.sleep(for: .milliseconds(30))
-                guard VPinballVisionNudgeCount() == before + 1,
-                      button == VPINBALL_VISION_NUDGE_BACK || pressed(button),
-                      !pressed(VPINBALL_VISION_LEFT_FLIPPER), !pressed(VPINBALL_VISION_RIGHT_FLIPPER) else {
-                    VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator two-fist nudge failed for button \(button.rawValue)")
-                    return
-                }
-                send(.left, nil)
-                send(.right, nil)
-                try? await Task.sleep(for: .milliseconds(410))
-            }
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified four two-fist nudges in the native cabinet model")
+            guard await checkShoves() else { return }
         }
         if CommandLine.arguments.contains("--check-room-placement") {
             VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator ready for cabinet grab")
@@ -1013,6 +989,119 @@ private final class NativePlayer {
             }
         }
         await holdForScreenshot()
+    }
+
+    /// Feeds wrist paths into the hand recognizer and follows the cabinet in VPX:
+    /// an ordinary reach that must not shove, a firm two-hand shove right with a
+    /// right flip in the middle of it, and light and firm one-hand slaps.
+    private func checkShoves() async -> Bool {
+        guard let tracker else { return false }
+        // Hand samples at 90 Hz on a clock of their own, ahead of the earlier checks.
+        var clock = 1000.0
+        func send(_ side: CabinetHandSide, _ sample: CabinetHandSample?) {
+            tracker.simulateControl(side, sample: sample, at: clock + (side == .left ? 0 : 0.0055))
+            if side == .right { clock += 0.011 }
+        }
+        let rest: [CabinetHandSide: SIMD3<Float>] = [
+            .left: tracker.layout.flipper(.left) + [-0.04, 0.03, 0.06],
+            .right: tracker.layout.flipper(.right) + [0.04, 0.03, 0.06]
+        ]
+        let straight: SIMD3<Float> = [0, 0, -1]
+        func hands(_ left: SIMD3<Float>, _ right: SIMD3<Float>, rightBend: Float = 0) {
+            send(.left, .init(fingerDirection: straight, forearmDirection: straight, wrist: rest[.left]! + left))
+            let bend = rightBend * .pi / 180
+            send(.right, .init(fingerDirection: [-sin(bend), 0, -cos(bend)], forearmDirection: straight,
+                               wrist: rest[.right]! + right))
+        }
+        func still(_ count: Int) { for _ in 0..<count { hands(.zero, .zero) } }
+        func minimumJerk(_ t: Float) -> Float { t * t * t * (10 - 15 * t + 6 * t * t) }
+        func pressed(_ button: VPINBALL_VISION_INPUT) -> Bool {
+            VPinballVisionPressedButtons() & (UInt32(1) << button.rawValue) != 0
+        }
+        /// Follows the cabinet for 400 ms and returns its largest offset in mm and its peak acceleration.
+        func follow() async -> (offset: Float, acceleration: Float, plumb: Float) {
+            var offset: Float = 0, acceleration: Float = 0, plumb: Float = 0
+            for _ in 0..<50 {
+                let state = VPinballVisionCabinetState()
+                offset = max(offset, simd_length(SIMD2(state.offsetX, state.offsetY)) * 1000)
+                acceleration = max(acceleration, simd_length(SIMD2(state.accelerationX, state.accelerationY)))
+                plumb = max(plumb, state.plumbPercent)
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+            return (offset, acceleration, plumb)
+        }
+
+        // Rest long enough to count as resting on the cabinet.
+        still(20)
+        let before = VPinballVisionNudgeCount()
+        simulatorShoves.removeAll()
+        // An ordinary 10 cm reach forward and back with the left hand.
+        for step in 1...36 {
+            let t = Float(step) / 36
+            hands([0.03 * minimumJerk(t), 0, -0.10 * minimumJerk(t)], .zero)
+        }
+        still(20)
+        guard VPinballVisionNudgeCount() == before, simulatorShoves.isEmpty else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator reach moved the cabinet")
+            return false
+        }
+
+        // A firm two-hand shove right, 5 cm in 120 ms, flipping the right flipper halfway.
+        let ball = VPinballVisionSampleBall(-1, nil)
+        for step in 1...11 {
+            let t = Float(step) / 11
+            let shove = SIMD3<Float>(0.05 * minimumJerk(t), 0, 0)
+            hands(shove, shove, rightBend: step >= 5 ? 22 : 0)
+        }
+        try? await Task.sleep(for: .milliseconds(20))
+        let flipped = pressed(VPINBALL_VISION_RIGHT_FLIPPER)
+        let firm = await follow()
+        let after = VPinballVisionSampleBall(ball.id, nil)
+        for _ in 0..<12 { hands([0.05, 0, 0], [0.05, 0, 0]) }
+        guard VPinballVisionNudgeCount() == before + 1, flipped, let shove = simulatorShoves.last, shove.x > 0,
+              firm.offset > 0.5 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator firm shove failed: \(VPinballVisionNudgeCount() - before) shoves, flipped \(flipped), cabinet \(firm.offset) mm")
+            return false
+        }
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, String(format: "Simulator firm shove right: %.1f m/s2 peak sent, cabinet moved %.1f mm at up to %.1f m/s2, plumb %.0f%% of tilt, right flipper up mid-shove, ball %d Y %.1f -> %.1f",
+                                                    simd_length(shove), firm.offset, firm.acceleration, firm.plumb, ball.id, ball.y, after.y))
+        // The way back is not a shove.
+        for step in 1...14 {
+            let back = SIMD3<Float>(0.05 * (1 - minimumJerk(Float(step) / 14)), 0, 0)
+            hands(back, back)
+        }
+        still(20)
+        try? await Task.sleep(for: .milliseconds(1500))
+
+        // One-hand slaps on the right side, inward, light then firm.
+        var slaps: [Float] = []
+        for (distance, duration) in [(Float(0.02), 9), (Float(0.06), 9)] {
+            let count = simulatorShoves.count
+            for step in 1...duration {
+                hands(.zero, [-distance * minimumJerk(Float(step) / Float(duration)), 0, 0])
+            }
+            let slap = await follow()
+            guard simulatorShoves.count > count, let peak = simulatorShoves.last, peak.x < 0 else {
+                VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator slap of \(distance) m did not shove")
+                return false
+            }
+            slaps.append(simd_length(peak))
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, String(format: "Simulator %.0f mm slap left: %.1f m/s2 sent, cabinet moved %.1f mm",
+                                                        distance * 1000, simd_length(peak), slap.offset))
+            for step in 1...20 {
+                hands(.zero, [-distance * (1 - minimumJerk(Float(step) / 20)), 0, 0])
+            }
+            still(20)
+            try? await Task.sleep(for: .milliseconds(1200))
+        }
+        guard slaps[1] > slaps[0] * 1.8 else {
+            VPinballLog(VPINBALL_LOG_LEVEL_ERROR, "Simulator slap strength is not proportional: \(slaps)")
+            return false
+        }
+        send(.left, nil)
+        send(.right, nil)
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator verified analog shoves: reach ignored, firm shove with a flip, proportional slaps")
+        return true
     }
 
     private func checkRoomPlacement() async {
@@ -1070,21 +1159,33 @@ private final class NativePlayer {
             let button = side == .left ? VPINBALL_VISION_LEFT_FLIPPER : VPINBALL_VISION_RIGHT_FLIPPER
             VPinballVisionSetButton(button, pressed ? 1 : 0)
             if pressed { expectPress(button) } else { unseenPresses.removeValue(forKey: button) }
+            // Hand data age: from the hand pose the recognizer used (captured, or predicted
+            // for the moment it ran) to this press. Queue: time waiting for the main thread.
+            let now = CACurrentMediaTime()
+            let held = pressed ? "" : flipperPressed[side].map { String(format: " after %.0f ms", (now - $0) * 1000) } ?? ""
+            flipperPressed[side] = pressed ? now : nil
+            let timing = tracker?.deliveryTiming.map {
+                String(format: ", hand data %.0f ms old (predicted %.0f ms past the tracked pose), queued %.1f ms",
+                       $0.age * 1000, $0.lead * 1000, $0.queued * 1000)
+            } ?? ""
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Vision Pro flip \(side == .left ? "L" : "R") \(pressed ? "down" : "up")\(held)\(timing)")
         case .insertCoin:
             pulse(VPINBALL_VISION_ADD_CREDIT)
         case .pressStart:
             pulse(VPINBALL_VISION_START)
         case .pressLaunchBall:
             pulse(VPINBALL_VISION_LAUNCH_BALL)
-        case let .nudge(direction):
-            VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Vision Pro two-fist nudge \(direction)")
-            let button = switch direction {
-            case .left: VPINBALL_VISION_NUDGE_LEFT
-            case .right: VPINBALL_VISION_NUDGE_RIGHT
-            case .up: VPINBALL_VISION_NUDGE_FORWARD
-            case .down: VPINBALL_VISION_NUDGE_BACK
-            }
-            pulse(button)
+        case let .shove(acceleration, update):
+            VPinballVisionShove(acceleration.x, acceleration.y, update ? 1 : 0)
+            #if targetEnvironment(simulator)
+            if update, !simulatorShoves.isEmpty { simulatorShoves[simulatorShoves.count - 1] = acceleration } else { simulatorShoves.append(acceleration) }
+            #endif
+            let strength = simd_length(acceleration) / CabinetHandControls.Shove.strongNudge
+            let direction = abs(acceleration.x) >= abs(acceleration.y)
+                ? (acceleration.x < 0 ? "left" : "right") : (acceleration.y < 0 ? "forward" : "back")
+            let timing = tracker?.deliveryTiming.map { String(format: ", hand data %.0f ms old", $0.age * 1000) } ?? ""
+            VPinballLog(VPINBALL_LOG_LEVEL_INFO, String(format: "Vision Pro shove%@ %@ %.1f, %.1f m/s2 (%.0f%% of a strong nudge)%@",
+                                                        update ? " raised" : "", direction, acceleration.x, acceleration.y, strength * 100, timing))
         case let .pullPlunger(amount):
             _ = VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_HOLD, amount)
         case let .releasePlunger(amount):

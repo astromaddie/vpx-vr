@@ -12,8 +12,8 @@ struct ControlCalibrationView: View {
         ScrollView {
             panel
         }
-        .confirmationDialog("Clear the Calibration Report?", isPresented: $confirmingClear) {
-            Button("Clear Report", role: .destructive) { calibration.clear() }
+        .confirmationDialog("Clear the Hand Recordings?", isPresented: $confirmingClear) {
+            Button("Clear Recordings", role: .destructive) { calibration.clear() }
         }
         .task {
             while !Task.isCancelled {
@@ -25,14 +25,14 @@ struct ControlCalibrationView: View {
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Control Calibration").font(.title)
-            Text("Record one attempt at a time beside the cabinet. The table will ignore game inputs while calibration is open.")
+            Text("Record Hands").font(.title)
+            Text("Record one take at a time beside the cabinet. Each take saves the tracked hand joints so the controls can be tuned from them. The table ignores your gestures while this is open.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 12) {
-                Text("Gesture").font(.headline)
+                Text("Take").font(.headline)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    ForEach(CalibrationGesture.allCases) { gesture in
+                    ForEach(HandTake.allCases) { gesture in
                         Button {
                             calibration.choose(gesture)
                         } label: {
@@ -49,7 +49,7 @@ struct ControlCalibrationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 switch calibration.phase {
                 case .idle:
-                    Button("Record Attempt", systemImage: "record.circle") {
+                    Button("Record Take", systemImage: "record.circle") {
                         calibration.start(at: CACurrentMediaTime())
                     }
                     .buttonStyle(.borderedProminent)
@@ -62,7 +62,7 @@ struct ControlCalibrationView: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
                 if calibration.phase != .idle {
-                    Button("Cancel Attempt") { calibration.cancel() }
+                    Button("Cancel Take") { calibration.cancel() }
                 }
             }
             .padding(12)
@@ -70,18 +70,18 @@ struct ControlCalibrationView: View {
             if let message = calibration.message {
                 Text(message).font(.callout).foregroundStyle(.secondary)
             } else {
-                Text("Recording starts after 2 seconds and runs for 5 seconds.")
+                Text("Recording starts after 2 seconds and runs for \(Int(calibration.selection.seconds)) seconds. The next take is picked after each save.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("\(calibration.attemptCount) attempts saved")
+                Text("\(calibration.takeCount) takes saved")
                     .font(.headline)
-                Text("The report stays on this device in Files under VPX Vision.")
+                Text("The takes stay on this device in Files under VPX Vision, in Hand Recordings.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             HStack {
-                Button("Clear Report", role: .destructive) { confirmingClear = true }
-                    .disabled(calibration.attemptCount == 0 || calibration.phase != .idle)
+                Button("Clear Recordings", role: .destructive) { confirmingClear = true }
+                    .disabled(calibration.takeCount == 0 || calibration.phase != .idle)
                 Spacer()
                 Button("Done", action: done)
             }

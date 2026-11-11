@@ -4,6 +4,8 @@
 
 class Settings;
 
+namespace VPX::Physics { class HandNudge; }
+
 
 namespace VPX::Physics
 {
@@ -59,8 +61,14 @@ class NudgeHandler final
 {
 public:
    NudgeHandler(InputManager* inputManager, Settings& appSettings);
+   ~NudgeHandler();
 
    void ApplyKeyboardImpulse(float angle, float force);
+
+   // Analog shove from tracked hands: peak cabinet acceleration (m/s^2) in physical cabinet axes.
+   // An update raises the shove in progress.
+   void ApplyHandShove(const Vertex2D& peakAcceleration, bool update);
+   int GetHandShoveIndex() const { return m_handShoveIndex; }
 
    void StepOneMillisecond();
    Vertex2D GetCabinetAcceleration() const; // m/s^2
@@ -96,6 +104,8 @@ public:
 private:
    Settings& m_appSettings; // Sensor mapping is an application wide setting (not overridable per table)
    std::unique_ptr<KeyboardNudge> m_keyboardNudge;
+   std::unique_ptr<HandNudge> m_handNudge;
+   int m_handShoveIndex = 0;
    vector<std::unique_ptr<NudgeSensor>> m_sensors;
    Vertex2D m_noNudge = Vertex2D(0.f, 0.f);
    KeyboardNudgeMode m_keyboardNudgeMode;

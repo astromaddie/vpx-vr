@@ -89,6 +89,17 @@ VPINBALLAPI float VPinballVisionLastGpuMilliseconds(void);
 // Returns 1 if the release needs a Launch Ball button pulse.
 VPINBALLAPI int VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_ACTION action, float pull);
 
+// Shoves the cabinet from tracked hands, on the main thread. The peak cabinet acceleration is in m/s^2,
+// x to the player's right and y toward the player. An update raises the shove in progress.
+VPINBALLAPI void VPinballVisionShove(float x, float y, int update);
+typedef struct {
+   float offsetX, offsetY; // Cabinet offset in m
+   float accelerationX, accelerationY; // Cabinet acceleration in m/s^2
+   float plumbPercent; // Plumb angle as a percentage of the tilt threshold, or -1 without plumb simulation
+   int tilts; // Plumb tilts since the table started
+} VPINBALL_VISION_CABINET;
+VPINBALLAPI VPINBALL_VISION_CABINET VPinballVisionCabinetState(void);
+
 // The buttons VPX's input manager sees pressed, one bit per VPINBALL_VISION_INPUT, on the main thread.
 // The player uses it to log presses that never reach VPX.
 VPINBALLAPI unsigned int VPinballVisionPressedButtons(void);

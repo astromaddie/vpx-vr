@@ -2,7 +2,7 @@
 
 import simd
 
-struct CabinetButtonFace {
+struct CabinetButtonFace: Codable {
     let position: SIMD3<Float>
     let halfSize: SIMD2<Float>
 
@@ -13,7 +13,7 @@ struct CabinetButtonFace {
 
 /// Metres in cabinet space: x to the player's right, y up, z toward the player.
 /// The origin is at the top centre of the front panel.
-struct CabinetControlsLayout {
+struct CabinetControlsLayout: Codable {
     static let coinFaceSize = SIMD2<Float>(0.080, 0.064)
     // The default preview uses Time Machine's 1,000 by 1,910 VP units.
     var playfieldWidth: Float = 0.53975
@@ -50,6 +50,17 @@ struct CabinetControlsLayout {
             && abs(offset.y) <= 0.22 + margin
             && (-0.32 - margin...0.13 + margin).contains(offset.z)
             && palm.z <= 0.06 + margin
+    }
+
+    /// Where a resting wrist can shove the cabinet: beside its own side of the
+    /// cabinet from the flipper button back along the side rail, or just in
+    /// front of the front corner. The wrist sits a few centimetres behind the palm.
+    func isInShoveZone(_ side: CabinetHandSide, wrist: SIMD3<Float>) -> Bool {
+        let offset = wrist - flipper(side)
+        let outward = offset.x * side.sign
+        return (-0.12...0.25).contains(outward)
+            && abs(offset.y) <= 0.25
+            && (-0.45...0.22).contains(offset.z)
     }
 }
 
@@ -211,6 +222,9 @@ struct CabinetHandSample {
     var pose: CabinetHandPose = .unknown
     var estimatedGripPosition: SIMD3<Float>? = nil
     var plungerPose: CabinetPlungerPose = .uncertain
+    /// The wrist joint, tracked or estimated. Shoves follow its translation,
+    /// which a wrist bend barely moves.
+    var wrist: SIMD3<Float>? = nil
 
     var gripPosition: SIMD3<Float>? { estimatedGripPosition ?? palm }
 
@@ -222,8 +236,76 @@ struct CabinetHandSample {
     }
 }
 
-enum CabinetNudgeDirection: CaseIterable {
-    case left, right, up, down
+extension CabinetHandSample {
+    /// Builds the recognizers' sample from cabinet-space joints. The ARKit adapter
+    /// and the recording replay both use this, so a replay sees what the headset saw.
+    init(_ side: CabinetHandSide, frame: CabinetHandFrame, layout: CabinetControlsLayout) {
+        self.init()
+        let palm = frame[.middleKnuckle]
+        let wrist = frame[.wrist]
+        if let palm = palm.trackedPosition, let wrist = wrist.trackedPosition {
+            fingerDirection = palm - wrist
+        }
+        if let fingerDirection, let index = frame[.indexKnuckle].trackedPosition,
+           let little = frame[.littleKnuckle].trackedPosition {
+            // This order gives both palms the same outward-facing normal relative to their joints.
+            palmNormal = side.sign * simd_cross(index - little, fingerDirection)
+        }
+        self.palm = palm.trackedPosition
+        index = frame[.indexTip].trackedPosition
+        let wristPosition = wrist.estimatedPosition ?? frame.origin
+        self.wrist = wristPosition
+        if layout.usesWristGestures {
+            if let palmPosition = palm.estimatedPosition {
+                fingerDirection = palmPosition - wristPosition
+            }
+            let forearmWrist = frame[.forearmWrist].estimatedPosition ?? wristPosition
+            if let arm = frame[.forearmArm].estimatedPosition {
+                forearmDirection = forearmWrist - arm
+            }
+            let fingers = CabinetJoint.fingers.map { knuckle, bend, next in
+                CabinetHandPose.Finger(knuckle: frame[knuckle], bend: frame[bend], next: frame[next])
+            }
+            recognizeGrip(wrist: wristPosition, palm: palm, fingers: fingers)
+        }
+        if layout.plunger != nil {
+            plungerPose = Self.geometry(side, frame: frame).pose
+        }
+    }
+
+    static func geometry(_ side: CabinetHandSide, frame: CabinetHandFrame) -> CabinetPlungerGeometry {
+        CabinetPlungerGeometry(side: side, wrist: frame[.wrist], palm: frame[.middleKnuckle],
+                               index: frame[.indexKnuckle], little: frame[.littleKnuckle],
+                               indexTip: frame[.indexTip], thumb: frame[.thumbTip])
+    }
+}
+
+/// The hand joints the recognizers read, in a fixed order for recordings.
+enum CabinetJoint: Int, CaseIterable {
+    case wrist, forearmWrist, forearmArm, thumbTip
+    case indexKnuckle, indexBend, indexNext, indexTip
+    case middleKnuckle, middleBend, middleNext
+    case ringKnuckle, ringBend, ringNext
+    case littleKnuckle, littleBend, littleNext
+
+    static let fingers: [(CabinetJoint, CabinetJoint, CabinetJoint)] = [
+        (.indexKnuckle, .indexBend, .indexNext), (.middleKnuckle, .middleBend, .middleNext),
+        (.ringKnuckle, .ringBend, .ringNext), (.littleKnuckle, .littleBend, .littleNext)
+    ]
+}
+
+/// One tracked hand in cabinet space: the anchor origin and each joint.
+struct CabinetHandFrame {
+    var origin: SIMD3<Float>
+    var joints: [CabinetHandJoint]
+
+    init(origin: SIMD3<Float>, joints: [CabinetHandJoint]) {
+        precondition(joints.count == CabinetJoint.allCases.count)
+        self.origin = origin
+        self.joints = joints
+    }
+
+    subscript(_ joint: CabinetJoint) -> CabinetHandJoint { joints[joint.rawValue] }
 }
 
 enum CabinetAction: Hashable {
@@ -233,7 +315,10 @@ enum CabinetAction: Hashable {
 enum CabinetInput: Equatable {
     case flipper(CabinetHandSide, pressed: Bool)
     case insertCoin, pressStart, pressLaunchBall
-    case nudge(CabinetNudgeDirection)
+    /// Peak cabinet acceleration of a shove in m/s², x to the player's right and
+    /// y toward the player, like VPX's nudge axes. `update` raises the shove
+    /// that is still in progress instead of starting another.
+    case shove(SIMD2<Float>, update: Bool)
     case pullPlunger(Float), releasePlunger(Float), cancelPlunger
 
     var action: CabinetAction {
@@ -242,7 +327,7 @@ enum CabinetInput: Equatable {
         case .flipper(.right, _): .rightFlipper
         case .insertCoin: .addCredit
         case .pressStart: .start
-        case .nudge: .nudge
+        case .shove: .nudge
         case .pullPlunger, .releasePlunger, .cancelPlunger, .pressLaunchBall: .launchBall
         }
     }
@@ -254,7 +339,10 @@ struct CabinetHandControls {
     private var left = Hand()
     private var right = Hand()
     private var plunger = PlungerGrip()
-    private var nudge = FistNudge()
+    private var shove = Shove()
+    /// Short diagnostic lines for the session log, such as a flipper hold that
+    /// dropped while the hand still looked bent. Collect them with `takeNotes()`.
+    private(set) var notes: [String] = []
 
     init(layout: CabinetControlsLayout = .init()) {
         self.layout = layout
@@ -264,212 +352,214 @@ struct CabinetHandControls {
         let heldBefore = plunger.hand
         let flipperDown = side == .left ? left.flipperDown : right.flipperDown
         let plungerEvents = layout.plunger.map {
-            plunger.update(side, sample: sample, handle: $0, allowGrab: !nudge.isArmed && !flipperDown, time: time)
+            plunger.update(side, sample: sample, handle: $0, allowGrab: !flipperDown, time: time)
         } ?? []
-        let direction: CabinetNudgeDirection?
-        if layout.usesWristGestures, heldBefore == nil, plunger.hand == nil {
-            direction = nudge.update(side, sample: sample, layout: layout, at: time)
-        } else {
-            nudge = FistNudge()
-            direction = nil
-        }
-        let blockFlipper = layout.usesWristGestures && (nudge.blocksFlippers || heldBefore == side || plunger.hand == side)
+        // A plunger hand pulls toward the player. It doesn't shove.
+        let holdsPlunger = heldBefore == side || plunger.hand == side
+        let shoves = layout.usesWristGestures
+            ? shove.update(side, wrist: holdsPlunger ? nil : sample?.wrist, layout: layout, at: time)
+            : []
+        let blockFlipper = layout.usesWristGestures && holdsPlunger
+        // Flips stay free during a shove. A fast-moving wrist needs a larger
+        // bend, so the hand lagging or overrunning the arm at the end of a
+        // shove doesn't count as a flick.
+        let translating = shove.isTranslating(side, at: time)
         let buttons = switch side {
-        case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
-        case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper, time: time)
+        case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper,
+                                translating: translating, time: time, notes: &notes)
+        case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper,
+                                  translating: translating, time: time, notes: &notes)
         }
-        return buttons + plungerEvents + (direction.map { [.nudge($0)] } ?? [])
+        return buttons + plungerEvents + shoves
     }
 
-    var nudgePhase: String { nudge.phase }
-    var nudgeMotion: String? { nudge.lastMotion }
+    var nudgePhase: String { shove.phase }
+
+    mutating func takeNotes() -> [String] {
+        defer { notes.removeAll(keepingCapacity: true) }
+        return notes
+    }
 
     mutating func expire(at time: Double) -> [CabinetInput] {
-        nudge.expire(at: time)
-        return left.expire(.left, time: time) + right.expire(.right, time: time) + plunger.expire(at: time)
+        shove.expire(at: time)
+        return left.expire(.left, time: time, notes: &notes) + right.expire(.right, time: time, notes: &notes)
+            + plunger.expire(at: time)
     }
 
     mutating func reset() -> [CabinetInput] {
-        nudge = FistNudge()
+        shove = Shove()
         return left.reset(.left) + right.reset(.right) + plunger.reset()
     }
 
-    private struct FistNudge {
-        private struct Fist {
-            let position: SIMD3<Float>
-            let confirmedAt: Double
-            let sampledAt: Double
-        }
+    /// Shoves the cabinet from the translation of each wrist, like an
+    /// accelerometer cabinet. Strength and direction follow the hands.
+    ///
+    /// A shove starts from a hand that rested in the shove zone beside the
+    /// cabinet. It needs a sharp start: the mean acceleration from rest to the
+    /// onset speed must reach 5 m/s² with both hands moving together, or 6 m/s²
+    /// for one hand alone. Minimum-jerk models of an ordinary 10 cm reach take
+    /// about 100 ms to get to that speed (2 to 4.6 m/s²), while a 2 cm bump
+    /// in 100 ms gets there in about 30 ms (6.7 m/s²) and a slap faster still.
+    /// The strength follows the hand speed for the first 80 ms of the stroke.
+    struct Shove {
+        static let restSpeed: Float = 0.10
+        static let onsetSpeed: Float = 0.22
+        static let pairedAcceleration: Float = 5
+        static let loneAcceleration: Float = 6
+        static let restWindow = 0.15
+        static let dwell = 0.10
+        static let velocityWindow = 0.030
+        static let strokeWindow = 0.08
+        static let returnWindow = 0.40
+        /// Combined push speed for no nudge and for VPX's strong keyboard nudge.
+        static let gentleSpeed: Float = 0.15
+        static let firmSpeed: Float = 1.40
+        static let maxStrength: Float = 1.5
+        /// VPX's NudgeSensor::StrongNudgeAcceleration.
+        static let strongNudge: Float = 0.7 * 9.80665
+        static let translatingSpeed: Float = 0.25
 
-        private struct Pair {
-            let left: SIMD3<Float>
-            let right: SIMD3<Float>
-            let time: Double
-            var center: SIMD3<Float> { (left + right) * 0.5 }
+        private struct Track {
+            var history: [(position: SIMD3<Float>, time: Double)] = []
+            var zoneSince: Double?
+            var restAt: Double?
+            var velocity: SIMD3<Float> = .zero
+            var velocityAt: Double = -.infinity
+            var lastStroke: Double = -.infinity
         }
 
         private struct Stroke {
-            let axis: Int
-            let sign: Float
-            let start: Float
-
-            func hasReturned(_ pair: Pair) -> Bool {
-                sign * (pair.center[axis] - start) <= 0.022
-            }
+            let start: Double
+            var push: SIMD2<Float>
+            var strength: Float
+            let hands: Set<Int>
         }
 
-        private var left: Fist?
-        private var right: Fist?
-        private var leftNearRailAt: Double?
-        private var rightNearRailAt: Double?
-        private var lastPair = -Double.infinity
-        private var history: [Pair] = []
-        private var spent = false
+        private var tracks = [Track(), Track()]
         private var stroke: Stroke?
-        private(set) var lastMotion: String?
-        var isArmed: Bool { !history.isEmpty }
-        var blocksFlippers: Bool { isArmed || stroke != nil || (leftNearRailAt != nil && rightNearRailAt != nil) }
-        var phase: String { isArmed ? (spent ? "latched" : "armed") : "waitingForFists" }
+        private var lastDirection: (direction: SIMD2<Float>, time: Double)?
+        private(set) var lastShove: SIMD2<Float>?
+
+        var phase: String { stroke == nil ? "ready" : "stroke" }
+
+        /// A wrist moving fast, or within 150 ms of its last shove, while the hand
+        /// can lag and overrun the arm.
+        func isTranslating(_ side: CabinetHandSide, at time: Double) -> Bool {
+            let track = tracks[side == .left ? 0 : 1]
+            return time - track.lastStroke <= 0.15
+                || (time - track.velocityAt <= 0.05 && simd_length(track.velocity) >= Self.translatingSpeed)
+        }
 
         mutating func expire(at time: Double) {
-            if let left, time - left.confirmedAt > CabinetHandControls.trackingTimeout { self.left = nil }
-            if let right, time - right.confirmedAt > CabinetHandControls.trackingTimeout { self.right = nil }
-            if let leftNearRailAt, time - leftNearRailAt > CabinetHandControls.trackingTimeout { self.leftNearRailAt = nil }
-            if let rightNearRailAt, time - rightNearRailAt > CabinetHandControls.trackingTimeout { self.rightNearRailAt = nil }
-            if left == nil || right == nil {
-                history.removeAll(keepingCapacity: true)
-                spent = false
-                stroke = nil
+            for index in tracks.indices where time - (tracks[index].history.last?.time ?? -.infinity) > CabinetHandControls.trackingTimeout {
+                tracks[index] = Track()
             }
+            if let stroke, time - stroke.start > Self.strokeWindow { self.stroke = nil }
         }
 
-        mutating func update(
-            _ side: CabinetHandSide, sample: CabinetHandSample?, layout: CabinetControlsLayout, at time: Double
-        ) -> CabinetNudgeDirection? {
+        mutating func update(_ side: CabinetHandSide, wrist: SIMD3<Float>?, layout: CabinetControlsLayout,
+                             at time: Double) -> [CabinetInput] {
             expire(at: time)
-            // A paired fist stance can suppress wrist presses just outside
-            // the rail. The tighter placement gate still controls nudging.
-            let nearRailAt = side == .left ? leftNearRailAt : rightNearRailAt
-            var updatedNearRailAt = nearRailAt
-            if sample?.pose == .open {
-                updatedNearRailAt = nil
-            } else if let palm = sample?.gripPosition {
-                if !layout.isByNudgeRail(side, palm: palm, margin: 0.07) {
-                    updatedNearRailAt = nil
-                } else if sample?.pose == .fist {
-                    updatedNearRailAt = time
-                }
+            let index = side == .left ? 0 : 1
+            guard let wrist else {
+                tracks[index] = Track()
+                return []
             }
-            if side == .left { leftNearRailAt = updatedNearRailAt } else { rightNearRailAt = updatedNearRailAt }
-
-            let previous = side == .left ? left : right
-            var current = previous
-            if sample?.pose == .open {
-                current = nil
-            } else if let palm = sample?.gripPosition {
-                // Keep the stroke through a rail exit while both fists are
-                // tracked. Otherwise re-entry can count the return as a shove.
-                if !layout.isByNudgeRail(side, palm: palm, margin: isArmed ? 0.04 : 0) {
-                    history.removeAll(keepingCapacity: true)
-                }
-                if sample?.pose == .fist {
-                    current = Fist(position: palm, confirmedAt: time, sampledAt: time)
-                } else if let previous {
-                    current = Fist(position: palm, confirmedAt: previous.confirmedAt, sampledAt: time)
-                }
+            var track = tracks[index]
+            if layout.isInShoveZone(side, wrist: wrist) {
+                if track.zoneSince == nil { track.zoneSince = time }
+            } else {
+                track.zoneSince = nil
             }
-            if side == .left { left = current } else { right = current }
-            expire(at: time)
-            guard let left, let right, min(left.sampledAt, right.sampledAt) > lastPair else { return nil }
-            lastPair = max(left.sampledAt, right.sampledAt)
-            let margin: Float = isArmed ? 0.04 : 0
-            guard layout.isByNudgeRail(.left, palm: left.position, margin: margin),
-                  layout.isByNudgeRail(.right, palm: right.position, margin: margin) else {
-                history.removeAll(keepingCapacity: true)
-                return nil
+            track.history.removeAll { time - $0.time > 0.2 }
+            track.history.append((wrist, time))
+            // Speed over the newest 30 ms or more, which averages out about
+            // a millimetre of joint jitter per sample.
+            if let reference = track.history.last(where: { time - $0.time >= Self.velocityWindow }) {
+                track.velocity = (wrist - reference.position) / Float(time - reference.time)
+                track.velocityAt = time
+                if simd_length(track.velocity) < Self.restSpeed { track.restAt = time }
             }
-            let leftConfirmed = left.confirmedAt == left.sampledAt
-            let rightConfirmed = right.confirmedAt == right.sampledAt
-            let pair = Pair(left: left.position, right: right.position, time: lastPair)
-            guard isArmed else {
-                if leftConfirmed && rightConfirmed { history.append(pair) }
-                return nil
-            }
-
-            history.removeAll { pair.time - $0.time > 0.18 }
-            let recent = history.drop(while: { pair.time - $0.time > 0.10 })
-            let settled = recent.first.map { pair.time - $0.time >= 0.06 } == true
-                && recent.allSatisfy {
-                    simd_distance($0.left, pair.left) < 0.012 && simd_distance($0.right, pair.right) < 0.012
-                }
-            let returned = stroke?.hasReturned(pair) == true
-            if returned && settled {
-                stroke = nil
-                spent = false
-                history = [pair]
-                return nil
-            }
-            if spent {
-                if settled || returned {
-                    spent = false
-                    history.removeAll(keepingCapacity: true)
-                }
-                history.append(pair)
-                return nil
-            }
-
-            defer { history.append(pair) }
-            guard leftConfirmed || rightConfirmed, let reference = recent.first else { return nil }
-            let leftMove = pair.left - reference.left
-            let rightMove = pair.right - reference.right
-            let move = (leftMove + rightMove) * 0.5
-            if let stroke, stroke.sign * move[stroke.axis] <= -0.022 { return nil }
-            let acceleration = sharedAcceleration(to: pair)
-            let leftMinimum = max(0.022, 0.55 * simd_length(leftMove))
-            let rightMinimum = max(0.022, 0.55 * simd_length(rightMove))
-            var strongestAxis: Int?
-            var strongestMove: Float = 0
-            for axis in 0..<3 {
-                let sign: Float = move[axis] < 0 ? -1 : 1
-                let distance = abs(move[axis])
-                guard distance >= 0.030, distance > strongestMove,
-                      sign * leftMove[axis] >= leftMinimum, sign * rightMove[axis] >= rightMinimum,
-                      sign * acceleration[axis] >= 4 else { continue }
-                strongestAxis = axis
-                strongestMove = distance
-            }
-            guard let axis = strongestAxis else { return nil }
-            let sign: Float = move[axis] < 0 ? -1 : 1
-            stroke = Stroke(axis: axis, sign: sign, start: reference.center[axis])
-            spent = true
-            history.removeAll(keepingCapacity: true)
-            switch axis {
-            case 0:
-                lastMotion = sign < 0 ? "left" : "right"
-                return sign < 0 ? .left : .right
-            case 1:
-                lastMotion = sign < 0 ? "down" : "up"
-                return sign < 0 ? .down : .up
-            default:
-                lastMotion = sign < 0 ? "forward" : "back"
-                return sign < 0 ? .up : .down
-            }
+            tracks[index] = track
+            return recognize(side, at: time)
         }
 
-        private func sharedAcceleration(to pair: Pair) -> SIMD3<Float> {
-            guard let split = history.min(by: {
-                abs(pair.time - $0.time - 0.05) < abs(pair.time - $1.time - 0.05)
-            }) else { return .zero }
-            let recentDuration = Float(pair.time - split.time)
-            let velocity = (pair.center - split.center) / recentDuration
-            guard let earlier = history.prefix(while: { $0.time < split.time }).min(by: {
-                abs(split.time - $0.time - 0.065) < abs(split.time - $1.time - 0.065)
-            }) else {
-                // The first measurable shove can fire on the next pair.
-                return velocity / recentDuration
+        private func recent(_ index: Int, at time: Double) -> SIMD3<Float>? {
+            time - tracks[index].velocityAt <= 0.035 ? tracks[index].velocity : nil
+        }
+
+        private mutating func recognize(_ side: CabinetHandSide, at time: Double) -> [CabinetInput] {
+            let index = side == .left ? 0 : 1
+            let other = 1 - index
+            guard let velocity = recent(index, at: time) else { return [] }
+            let flat = SIMD2(velocity.x, velocity.z)
+
+            if var stroke {
+                // Grow the shove in progress while the hands keep speeding up.
+                guard stroke.hands.contains(index) else { return [] }
+                var push = SIMD2<Float>.zero
+                for hand in stroke.hands {
+                    if let v = recent(hand, at: time) { push += Self.contribution(SIMD2(v.x, v.z), side: hand == 0 ? .left : .right, lone: stroke.hands.count == 1) }
+                }
+                let strength = Self.strength(push)
+                guard strength > stroke.strength * 1.1, simd_dot(push, stroke.push) > 0 else { return [] }
+                stroke.push = push
+                stroke.strength = strength
+                self.stroke = stroke
+                lastShove = Self.acceleration(push, strength: strength)
+                return [.shove(lastShove!, update: true)]
             }
-            let previous = (split.center - earlier.center) / Float(split.time - earlier.time)
-            return (velocity - previous) / Float((pair.time - earlier.time) * 0.5)
+
+            let track = tracks[index]
+            guard let zoneSince = track.zoneSince, time - zoneSince >= Self.dwell,
+                  let restAt = track.restAt, time - restAt <= Self.restWindow, restAt > track.lastStroke,
+                  simd_length(flat) >= Self.onsetSpeed,
+                  simd_length(flat) >= 1.2 * abs(velocity.y) else { return [] }
+            // Mean acceleration from the last moment at rest.
+            let elapsed = Float(max(time - restAt, 0.011))
+
+            var hands: Set<Int> = [index]
+            var push = Self.contribution(flat, side: side, lone: false)
+            let otherTrack = tracks[other]
+            if let otherVelocity = recent(other, at: time), otherTrack.zoneSince != nil {
+                let otherFlat = SIMD2(otherVelocity.x, otherVelocity.z)
+                if simd_length(otherFlat) >= 0.15, simd_dot(otherFlat, flat) >= 0.4 * simd_length_squared(flat) {
+                    hands.insert(other)
+                    push += otherFlat
+                }
+            }
+            let lone = hands.count == 1
+            if lone { push = Self.contribution(flat, side: side, lone: true) }
+            let threshold = lone ? Self.loneAcceleration : Self.pairedAcceleration
+            guard simd_length(push) / Float(hands.count) >= Self.onsetSpeed,
+                  (simd_length(flat) - Self.restSpeed) / elapsed >= threshold else { return [] }
+            let direction = simd_normalize(push)
+            // The way back after a shove isn't another shove.
+            if let last = lastDirection, time - last.time <= Self.returnWindow,
+               simd_dot(direction, last.direction) < -0.3 { return [] }
+            let strength = Self.strength(push)
+            guard strength > 0 else { return [] }
+            stroke = Stroke(start: time, push: push, strength: strength, hands: hands)
+            lastDirection = (direction, time)
+            for hand in hands { tracks[hand].lastStroke = time }
+            lastShove = Self.acceleration(push, strength: strength)
+            return [.shove(lastShove!, update: false)]
+        }
+
+        /// What one hand adds to the shove. A lone hand only pushes: inward
+        /// against its side or forward. Moving out or back alone is letting go.
+        private static func contribution(_ flat: SIMD2<Float>, side: CabinetHandSide, lone: Bool) -> SIMD2<Float> {
+            guard lone else { return flat }
+            let inward = -side.sign
+            return SIMD2(flat.x * inward > 0 ? flat.x : 0, min(flat.y, 0))
+        }
+
+        static func strength(_ push: SIMD2<Float>) -> Float {
+            min(max((simd_length(push) - gentleSpeed) / (firmSpeed - gentleSpeed), 0), maxStrength)
+        }
+
+        private static func acceleration(_ push: SIMD2<Float>, strength: Float) -> SIMD2<Float> {
+            simd_normalize(push) * strength * strongNudge
         }
     }
 
@@ -554,6 +644,7 @@ struct CabinetHandControls {
         private var wristFlick = WristFlick()
         private var usingForearm: Bool?
         private var lastForearm: (direction: SIMD3<Float>, time: Double)?
+        private var lastBend: Double?
         var flipperDown: Bool { translationDown || fingerTurn.isDown || palmTurn.isDown || wristFlick.isDown }
         private var startArmed = false
         private var coinArmed = false
@@ -565,7 +656,18 @@ struct CabinetHandControls {
             return events
         }
 
-        mutating func expire(_ side: CabinetHandSide, time: Double) -> [CabinetInput] {
+        /// A held wrist flipper rides out a short tracking gap. Losing a held
+        /// flipper costs a ball, while a late release rarely matters.
+        static let holdGrace = 0.25
+
+        mutating func expire(_ side: CabinetHandSide, time: Double, notes: inout [String]) -> [CabinetInput] {
+            if wristFlick.isDown, let lastBend {
+                guard time - lastBend > Self.holdGrace else { return [] }
+                notes.append(String(format: "%@ flipper hold dropped: no hand bend for %.0f ms while held %.0f degrees",
+                                    side == .left ? "Left" : "Right", (time - lastBend) * 1000,
+                                    wristFlick.heldBendDegrees))
+                return reset(side)
+            }
             guard let lastSample, time - lastSample > CabinetHandControls.trackingTimeout else { return [] }
             return reset(side)
         }
@@ -575,14 +677,24 @@ struct CabinetHandControls {
             sample: CabinetHandSample?,
             layout: CabinetControlsLayout,
             blockFlipper: Bool,
-            time: Double
+            translating: Bool = false,
+            time: Double,
+            notes: inout [String]
         ) -> [CabinetInput] {
-            guard let sample else { return reset(side) }
-            var events = expire(side, time: time)
+            guard let sample else {
+                return wristFlick.isDown && !blockFlipper ? expire(side, time: time, notes: &notes) : reset(side)
+            }
+            var events = expire(side, time: time, notes: &notes)
             lastSample = time
             let wasDown = flipperDown
             if layout.usesWristGestures {
-                updateWristGesture(blockFlipper ? nil : sample, side: side, at: time)
+                if blockFlipper {
+                    lastBend = nil
+                    usingForearm = nil
+                    wristFlick = WristFlick()
+                } else {
+                    updateWristGesture(sample, side: side, translating: translating, at: time, notes: &notes)
+                }
             } else {
                 updateFlipper(sample, side: side, button: layout.flipper(side), mapped: layout.flipperCap(side) != nil)
             }
@@ -609,10 +721,14 @@ struct CabinetHandControls {
             return events
         }
 
-        private mutating func updateWristGesture(_ sample: CabinetHandSample?, side: CabinetHandSide, at time: Double) {
+        private mutating func updateWristGesture(_ sample: CabinetHandSample?, side: CabinetHandSide, translating: Bool,
+                                                 at time: Double, notes: inout [String]) {
             guard let direction = sample?.fingerDirection, simd_length_squared(direction) > 1e-8 else {
+                // Keep a held flipper through the grace period.
+                guard !wristFlick.isDown else { return }
                 usingForearm = nil
                 lastForearm = nil
+                lastBend = nil
                 wristFlick = WristFlick()
                 return
             }
@@ -631,12 +747,19 @@ struct CabinetHandControls {
                 }
             }
             let hasForearm = bend != nil
-            if usingForearm != hasForearm {
-                usingForearm = hasForearm
-                wristFlick = WristFlick()
-            }
             let angle = bend ?? atan2(inward.x * direction.x, simd_length(SIMD2(direction.y, direction.z)))
-            wristFlick.update(angle: angle, at: time)
+            if usingForearm != hasForearm {
+                // A held flipper keeps its hold in the new reference frame.
+                if usingForearm != nil && wristFlick.isDown { wristFlick.rebase(angle) } else { wristFlick = WristFlick() }
+                usingForearm = hasForearm
+            }
+            lastBend = time
+            // Without the arm direction, a moving arm turns the hand as a whole.
+            if let drop = wristFlick.update(angle: angle, at: time, translating: translating,
+                                            allowPress: hasForearm || !translating) {
+                notes.append(String(format: "%@ flipper hold dropped while bent: the hand stayed at %.0f degrees or more of its %.0f degree bend, after %.0f ms held",
+                                    side == .left ? "Left" : "Right", drop.bend, drop.peak, drop.held * 1000))
+            }
         }
 
         private mutating func updateFlipper(_ sample: CabinetHandSample, side: CabinetHandSide, button: SIMD3<Float>, mapped: Bool) {
@@ -667,40 +790,91 @@ struct CabinetHandControls {
             palmTurn = WristTurn()
         }
 
+        /// The wrist flipper. A press needs an 8-degree inward bend at 140 degrees per
+        /// second or faster, or 14 degrees while the wrist is moving fast. A held press
+        /// follows the peak of the median of its last three samples, so one noisy
+        /// sample can't move it. It releases once that median relaxes 5 degrees from
+        /// the peak, or when a single sample relaxes 10 degrees.
         private struct WristFlick {
             private static let historyDuration = 0.10
             private static let pressAngle: Float = 8 * .pi / 180
+            private static let movingPressAngle: Float = 14 * .pi / 180
             private static let pressSpeed: Float = 140 * .pi / 180
             private static let releaseRollback: Float = 5 * .pi / 180
+            private static let quickRollback: Float = 10 * .pi / 180
 
+            private struct Hold {
+                var base: Float
+                var peak: Float
+                var recent: [Float]
+                let since: Double
+                var median: Float {
+                    let sorted = recent.sorted()
+                    return sorted[sorted.count / 2]
+                }
+            }
             private var history: [(angle: Float, time: Double)] = []
-            private var releaseAt: Float?
-            var isDown: Bool { releaseAt != nil }
+            private var hold: Hold?
+            /// A release being watched: if the hand stays bent for the next 150 ms,
+            /// the hold dropped rather than the player letting go.
+            private var released: (bent: Float, peak: Float, held: Double, at: Double, lowest: Float)?
+            var isDown: Bool { hold != nil }
+            var heldBendDegrees: Float { hold.map { ($0.median - $0.base) * 180 / .pi } ?? 0 }
 
-            mutating func update(angle: Float, at time: Double) {
-                if let releaseAt {
-                    if angle <= releaseAt {
-                        self.releaseAt = nil
-                        history.append((angle, time))
-                    } else {
-                        self.releaseAt = max(releaseAt, angle - Self.releaseRollback)
+            mutating func rebase(_ angle: Float) {
+                guard var hold else { return }
+                let bend = hold.median - hold.base
+                hold.base = angle - bend
+                hold.peak = angle
+                hold.recent = [angle]
+                self.hold = hold
+            }
+
+            /// Returns the peak bend and hold time when a hold dropped while the hand stayed bent.
+            mutating func update(angle: Float, at time: Double, translating: Bool = false,
+                                 allowPress: Bool = true) -> (bend: Float, peak: Float, held: Double)? {
+                var dropped: (bend: Float, peak: Float, held: Double)?
+                if var watch = released {
+                    watch.lowest = min(watch.lowest, angle)
+                    released = watch
+                    if watch.lowest < watch.bent {
+                        released = nil
+                    } else if time - watch.at >= 0.15 || hold != nil {
+                        released = nil
+                        dropped = ((watch.lowest - watch.bent + 0.7 * watch.peak) * 180 / .pi, watch.peak * 180 / .pi, watch.held)
                     }
-                    return
+                }
+                if var hold {
+                    hold.recent = Array((hold.recent + [angle]).suffix(3))
+                    let median = hold.median
+                    if hold.peak - median >= Self.releaseRollback || hold.peak - angle >= Self.quickRollback {
+                        self.hold = nil
+                        history = [(angle, time)]
+                        let peak = hold.peak - hold.base
+                        // Still bent means at least 70% of the peak bend.
+                        // Judge by the samples after the release, so one glitch reads as a drop.
+                        released = (hold.base + 0.7 * peak, peak, time - hold.since, time, .infinity)
+                        return dropped
+                    }
+                    hold.peak = max(hold.peak, median)
+                    self.hold = hold
+                    return dropped
                 }
 
                 history.removeAll { time - $0.time > Self.historyDuration }
-                if history.contains(where: { previous in
+                let minimum = translating ? Self.movingPressAngle : Self.pressAngle
+                if allowPress, let start = history.first(where: { previous in
                     let elapsed = Float(time - previous.time)
                     let bend = angle - previous.angle
-                    return elapsed > 0 && bend >= Self.pressAngle && bend >= Self.pressSpeed * elapsed
+                    return elapsed > 0 && bend >= minimum && bend >= Self.pressSpeed * elapsed
                 }) {
-                    // Release on relaxation from the held bend, including
-                    // when the press fired early in a large flick.
-                    releaseAt = angle - Self.releaseRollback
+                    let base = history.filter { $0.time >= start.time }.map(\.angle).min() ?? start.angle
+                    hold = Hold(base: base, peak: angle, recent: [angle], since: time)
                     history.removeAll(keepingCapacity: true)
-                    return
+                    return dropped
                 }
                 history.append((angle, time))
+                return dropped
             }
         }
 

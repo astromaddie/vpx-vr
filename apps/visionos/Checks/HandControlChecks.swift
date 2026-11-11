@@ -1,3 +1,4 @@
+import Foundation
 // license:GPLv3+
 
 import simd
@@ -5,6 +6,10 @@ import simd
 @main
 struct HandControlChecks {
     static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--replay") {
+            replay(CommandLine.arguments.dropFirst(index + 1).map { $0 })
+            return
+        }
         let layout = CabinetControlsLayout()
         var controls = CabinetHandControls(layout: layout)
         var time = 0.0
@@ -74,8 +79,8 @@ struct HandControlChecks {
         checkMappedFlippers()
         checkGestureFlippers()
         checkWristFlickTiming()
-        checkFistNudges()
-        checkNudgeStrokeRecovery()
+        checkShoves()
+        checkFlipperHolds()
         checkOccludedFistInputs()
         checkPlacement()
         checkRoomGrab()
@@ -292,7 +297,9 @@ struct HandControlChecks {
         precondition(controls.reset().isEmpty)
         precondition(feed(.left, straight, arm: nil).isEmpty)
         precondition(feed(.left, [0.18, 0, -1], arm: nil) == [.flipper(.left, pressed: true)])
-        precondition(controls.expire(at: time + 0.13) == [.flipper(.left, pressed: false)])
+        // A held wrist flipper rides out a short gap and drops after 250 ms.
+        precondition(controls.expire(at: time + 0.13).isEmpty)
+        precondition(controls.expire(at: time + 0.26) == [.flipper(.left, pressed: false)])
 
         let knob: SIMD3<Float> = [0.24, -0.15, 0.109]
         controls = CabinetHandControls(layout: CabinetControlsLayout(plunger: knob, usesWristGestures: true))
@@ -336,157 +343,35 @@ struct HandControlChecks {
         for angle in 0...12 { precondition(feed(Float(angle), after: 0.032).isEmpty) }
         precondition(feed(21) == [.flipper(.right, pressed: true)])
         for _ in 0..<20 { precondition(feed(21).isEmpty) }
+        // A slow relaxation releases once the median of three samples is 5 degrees down.
         precondition(feed(17).isEmpty)
-        precondition(feed(15) == [.flipper(.right, pressed: false)])
+        precondition(feed(15).isEmpty)
+        precondition(feed(13) == [.flipper(.right, pressed: false)])
         precondition(feed(24) == [.flipper(.right, pressed: true)])
         precondition(feed(32).isEmpty)
-        precondition(feed(28).isEmpty)
-        precondition(feed(26) == [.flipper(.right, pressed: false)])
-        precondition(feed(35) == [.flipper(.right, pressed: true)])
-        precondition(controls.expire(at: time + 0.13) == [.flipper(.right, pressed: false)])
+        precondition(feed(33).isEmpty)
+        precondition(feed(29).isEmpty)
+        precondition(feed(27).isEmpty)
+        precondition(feed(25) == [.flipper(.right, pressed: false)])
+        precondition(feed(36) == [.flipper(.right, pressed: true)])
+        // A quick relaxation of 10 degrees releases at once.
+        precondition(feed(25) == [.flipper(.right, pressed: false)])
+        precondition(feed(36) == [.flipper(.right, pressed: true)])
+        // A held wrist flipper rides out a short gap and drops after 250 ms.
+        precondition(controls.expire(at: time + 0.13).isEmpty)
+        precondition(controls.expire(at: time + 0.26) == [.flipper(.right, pressed: false)])
 
         // Speed alone is insufficient for small jumps.
-        time += 0.13
+        time += 0.26
         precondition(feed(-4).isEmpty)
         precondition(feed(1, after: 0.01).isEmpty)
         precondition(feed(-9).isEmpty)
         precondition(feed(4) == [.flipper(.right, pressed: true)])
         precondition(feed(0).isEmpty)
-        precondition(feed(-2) == [.flipper(.right, pressed: false)])
+        precondition(feed(-2).isEmpty)
+        precondition(feed(-3) == [.flipper(.right, pressed: false)])
 
-        // Both fists beside the cabinet suppress an otherwise valid flick.
-        _ = controls.reset()
-        let leftRail = layout.flipper(.left) + [-0.08, 0.06, -0.08]
-        let rightRail = layout.flipper(.right) + [0.08, 0.06, -0.08]
-        precondition(controls.update(.left, sample: .init(palm: leftRail, pose: .fist), at: 2.0).isEmpty)
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
-                                                         pose: .fist), at: 2.01).isEmpty)
-        precondition(controls.update(.left, sample: .init(palm: leftRail, pose: .fist), at: 2.02).isEmpty)
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
-                                                         pose: .fist), at: 2.03).isEmpty)
-        // A fist slightly ahead of the rail blocks the paired flick
-        // without allowing an off-rail nudge.
-        _ = controls.reset()
-        let justAhead = SIMD3(leftRail.x, leftRail.y, 0.115)
-        precondition(controls.update(.left, sample: .init(palm: justAhead, pose: .fist), at: 3.0).isEmpty)
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
-                                                         pose: .fist), at: 3.01).isEmpty)
-        precondition(controls.nudgePhase == "waitingForFists")
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
-                                                         pose: .fist), at: 3.03).isEmpty)
-        precondition(controls.update(.left, sample: .init(palm: justAhead, pose: .open), at: 3.04).isEmpty)
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [0, 0, -1],
-                                                         pose: .fist), at: 3.05).isEmpty)
-        precondition(controls.update(.right, sample: .init(palm: rightRail, fingerDirection: [-0.2, 0, -1],
-                                                         pose: .fist), at: 3.07) == [.flipper(.right, pressed: true)])
-        print("Wrist flick timing passed: slow drift, angular speed and bend, sustained hold, backswing release and nudge priority")
-    }
-
-    static func checkFistNudges() {
-        let wrist: SIMD3<Float> = [0, 0, 0]
-        let knuckle: SIMD3<Float> = [0, 0, -0.06]
-        func joint(_ point: SIMD3<Float>) -> CabinetHandJoint { .init(point: point, isTracked: true) }
-        let curled = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, -0.025, -0.065]), next: nil)
-        let open = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, 0, -0.09]), next: joint([0, 0, -0.114]))
-        let missing = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: nil, next: nil)
-        let curledAtMiddle = CabinetHandPose.Finger(knuckle: joint(knuckle), bend: joint([0, 0, -0.09]), next: joint([0, -0.025, -0.09]))
-        precondition(CabinetHandPose.classify(wrist: wrist, fingers: [curled, curledAtMiddle, missing, missing]) == .looseFist)
-        precondition(CabinetHandPose.classify(wrist: wrist, fingers: [open, open, missing, missing]) == .open)
-        precondition(CabinetHandPose.classify(wrist: wrist, fingers: [open, open, open, curled]) == .open)
-        precondition(CabinetHandPose.classify(wrist: wrist, fingers: [curled, open, open, missing]) == .unknown)
-        precondition(CabinetHandPose.classify(wrist: nil, fingers: [curled, missing, missing, missing]) == .unknown)
-
-        let directions: [(CabinetNudgeDirection, SIMD3<Float>)] = [
-            (.left, [-0.032, 0, 0]), (.right, [0.032, 0, 0]), (.up, [0, 0.032, 0]), (.down, [0, -0.032, 0]),
-            (.up, [0, 0, -0.032]), (.down, [0, 0, 0.032])
-        ]
-        for (direction, offset) in directions {
-            let layout = CabinetControlsLayout(usesWristGestures: true)
-            var controls = CabinetHandControls(layout: layout)
-            let leftRail = layout.flipper(.left) + [-0.08, 0.06, -0.08]
-            let rightRail = layout.flipper(.right) + [0.08, 0.06, -0.08]
-            var time = 0.0
-            func pair(_ left: SIMD3<Float> = .zero, _ right: SIMD3<Float> = .zero, rightPose: CabinetHandPose = .fist) -> [CabinetInput] {
-                time += 0.016
-                let first = controls.update(.left, sample: .init(palm: leftRail + left, pose: .fist), at: time)
-                time += 0.016
-                return first + controls.update(.right, sample: .init(palm: rightRail + right, pose: rightPose), at: time)
-            }
-            for _ in 0..<9 { precondition(pair(offset, offset, rightPose: .open).isEmpty) }
-            for _ in 0..<9 { precondition(pair(offset, offset, rightPose: .looseFist).isEmpty) }
-            // Arm on the first firm pair. The very next pair can nudge.
-            precondition(pair().isEmpty)
-            let armedAt = time
-            precondition(pair(offset, offset) == [.nudge(direction)])
-            precondition(time - armedAt < 0.04)
-            precondition(controls.nudgePhase == "latched")
-            // The next shove starts from a new resting position.
-            for _ in 0..<4 { precondition(pair(offset, offset).isEmpty) }
-            precondition(controls.nudgePhase == "armed")
-            precondition(pair(offset * 2, offset * 2) == [.nudge(direction)])
-
-            precondition(controls.reset().isEmpty)
-            precondition(pair().isEmpty)
-            precondition(pair(offset * 0.8, offset * 0.8).isEmpty)
-            precondition(pair(offset * 1.6, offset * 0.4).isEmpty)
-            precondition(pair(offset, -offset).isEmpty)
-            precondition(pair(offset * 2, .zero).isEmpty)
-            precondition(controls.reset().isEmpty)
-            precondition(pair().isEmpty)
-            precondition(pair(offset, offset, rightPose: .unknown) == [.nudge(direction)])
-            precondition(controls.expire(at: time + 0.15).isEmpty)
-            time += 0.15
-            precondition(pair().isEmpty)
-            precondition(pair(offset, offset) == [.nudge(direction)])
-        }
-        let knob: SIMD3<Float> = [0.24, -0.15, 0.109]
-        var controls = CabinetHandControls(layout: CabinetControlsLayout(plunger: knob, usesWristGestures: true))
-        // The wider grab area still works. An opposite fist arriving
-        // during the first millimetres cannot steal a palm-down grip.
-        let grab = knob + [0.11, 0, 0.16]
-        let right = CabinetHandSample(palm: grab, plungerPose: plungerPose())
-        let left = CabinetHandSample(palm: [-0.3, -0.15, 0.109], pose: .fist)
-        precondition(controls.update(.right, sample: right, at: 0.01) == [.pullPlunger(0)])
-        precondition(controls.update(.left, sample: left, at: 0.02).isEmpty)
-        let pulled = CabinetHandSample(palm: grab + [0, 0, 0.07], plungerPose: plungerPose())
-        precondition(controls.update(.right, sample: pulled, at: 0.04) == [.pullPlunger(1)])
-        precondition(controls.update(.left, sample: left, at: 0.06).isEmpty)
-        precondition(controls.update(.right, sample: .init(plungerPose: plungerPose(thumbUntucked: true)), at: 0.08) == [.releasePlunger(1)])
-        print("Nudges passed: next paired sample on all axes, shared motion, re-arm at a new position, plunger priority")
-    }
-
-    static func checkNudgeStrokeRecovery() {
-        let layout = CabinetControlsLayout(usesWristGestures: true)
-        var controls = CabinetHandControls(layout: layout)
-        // Both fists start ahead of the old front gate and just inside the side.
-        let left = SIMD3(layout.flipper(.left).x + 0.05, -0.065, 0.055)
-        let right = SIMD3(layout.flipper(.right).x - 0.05, -0.065, 0.055)
-        var time = 0.0
-        func pair(_ lift: Float) -> [CabinetInput] {
-            time += 0.016
-            let events = controls.update(.left, sample: .init(palm: left + [0, lift, 0], pose: .fist), at: time)
-            time += 0.016
-            return events + controls.update(.right, sample: .init(palm: right + [0, lift, 0], pose: .fist), at: time)
-        }
-        precondition(pair(0).isEmpty && controls.nudgePhase == "armed")
-        for step in 1...5 { precondition(pair(Float(step) * 0.01).isEmpty) }
-        precondition(pair(0.086) == [.nudge(.up)])
-        precondition(controls.nudgeMotion == "up")
-        let offRail = left + [0.28, 0.086, 0]
-        for direction: SIMD3<Float> in [[0, 0, -1], [-0.2, 0, -1]] {
-            time += 0.016
-            precondition(controls.update(.left, sample: .init(palm: offRail, pose: .fist), at: time).isEmpty)
-            precondition(controls.nudgePhase == "waitingForFists")
-            time += 0.016
-            precondition(controls.update(.right, sample: .init(palm: right + [0, 0.086, 0],
-                                                               fingerDirection: direction, pose: .fist), at: time).isEmpty)
-        }
-        for _ in 0..<4 { precondition(pair(0.086).isEmpty) }
-        precondition(pair(0.048).isEmpty)
-        precondition(pair(-0.025).isEmpty)
-        for _ in 0..<4 { precondition(pair(-0.025).isEmpty) }
-        precondition(pair(-0.060) == [.nudge(.down)])
-        print("Nudge stroke passed: widened rails, steady motion rejection, accelerating shove, return suppression and opposite shove after reset")
+        print("Wrist flick timing passed: slow drift, angular speed and bend, sustained hold and backswing release")
     }
 
     static func checkOccludedFistInputs() {
@@ -526,36 +411,8 @@ struct HandControlChecks {
         precondition(player.update(.right, sample: hand(at: grab + [0, 0, 0.065]), at: 0.032).isEmpty)
         precondition(player.update(.right, sample: hand(at: grab, open: true), at: 0.048).isEmpty)
 
-        let left = layout.flipper(.left) + [-0.07, 0.06, -0.08]
-        let right = layout.flipper(.right) + [0.07, 0.06, -0.08]
         var time = 0.1
-        func pair(_ left: SIMD3<Float>, _ right: SIMD3<Float>) -> [CabinetInput] {
-            time += 0.016
-            let events = player.update(.left, sample: hand(at: left), at: time)
-            time += 0.016
-            return events + player.update(.right, sample: hand(at: right), at: time)
-        }
-
-        let shove: SIMD3<Float> = [0.032, 0, 0]
-        let outOfPosition: [(SIMD3<Float>, SIMD3<Float>)] = [
-            (left, right + [0, 0, 0.52]), (right, left),
-            (left + [-0.24, 0, 0], right), (left, right + [0, 0.30, 0])
-        ]
-        for (offLeft, offRight) in outOfPosition {
-            for _ in 0..<8 { precondition(pair(offLeft, offRight).isEmpty) }
-            precondition(pair(offLeft + shove, offRight + shove).isEmpty)
-        }
-
-        precondition(pair(left, right).isEmpty)
-        precondition(pair(left + shove * 0.8, right + shove * 0.8).isEmpty)
-        precondition(pair(left + shove, right + shove) == [.nudge(.right)])
-        precondition(pair(left, right + [0, 0, 0.52]).isEmpty)
-        // A shove while the other hand is away stays quiet. Returning to
-        // the rail establishes a fresh origin without inheriting the shove.
-        precondition(pair(left + shove, right + [0, 0, 0.52]).isEmpty)
-        precondition(pair(left + shove, right + shove).isEmpty)
-        precondition(pair(left + shove, right + shove).isEmpty)
-
+        let left = layout.flipper(.left) + [-0.07, 0.06, -0.08]
         _ = player.reset()
         time += 0.016
         var pointing = hand(at: left, pointing: true)
@@ -566,7 +423,7 @@ struct HandControlChecks {
         precondition(player.update(.left, sample: pointing, at: time + 0.02) == [.pressStart])
         let invalidJoint = CabinetHandJoint(point: [.nan, 0, 0], isTracked: true)
         precondition(invalidJoint.trackedPosition == nil && invalidJoint.estimatedPosition == nil)
-        print("Occluded joints passed: estimated fists, 3.2 cm nudge at the authored side rails, off-rail rejection, and tracked index poke")
+        print("Occluded joints passed: estimated fists and tracked index poke")
     }
 
     static func checkPlacement() {
@@ -693,5 +550,196 @@ struct HandControlChecks {
         for frame in 40..<49 { precondition(!sample(Double(frame) / 20)) }
         precondition(sample(2.5))
         print("Wrist menu passed: head alignment, back of hand, dwell, one opening, and re-arm after tracking loss")
+    }
+
+    /// Two hands resting at the cabinet sides, with wrist paths and right wrist bends, at 90 Hz.
+    struct ShoveRig {
+        let layout = CabinetControlsLayout(usesWristGestures: true)
+        var controls: CabinetHandControls
+        var time = 0.0
+        var shoves: [SIMD2<Float>] = []
+        var flips: [CabinetInput] = []
+        let rest: [CabinetHandSide: SIMD3<Float>]
+
+        init() {
+            controls = CabinetHandControls(layout: layout)
+            rest = [.left: layout.flipper(.left) + [-0.04, 0.03, 0.06], .right: layout.flipper(.right) + [0.04, 0.03, 0.06]]
+        }
+
+        mutating func hands(_ left: SIMD3<Float>, _ right: SIMD3<Float>, leftBend: Float = 0, rightBend: Float = 0,
+                            leftArm: SIMD3<Float> = [0, 0, -1], rightArm: SIMD3<Float> = [0, 0, -1]) {
+            for (side, offset, bend, arm) in [(CabinetHandSide.left, left, leftBend, leftArm), (.right, right, rightBend, rightArm)] {
+                let angle = bend * .pi / 180
+                let inward = -side.sign
+                // Bend the hand inward from the forearm.
+                let direction = simd_normalize(arm) * cos(angle) + SIMD3(inward * sin(angle), 0, 0)
+                let sample = CabinetHandSample(fingerDirection: direction, forearmDirection: arm, wrist: rest[side]! + offset)
+                for event in controls.update(side, sample: sample, at: time + (side == .left ? 0 : 0.0055)) {
+                    if case let .shove(acceleration, update) = event {
+                        if update { shoves[shoves.count - 1] = acceleration } else { shoves.append(acceleration) }
+                    } else {
+                        flips.append(event)
+                    }
+                }
+            }
+            time += 0.011
+        }
+
+        mutating func still(_ count: Int) { for _ in 0..<count { hands(.zero, .zero) } }
+
+        static func minimumJerk(_ t: Float) -> Float { t * t * t * (10 - 15 * t + 6 * t * t) }
+
+        /// Moves one or both wrists along a minimum-jerk path and back.
+        mutating func stroke(left: SIMD3<Float> = .zero, right: SIMD3<Float> = .zero, frames: Int,
+                             returnFrames: Int = 30, rightBend: (Int) -> Float = { _ in 0 }) {
+            for step in 1...frames {
+                let s = Self.minimumJerk(Float(step) / Float(frames))
+                hands(left * s, right * s, rightBend: rightBend(step))
+            }
+            for step in 1...returnFrames {
+                let s = 1 - Self.minimumJerk(Float(step) / Float(returnFrames))
+                hands(left * s, right * s)
+            }
+            still(25)
+        }
+    }
+
+    static func checkShoves() {
+        var rig = ShoveRig()
+        rig.still(20)
+        // Ordinary repositioning: 10 cm along the side in 400 ms, a 30 cm reach
+        // toward Start in 450 ms, and lifting a hand 15 cm off the cabinet.
+        rig.stroke(left: [0, 0, -0.10], frames: 36, returnFrames: 36)
+        rig.stroke(right: [-0.18, -0.10, 0.12], frames: 41, returnFrames: 41)
+        rig.stroke(left: [0, 0.15, 0], frames: 30)
+        rig.stroke(left: [-0.08, 0, 0.10], frames: 25)
+        precondition(rig.shoves.isEmpty && rig.flips.isEmpty, "Repositioning moved the cabinet: \(rig.shoves)")
+
+        // A firm two-hand shove right, 5 cm in 120 ms, with a right flip halfway.
+        // The way back doesn't shove.
+        rig.stroke(left: [0.05, 0, 0], right: [0.05, 0, 0], frames: 11, rightBend: { $0 >= 5 ? 24 : 0 })
+        precondition(rig.shoves.count == 1 && rig.shoves[0].x > 0 && abs(rig.shoves[0].y) < 0.3 * rig.shoves[0].x)
+        precondition(rig.flips.first == .flipper(.right, pressed: true), "No flip mid-shove: \(rig.flips)")
+        let firm = simd_length(rig.shoves[0])
+        precondition((4.5...10.3).contains(firm), "Firm shove strength \(firm)")
+        // Forward and back with both hands.
+        rig.stroke(left: [0, 0, -0.05], right: [0, 0, -0.05], frames: 11)
+        precondition(rig.shoves.count == 2 && rig.shoves[1].y < 0 && abs(rig.shoves[1].x) < 0.3 * -rig.shoves[1].y)
+        rig.stroke(left: [0, 0, 0.04], right: [0, 0, 0.04], frames: 11)
+        precondition(rig.shoves.count == 3 && rig.shoves[2].y > 0)
+
+        // One-hand slaps inward, from light to hard, have proportional strength.
+        var slaps: [Float] = []
+        for distance: Float in [0.02, 0.04, 0.07] {
+            let count = rig.shoves.count
+            rig.stroke(left: [distance, 0, 0], frames: 9)
+            precondition(rig.shoves.count == count + 1 && rig.shoves.last!.x > 0, "Left slap \(distance) m: \(rig.shoves)")
+            slaps.append(simd_length(rig.shoves.last!))
+        }
+        precondition(slaps[0] < slaps[1] && slaps[1] < slaps[2] && slaps[2] > 2.5 * slaps[0], "Slaps \(slaps)")
+        let count = rig.shoves.count
+        rig.stroke(right: [-0.04, 0, 0], frames: 9)
+        precondition(rig.shoves.count == count + 1 && rig.shoves.last!.x < 0)
+        // A lone hand pulling out or back is letting go, not a shove.
+        rig.stroke(left: [-0.05, 0, 0], frames: 9)
+        rig.stroke(right: [0, 0, 0.05], frames: 9)
+        precondition(rig.shoves.count == count + 1, "Letting go shoved: \(rig.shoves)")
+
+        // Arm translation with no wrist bend never flips, even when the hand
+        // lags the arm by a few degrees at the start and overruns at the stop.
+        let flipsBefore = rig.flips.count
+        for step in 1...11 {
+            let s = ShoveRig.minimumJerk(Float(step) / 11)
+            let lag: Float = step < 4 ? -4 : (step < 9 ? 0 : 6)
+            rig.hands([0.06 * s, 0, 0], [0.06 * s, 0, 0], leftBend: lag, rightBend: -lag)
+        }
+        rig.still(30)
+        precondition(rig.flips.count == flipsBefore, "Arm translation flipped: \(rig.flips.dropFirst(flipsBefore))")
+        print(String(format: "Shoves passed: repositioning ignored, firm shove %.1f m/s2 with a flip mid-shove, return ignored, forward and back, slaps %.1f/%.1f/%.1f m/s2, letting go ignored, arm translation no flip",
+                     firm, slaps[0], slaps[1], slaps[2]))
+    }
+
+    static func checkFlipperHolds() {
+        var controls = CabinetHandControls(layout: CabinetControlsLayout(usesWristGestures: true))
+        var time = 0.0
+        var events: [CabinetInput] = []
+        func feed(_ degrees: Float?, arm: Bool = true, after delay: Double = 0.011) {
+            time += delay
+            let sample = degrees.map { degrees -> CabinetHandSample in
+                let angle = degrees * .pi / 180
+                return .init(fingerDirection: [-sin(angle), 0, -cos(angle)], forearmDirection: arm ? [0, 0, -1] : nil)
+            }
+            events += controls.update(.right, sample: sample, at: time)
+            events += controls.expire(at: time)
+        }
+        feed(0); feed(0); feed(12); feed(22)
+        precondition(events == [.flipper(.right, pressed: true)])
+        // Five seconds of holding with ±2 degree jitter, single 6 degree dips,
+        // the forearm dropping out and back, and a 200 ms tracking gap.
+        var seed: UInt32 = 7
+        for frame in 0..<450 {
+            seed = seed &* 1_103_515_245 &+ 12_345
+            var angle = 22 + Float(Int(seed >> 16) % 5 - 2)
+            if frame % 60 == 30 { angle = 16 }
+            switch frame {
+            case 100..<104: feed(angle, arm: false)
+            case 200: feed(nil, after: 0.2)
+            default: feed(angle)
+            }
+        }
+        precondition(events == [.flipper(.right, pressed: true)], "Hold dropped: \(events)")
+        precondition(controls.takeNotes().isEmpty)
+        // Relaxing releases within two samples.
+        feed(18); feed(12)
+        precondition(events == [.flipper(.right, pressed: true), .flipper(.right, pressed: false)])
+        // A quick re-flick after the release still presses.
+        feed(13); feed(24)
+        precondition(events.last == .flipper(.right, pressed: true))
+        // Losing the hand for longer than 250 ms drops the hold and notes it.
+        feed(nil, after: 0.3)
+        precondition(events.last == .flipper(.right, pressed: false))
+        let dropNotes = controls.takeNotes()
+        precondition(dropNotes.count == 1, "\(dropNotes) \(events)")
+        // A glitch that releases while the hand stays bent is noted as a drop.
+        feed(0); feed(0); feed(12); feed(22)
+        for _ in 0..<10 { feed(22) }
+        feed(10)
+        for _ in 0..<15 { feed(22) }
+        let glitchNotes = controls.takeNotes()
+        precondition(glitchNotes.count == 1 && glitchNotes[0].contains("dropped while bent"), "\(glitchNotes)")
+        print("Flipper holds passed: five-second hold through jitter, dips, forearm loss and a 200 ms gap, fast release, re-flick and noted drops")
+    }
+
+    /// Replays recorded takes through the recognizers and prints what they decide.
+    static func replay(_ paths: [String]) {
+        var files: [URL] = []
+        for path in paths {
+            let url = URL(filePath: path)
+            if let names = try? FileManager.default.contentsOfDirectory(atPath: path) {
+                files += names.filter { $0.hasSuffix(".json") }.sorted().map { url.appending(path: $0) }
+            } else {
+                files.append(url)
+            }
+        }
+        for file in files {
+            guard let data = try? Data(contentsOf: file),
+                  let take = try? JSONDecoder().decode(CabinetHandRecording.self, from: data) else {
+                print("\(file.lastPathComponent): not a hand recording")
+                continue
+            }
+            var controls = CabinetHandControls(layout: take.layout)
+            let samples = take.decoded
+            var lines: [String] = []
+            for sample in samples {
+                let hand = sample.frame.map { CabinetHandSample(sample.side, frame: $0, layout: take.layout) }
+                let events = controls.update(sample.side, sample: hand, at: sample.time) + controls.expire(at: sample.time)
+                lines += events.map { String(format: "%6.0f ms  ", sample.time * 1000) + CabinetHandRecording.describe($0) }
+                lines += controls.takeNotes().map { String(format: "%6.0f ms  ", sample.time * 1000) + $0 }
+            }
+            let tracked = samples.filter { $0.frame != nil }.count
+            print("\(take.take.title) (build \(take.build), \(samples.count) samples, \(tracked) tracked)")
+            lines.forEach { print("  " + $0) }
+            if !take.events.isEmpty { print("  live: " + take.events.joined(separator: "; ")) }
+        }
     }
 }

@@ -9,6 +9,8 @@
 #include "parts/pintable.h"
 #include "parts/plunger.h"
 #include "physics/cabinet/NudgeHandler.h"
+#include "physics/cabinet/PlumbHandler.h"
+#include "physics/PhysicsEngine.h"
 #include "renderer/VRDevice.h"
 #include "pinmame/libpinmame.h"
 #include <bgfx/bgfx.h>
@@ -64,6 +66,59 @@ VPINBALLAPI void VPinballVisionTick(void)
    while (SDL_PollEvent(&event))
       lib.AppEvent(&event);
    lib.AppIterate();
+
+   // Log each plumb tilt, with the largest swing of the second before it, for the hand-shove wear tests.
+   static const Player* player = nullptr;
+   static int tilts = 0;
+   static float peak = 0.f;
+   static uint64_t peakAt = 0;
+   if (g_pplayer && g_pplayer->m_physics)
+   {
+      const auto& plumb = g_pplayer->m_physics->m_plumbHandler;
+      if (player != g_pplayer)
+      {
+         player = g_pplayer;
+         tilts = plumb.GetPlumbTiltIndex();
+         peak = 0.f;
+      }
+      const auto& pos = plumb.GetPlumbPos();
+      const float psi = atan2f(sqrtf(pos.x * pos.x + pos.y * pos.y), -pos.z);
+      const uint64_t now = usec();
+      if (now - peakAt > 1000000 || psi >= peak)
+      {
+         peak = psi;
+         peakAt = now;
+      }
+      if (plumb.GetPlumbTiltIndex() != tilts)
+      {
+         tilts = plumb.GetPlumbTiltIndex();
+         PLOGI << "Vision Pro plumb tilt " << tilts << ": swing reached " << RADTOANG(peak) << " degrees against a " << RADTOANG(plumb.GetPlumbTiltThreshold()) << " degree threshold";
+      }
+   }
+   else
+      player = nullptr;
+}
+
+VPINBALLAPI void VPinballVisionShove(float x, float y, int update)
+{
+   if (!SDL_IsMainThread() || !g_pplayer || !g_pplayer->IsPlaying(false) || !std::isfinite(x) || !std::isfinite(y))
+      return;
+   g_pplayer->m_pininput.m_nudgeHandler->ApplyHandShove(Vertex2D(x, y), update != 0);
+}
+
+VPINBALLAPI VPINBALL_VISION_CABINET VPinballVisionCabinetState(void)
+{
+   if (!SDL_IsMainThread() || !g_pplayer || !g_pplayer->m_physics)
+      return { 0.f, 0.f, 0.f, 0.f, -1.f, 0 };
+   const auto& nudge = *g_pplayer->m_pininput.m_nudgeHandler;
+   const auto& plumb = g_pplayer->m_physics->m_plumbHandler;
+   const auto& pos = plumb.GetPlumbPos();
+   const float psi = atan2f(sqrtf(pos.x * pos.x + pos.y * pos.y), -pos.z);
+   const Vertex2D offset = nudge.GetCabinetOffset();
+   const Vertex2D acceleration = nudge.GetCabinetAcceleration();
+   return { offset.x, offset.y, acceleration.x, acceleration.y,
+      plumb.IsPlumbSimulated() && plumb.GetPlumbTiltThreshold() > 0.f ? 100.f * psi / plumb.GetPlumbTiltThreshold() : -1.f,
+      plumb.GetPlumbTiltIndex() };
 }
 
 VPINBALLAPI VPINBALL_VISION_LAYOUT VPinballVisionGetLayout(void)
@@ -153,7 +208,7 @@ VPINBALLAPI int VPinballVisionRomRunning(void)
 
 VPINBALLAPI int VPinballVisionNudgeCount(void)
 {
-   return SDL_IsMainThread() && g_pplayer ? g_pplayer->m_pininput.m_nudgeHandler->GetKeyboardNudgeIndex() : 0;
+   return SDL_IsMainThread() && g_pplayer ? g_pplayer->m_pininput.m_nudgeHandler->GetKeyboardNudgeIndex() + g_pplayer->m_pininput.m_nudgeHandler->GetHandShoveIndex() : 0;
 }
 
 VPINBALLAPI float VPinballVisionPlungerPosition(void)

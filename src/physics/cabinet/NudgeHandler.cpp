@@ -9,6 +9,7 @@
 #include "parts/pintable.h"
 #include "physics/cabinet/CabinetNudgeSensor.h"
 #include "physics/cabinet/GamepadNudge.h"
+#include "physics/cabinet/HandNudge.h"
 #include "physics/cabinet/KeyboardNudge.h"
 #include "physics/cabinet/MotionKalmanAxis.h"
 
@@ -18,6 +19,7 @@ namespace VPX::Physics
 
 NudgeHandler::NudgeHandler(InputManager* inputManager, Settings& appSettings)
    : m_appSettings(appSettings)
+   , m_handNudge(std::make_unique<HandNudge>())
 {
    const Settings& settings = m_appSettings;
 
@@ -41,6 +43,15 @@ NudgeHandler::NudgeHandler(InputManager* inputManager, Settings& appSettings)
    }
 }
 
+NudgeHandler::~NudgeHandler() = default;
+
+void NudgeHandler::ApplyHandShove(const Vertex2D& peakAcceleration, bool update)
+{
+   if (!update)
+      m_handShoveIndex++;
+   m_handNudge->Shove(peakAcceleration, update);
+}
+
 void NudgeHandler::ApplyKeyboardImpulse(float angle, float force)
 {
    m_keyboardNudgeIndex++;
@@ -50,6 +61,7 @@ void NudgeHandler::ApplyKeyboardImpulse(float angle, float force)
 void NudgeHandler::StepOneMillisecond()
 {
    m_keyboardNudge->StepOneMillisecond();
+   m_handNudge->StepOneMillisecond();
    for (const auto& sensor : m_sensors)
       sensor->StepOneMillisecond();
 }
@@ -59,6 +71,8 @@ Vertex2D NudgeHandler::GetCabinetAcceleration() const
    const auto physical = [this](const Vertex2D& v) { return m_mirrored ? Vertex2D(-v.x, v.y) : v; };
    if (m_externalOverride)
       return physical(m_externalAcceleration);
+   if (m_handNudge->IsActive()) // Hand shoves and script or digital nudges add up on the same cabinet
+      return physical(m_handNudge->GetCabinetAcceleration()) + (m_keyboardNudge->IsActive() ? m_keyboardNudge->GetCabinetAcceleration() : m_noNudge);
    if (m_keyboardNudge->IsActive())
       return m_keyboardNudge->GetCabinetAcceleration();
    for (const auto& sensor : m_sensors)
@@ -72,6 +86,8 @@ Vertex2D NudgeHandler::GetCabinetOffset() const
    const auto physical = [this](const Vertex2D& v) { return m_mirrored ? Vertex2D(-v.x, v.y) : v; };
    if (m_externalOverride)
       return physical(m_externalDisplacement);
+   if (m_handNudge->IsActive()) // Hand shoves and script or digital nudges add up on the same cabinet
+      return physical(m_handNudge->GetCabinetOffset()) + (m_keyboardNudge->IsActive() ? m_keyboardNudge->GetCabinetOffset() : m_noNudge);
    if (m_keyboardNudge->IsActive())
       return m_keyboardNudge->GetCabinetOffset();
    for (const auto& sensor : m_sensors)
