@@ -167,6 +167,8 @@ public:
 
 #ifdef VPX_VISIONOS_HEADSET
    bool ReleaseMechanicalPull(float pull);
+   // How far the rod is pulled back from its rest position, 0 to 1, or 0 when not playing.
+   float GetPullFromRest() const;
 #endif
 
    PlungerData m_d;

@@ -443,6 +443,7 @@ private final class NativePlayer {
                 needsDismissal = true
                 return
             }
+            CompositorLog.vpxLogStarted()
             self.compositor = compositor
             self.tracker = tracker
             isOpen = true
@@ -466,6 +467,7 @@ private final class NativePlayer {
                         transform.columns.3.x = 0.65
                         transform.columns.3.z = -3.35
                     }
+                    Self.applySimulatorView(&transform)
                     loadTable(table, at: transform)
                     break
                 }
@@ -600,6 +602,66 @@ private final class NativePlayer {
     }
 
     #if targetEnvironment(simulator)
+    /// `--check-view side` turns the cabinet so its left side faces the camera,
+    /// `--check-view front` brings its front panel close, `--check-view corner` shows the
+    /// front left corner, and `--check-view top` tips it back to look down at the front
+    /// of the playfield, all for screenshots.
+    private static func applySimulatorView(_ transform: inout simd_float4x4) {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--check-view"), arguments.indices.contains(index + 1) else { return }
+        switch arguments[index + 1] {
+        case "side":
+            let yaw = simd_float4x4(simd_quatf(angle: -.pi / 2, axis: [0, 1, 0]))
+            transform = simd_mul(transform, yaw)
+            transform.columns.3 = [-0.55, 0, -2.3, 1]
+        case "front":
+            transform.columns.3 = [0, 0, -1.9, 1]
+        case "corner":
+            // Front left corner, to see the left flipper button on the side.
+            transform = simd_mul(transform, simd_float4x4(simd_quatf(angle: -0.9, axis: [0, 1, 0])))
+            transform.columns.3 = [0.1, 0, -2.1, 1]
+        case "top":
+            // Tip the cabinet back so the level Simulator camera looks down into the front of the playfield.
+            transform = simd_mul(transform, simd_float4x4(simd_quatf(angle: 0.9, axis: [1, 0, 0])))
+            transform.columns.3 = [0, 0, -1.25, 1]
+        default:
+            break
+        }
+    }
+
+    /// `--check-hold <left-flipper|start|coin|launch|plunger>` holds that input
+    /// after the checks so a screenshot can show the pressed button or pulled knob.
+    private func holdForScreenshot() async {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--check-hold"), arguments.indices.contains(index + 1) else { return }
+        let name = arguments[index + 1]
+        let buttons: [String: VPINBALL_VISION_INPUT] = [
+            "left-flipper": VPINBALL_VISION_LEFT_FLIPPER, "right-flipper": VPINBALL_VISION_RIGHT_FLIPPER,
+            "start": VPINBALL_VISION_START, "coin": VPINBALL_VISION_ADD_CREDIT, "launch": VPINBALL_VISION_LAUNCH_BALL
+        ]
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator holding \(name) for a screenshot")
+        let deadline = ContinuousClock.now + .seconds(40)
+        var reported = false
+        while ContinuousClock.now < deadline, !Task.isCancelled, ready {
+            if name == "plunger" {
+                _ = VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_HOLD, 0.6)
+            } else if let button = buttons[name] {
+                VPinballVisionSetButton(button, 1)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            if !reported {
+                reported = true
+                VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator held \(name): pressed buttons \(VPinballVisionPressedButtons()), plunger \(VPinballVisionPlungerPosition())")
+            }
+        }
+        if name == "plunger" {
+            _ = VPinballVisionSetPlunger(VPINBALL_VISION_PLUNGER_CANCEL, 0)
+        } else if let button = buttons[name] {
+            VPinballVisionSetButton(button, 0)
+        }
+        VPinballLog(VPINBALL_LOG_LEVEL_INFO, "Simulator released \(name)")
+    }
+
     private func checkControls() async {
         while !Task.isCancelled && compositor?.hasPresentedTable == false {
             try? await Task.sleep(for: .milliseconds(100))
@@ -849,6 +911,7 @@ private final class NativePlayer {
                 if !Task.isCancelled { showMenu() }
             }
         }
+        await holdForScreenshot()
     }
 
     private func checkRoomPlacement() async {

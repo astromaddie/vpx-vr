@@ -1285,6 +1285,17 @@ STDMETHODIMP Plunger::put_MechStrength(float newVal)
 }
 
 #ifdef VPX_VISIONOS_HEADSET
+float Plunger::GetPullFromRest() const
+{
+   if (!m_phitplunger)
+      return 0.f;
+   const auto& rod = m_phitplunger->m_plungerMover;
+   if (rod.m_frameEnd == rod.m_frameStart || rod.m_restPos >= 1.f)
+      return 0.f;
+   const float frame = (rod.m_frameEnd - rod.m_pos) / (rod.m_frameEnd - rod.m_frameStart);
+   return saturate((frame - rod.m_restPos) / (1.f - rod.m_restPos));
+}
+
 bool Plunger::ReleaseMechanicalPull(float pull)
 {
    if (!m_phitplunger || !m_d.m_mechPlunger || m_d.m_autoPlunger)

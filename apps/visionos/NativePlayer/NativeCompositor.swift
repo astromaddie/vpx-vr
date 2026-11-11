@@ -8,9 +8,44 @@ import QuartzCore
 import simd
 import SwiftUI
 
-struct NativeLayerConfiguration: CompositorLayerConfiguration {
+/// Compositor lines go to os_log and to VPX's own `vpinball.log`, which can be
+/// pulled from the app container after a session nobody was watching live.
+/// Lines from before VPX starts its log wait until `vpxLogStarted()`.
+enum CompositorLog {
     private static let log = Logger(subsystem: "org.vpinball.vpxvision.player", category: "Compositor")
+    private static let pending = OSAllocatedUnfairLock<[(String, Bool)]?>(initialState: [])
 
+    static func info(_ message: String) { write(message, error: false) }
+    static func error(_ message: String) { write(message, error: true) }
+
+    static func vpxLogStarted() {
+        let lines = pending.withLock { state -> [(String, Bool)] in
+            defer { state = nil }
+            return state ?? []
+        }
+        for (message, error) in lines { send(message, error: error) }
+    }
+
+    private static func write(_ message: String, error: Bool) {
+        if error {
+            log.error("\(message, privacy: .public)")
+        } else {
+            log.info("\(message, privacy: .public)")
+        }
+        let waiting = pending.withLock { state -> Bool in
+            guard state != nil else { return false }
+            state?.append((message, error))
+            return true
+        }
+        if !waiting { send(message, error: error) }
+    }
+
+    private static func send(_ message: String, error: Bool) {
+        VPinballLog(error ? VPINBALL_LOG_LEVEL_ERROR : VPINBALL_LOG_LEVEL_INFO, "Compositor: " + message)
+    }
+}
+
+struct NativeLayerConfiguration: CompositorLayerConfiguration {
     /// Launch with `-Foveation NO` to compare against the uniform drawable.
     static var foveationAllowed: Bool { UserDefaults.standard.object(forKey: "Foveation") as? Bool ?? true }
 
@@ -42,11 +77,11 @@ struct NativeLayerConfiguration: CompositorLayerConfiguration {
             configuration.depthFormat = .depth32Float
         }
         let selection = "layout \(configuration.layout), color \(configuration.colorFormat.rawValue), depth \(configuration.depthFormat.rawValue), near \(configuration.defaultDepthRange.y)"
-        Self.log.info("Layer: \(selection, privacy: .public)")
+        CompositorLog.info("Layer: \(selection)")
         let quality = foveation ? String(format: "%.2f", configuration.maxRenderQuality.rawValue) : "n/a"
         let defaultQuality = String(format: "%.2f", capabilities.defaultRenderQuality.rawValue)
         let support = "supported \(capabilities.supportsFoveation), allowed \(Self.foveationAllowed)"
-        Self.log.info("Layer foveation: \(foveation ? "on" : "off", privacy: .public) (\(support, privacy: .public)), max render quality \(quality, privacy: .public), default \(defaultQuality, privacy: .public)")
+        CompositorLog.info("Layer foveation: \(foveation ? "on" : "off") (\(support)), max render quality \(quality), default \(defaultQuality)")
     }
 }
 
@@ -143,7 +178,7 @@ final class NativeCompositor: @unchecked Sendable {
         descriptor.textureType = .type2DArray
         descriptor.width = eyeSize
         descriptor.height = eyeSize
-        Self.log.info("VPX eye targets: \(eyeSize) × \(eyeSize)")
+        CompositorLog.info("VPX eye targets: \(eyeSize) × \(eyeSize)")
         descriptor.arrayLength = 2
         descriptor.storageMode = .private
         descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
@@ -175,7 +210,7 @@ final class NativeCompositor: @unchecked Sendable {
 
         if layer.configuration.isFoveationEnabled {
             layer.renderQuality = .init(rawValue: NativeLayerConfiguration.renderQuality)
-            Self.log.info("Render quality: \(String(format: "%.2f", layer.renderQuality.rawValue), privacy: .public)")
+            CompositorLog.info("Render quality: \(String(format: "%.2f", layer.renderQuality.rawValue))")
         }
     }
 
@@ -322,7 +357,7 @@ final class NativeCompositor: @unchecked Sendable {
             if drewTable {
                 pictureCount += 1
                 if pictureCount == 1, let viewport = drawable.views.first?.textureMap.viewport {
-                    Self.log.info("Compositor eye viewport: \(Int(viewport.width)) × \(Int(viewport.height)), \(drawable.views.count) views")
+                    CompositorLog.info("Compositor eye viewport: \(Int(viewport.width)) × \(Int(viewport.height)), \(drawable.views.count) views")
                 }
                 logCopyPath(drawable)
                 #if targetEnvironment(simulator)
@@ -389,7 +424,7 @@ final class NativeCompositor: @unchecked Sendable {
         }
         guard let line else { return }
         let quality = layer.configuration.isFoveationEnabled ? String(format: ", render quality %.2f", layer.renderQuality.rawValue) : ""
-        Self.log.info("\(line, privacy: .public)\(quality, privacy: .public)")
+        CompositorLog.info(line + quality)
     }
 
     private static func copyPath(for drawable: LayerRenderer.Drawable) -> CopyPath {
@@ -418,15 +453,15 @@ final class NativeCompositor: @unchecked Sendable {
         let size = "drawable texture \(texture.width) × \(texture.height) × \(texture.arrayLength)"
         switch path {
         case .uniform:
-            Self.log.info("Compositor path: uniform, no rate map, \(size, privacy: .public)")
+            CompositorLog.info("Compositor path: uniform, no rate map, \(size)")
         case .viewMaps, .layeredMap:
             let maps = drawable.rasterizationRateMaps
             let map = maps[0]
             let physical = map.physicalSize(layer: 0)
             let kind = path == .layeredMap ? "layered pass with one map of \(map.layerCount) layers" : "a pass per view with \(maps.count) maps"
-            Self.log.info("Compositor path: foveated, \(kind, privacy: .public), logical \(map.screenSize.width) × \(map.screenSize.height), physical \(physical.width) × \(physical.height), \(size, privacy: .public)")
+            CompositorLog.info("Compositor path: foveated, \(kind), logical \(map.screenSize.width) × \(map.screenSize.height), physical \(physical.width) × \(physical.height), \(size)")
         case .unsupportedMaps(let count):
-            Self.log.error("Compositor path: \(count) rate maps for \(drawable.views.count) views is not handled, drawing without them, \(size, privacy: .public)")
+            CompositorLog.error("Compositor path: \(count) rate maps for \(drawable.views.count) views is not handled, drawing without them, \(size)")
         }
     }
 

@@ -6,6 +6,7 @@
 #include "renderer/RenderTarget.h"
 #include "core/FileLocator.h"
 #include "core/VPApp.h"
+#include "core/player.h"
 #include "parts/Material.h"
 #include "parts/Collection.h"
 #include "parts/bumper.h"
@@ -499,6 +500,11 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
    }
    string variantReason;
    const VC::Variant variant = VC::ChooseVariant(plungers, variantReason);
+   Plunger* manualPlunger = nullptr;
+   for (auto* part : table->GetParts())
+      if (part->GetItemType() == eItemPlunger)
+         if (auto* plunger = static_cast<Plunger*>(part); !manualPlunger && !plunger->m_d.m_autoPlunger && plunger->m_d.m_visible)
+            manualPlunger = plunger;
 
    VC::GlassInput glassInput;
    glassInput.tableArea = (table->m_right - table->m_left) * (table->m_bottom - table->m_top);
@@ -603,6 +609,53 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
       parts.push_back({ &partSpec, part, offset });
    }
 
+   // Both flipper buttons are one mesh. Split it at the playfield centre so
+   // each button can be pushed in on its own.
+   VC::PartSpec leftButtonSpec, rightButtonSpec;
+   if (const auto buttons = std::ranges::find_if(parts, [](const LoadedPart& p) { return p.spec->name == "FlipperButtons"; });
+       buttons != parts.end())
+   {
+      leftButtonSpec = *buttons->spec;
+      leftButtonSpec.name = "FlipperButtonLeft";
+      rightButtonSpec = *buttons->spec;
+      rightButtonSpec.name = "FlipperButtonRight";
+      const float midX = (table->m_left + table->m_right) * 0.5f;
+      const Mesh& both = buttons->primitive->m_mesh;
+      auto* right = Primitive::COMCreate();
+      right->Init(0.f, 0.f, false);
+      Mesh left;
+      right->m_mesh.m_vertices.clear();
+      right->m_mesh.m_indices.clear();
+      vector<int> remap[2] { vector<int>(both.m_vertices.size(), -1), vector<int>(both.m_vertices.size(), -1) };
+      for (size_t i = 0; i + 2 < both.m_indices.size(); i += 3)
+      {
+         const unsigned int* tri = &both.m_indices[i];
+         const bool isRight = both.m_vertices[tri[0]].x + both.m_vertices[tri[1]].x + both.m_vertices[tri[2]].x > midX * 3.f;
+         Mesh& mesh = isRight ? right->m_mesh : left;
+         for (int k = 0; k < 3; ++k)
+         {
+            int& index = remap[isRight][tri[k]];
+            if (index < 0)
+            {
+               index = static_cast<int>(mesh.m_vertices.size());
+               mesh.m_vertices.push_back(both.m_vertices[tri[k]]);
+            }
+            mesh.m_indices.push_back(static_cast<unsigned int>(index));
+         }
+      }
+      if (!left.m_indices.empty() && !right->m_mesh.m_indices.empty())
+      {
+         buttons->primitive->m_mesh.m_vertices = std::move(left.m_vertices);
+         buttons->primitive->m_mesh.m_indices = std::move(left.m_indices);
+         buttons->primitive->m_mesh.UpdateBounds();
+         right->m_mesh.UpdateBounds();
+         buttons->spec = &leftButtonSpec;
+         parts.push_back({ &rightButtonSpec, right, {} });
+      }
+      else
+         right->Release();
+   }
+
    // Inner walls under the rails and lockbar, two triangles per quad facing inward.
    auto* walls = Primitive::COMCreate();
    walls->Init(0.f, 0.f, false);
@@ -688,6 +741,20 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
    auto* body = AddVisionPartGroup(table, "VRCab_Cabinet", SR_CABINET, modes);
    auto* feet = AddVisionPartGroup(table, "VRCab_Feet", SR_CABINET_FEET, modes);
    std::unordered_map<string, VC::Point> rigidOffsets;
+   auto& n = m_visionNeutral;
+   n = {};
+   // A few millimetres of button travel, as on the real switches.
+   const float buttonTravel = MTOVPU(0.004f);
+   const float flipperButtonTravel = MTOVPU(0.005f);
+   const std::unordered_map<std::string_view, std::pair<VisionNeutralCabinet::Moving*, Vertex3Ds>> moving {
+      { "FlipperButtonLeft", { &n.leftFlipperButton, { flipperButtonTravel, 0.f, 0.f } } },
+      { "FlipperButtonRight", { &n.rightFlipperButton, { -flipperButtonTravel, 0.f, 0.f } } },
+      { "StartButton", { &n.startButton, { 0.f, -buttonTravel, 0.f } } },
+      { "CoinInserts", { &n.coinInserts, { 0.f, -buttonTravel, 0.f } } },
+      { "LaunchButton", { &n.launchCap, { 0.f, -buttonTravel, 0.f } } },
+      // The knob comes toward the player. UpdateVisionNeutralControls sets the length.
+      { "Plunger", { &n.knob, { 0.f, 1.f, 0.f } } },
+   };
    for (auto& [partSpec, part, offset] : parts)
    {
       part->SetName(table->GetUniqueName("VRCab_" + partSpec->name));
@@ -706,6 +773,17 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
       part->m_d.m_backfacesEnabled = false;
       part->m_d.m_disableLightingTop = 0.f;
       part->m_d.m_disableLightingBelow = 1.f;
+      if (const auto it = moving.find(partSpec->name); it != moving.end())
+      {
+         // Moving parts are drawn every frame rather than baked into the static pass.
+         part->m_d.m_staticRendering = false;
+         *it->second.first = { part, it->second.second };
+      }
+      if (partSpec->name == "CoinInserts")
+      {
+         // Lit coin inserts, like the glowing reject buttons on Meteor's coin door art.
+         part->m_d.m_disableLightingTop = 1.f;
+      }
       table->AddPart(part);
       part->Release();
       rigidOffsets[partSpec->name] = offset;
@@ -719,9 +797,9 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
       return Vertex3Ds { static_cast<float>(p[0]), static_cast<float>(p[1]), static_cast<float>(p[2]) };
    };
    const auto half = [](const VC::ButtonAnchor& a) { return Vertex3Ds { static_cast<float>(a.half[0]), 0.f, static_cast<float>(a.half[1]) }; };
-   auto& n = m_visionNeutral;
    n.active = true;
    n.launchButton = variant == VC::Variant::LaunchButton;
+   n.tablePlunger = n.launchButton ? nullptr : manualPlunger;
    n.fitSlope = table->GetPlayfieldSlope();
    n.start = anchor(controls.start);
    n.startHalf = half(controls.start);
@@ -768,6 +846,32 @@ bool VRDevice::AddVisionNeutralCabinet(PinTable* table)
          << RADTOANG(static_cast<float>(atan(fit.railSlope))) << " deg, plunger x " << fit.plungerX << ", lockbar " << fit.lockbarZ << " VPU, rail above playfield "
          << fit.RailTopZ(fit.yFront) - fit.PlayfieldZ(fit.yFront) << " / " << fit.RailTopZ(fit.yBack) - fit.PlayfieldZ(fit.yBack) << " VPU";
    return true;
+}
+
+void VRDevice::UpdateVisionNeutralControls()
+{
+   auto& n = m_visionNeutral;
+   if (!n.active || !g_pplayer)
+      return;
+   const auto& input = g_pplayer->m_pininput;
+   const auto push = [](const VisionNeutralCabinet::Moving& control, float amount)
+   {
+      if (control.part)
+         control.part->m_d.m_vPosition = control.travel * amount;
+   };
+   const auto pressed = [&input](unsigned int action) { return input.IsPressed(action) ? 1.f : 0.f; };
+   push(n.leftFlipperButton, pressed(input.GetLeftFlipperActionId()));
+   push(n.rightFlipperButton, pressed(input.GetRightFlipperActionId()));
+   push(n.startButton, pressed(input.GetStartActionId()));
+   push(n.coinInserts, max(pressed(input.GetAddCreditActionId(0)), pressed(input.GetAddCreditActionId(1))));
+   push(n.launchCap, pressed(input.GetLaunchBallActionId()));
+   if (n.knob.part && n.tablePlunger)
+   {
+      // Follow the table's rod, so the knob comes out with the hand and springs
+      // back with the plunger's own physics. A full pull matches the 6 cm the
+      // hand controls take for a full pull, in real-world size.
+      push(n.knob, n.tablePlunger->GetPullFromRest() * MTOVPU(0.06f) / max(m_scale, 0.1f));
+   }
 }
 
 void VRDevice::UpdateVisionLegacyRoomPosition(ModelViewProj& mvp) const
@@ -857,6 +961,7 @@ void VRDevice::RenderVisionFrame(RenderDevice* rd, const std::function<bool(Rend
       m_sceneProj[eye] = sceneScale * m_roomProj[eye];
    }
    UpdateSpatialAudio(true);
+   UpdateVisionNeutralControls();
    m_predictedDisplayTimestamp = static_cast<float>(usec() / 1e6) + frame.secondsUntilPresentation;
    const bool rendered = submit(target.get());
    m_visionHost.endFrame(m_visionHost.user, rendered);

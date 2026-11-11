@@ -142,6 +142,10 @@ class IEditable;
 class MeshBuffer;
 class PinTable;
 class RenderTarget;
+#ifdef VPX_VISIONOS_HEADSET
+class Plunger;
+class Primitive;
+#endif
 
 class VRDevice final
 {
@@ -255,6 +259,7 @@ private:
    void ConfigureVisionRoom(PinTable* table);
    void AddVisionStockGeometry(PinTable* table, bool cabinet, bool room, bool gorgarCoinDoor);
    bool AddVisionNeutralCabinet(PinTable* table);
+   void UpdateVisionNeutralControls();
    // The neutral cabinet's fitted controls, in cabinet space (VPX units).
    struct VisionNeutralCabinet
    {
@@ -262,6 +267,15 @@ private:
       bool launchButton = false;
       float fitSlope = 0.f; // playfield slope the cabinet was fitted to, kept level
       Vertex3Ds start, startHalf, coin, coinHalf, leftFlipper, rightFlipper, plunger, launch, launchHalf;
+      // Hardware that moves with the input: pushed in while pressed, or the
+      // knob pulled out with the table's plunger. Travel is in cabinet VPU.
+      struct Moving
+      {
+         Primitive* part = nullptr;
+         Vertex3Ds travel { 0.f, 0.f, 0.f };
+      };
+      Moving leftFlipperButton, rightFlipperButton, startButton, coinInserts, launchCap, knob;
+      Plunger* tablePlunger = nullptr;
    };
    VisionNeutralCabinet m_visionNeutral;
    VPINBALL_VISION_HOST m_visionHost{};
