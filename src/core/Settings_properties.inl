@@ -6,6 +6,12 @@
       #define VPX_STANDALONE_XR_DEFAULTS false
    #endif
 #endif
+// Packed HDR targets also suit the Vision Pro, whose tile GPU is bound by memory bandwidth at its eye sizes
+#if VPX_STANDALONE_XR_DEFAULTS || defined(VPX_VISIONOS_HEADSET)
+   #define VPX_PACKED_HDR_DEFAULT true
+#else
+   #define VPX_PACKED_HDR_DEFAULT false
+#endif
 
 // Versions
 PropString(Version, VPinball, "VPX Version"s, "VPX version that saved this file"s, string(VP_VERSION_STRING_DIGITS));
@@ -159,7 +165,7 @@ PropBool(Player, ForceAnisotropicFiltering, "Force Anisotropic Filtering"s, "For
 PropBool(Player, CompressTextures, "Compress Textures"s, "Compress textures to GPU formats to reduce memory use (slow on first load, cached afterwards)"s, true);
 PropBool(Player, PackedHDR, "Packed HDR Render Targets"s,
    "Store the scene, reflection and bloom render targets as 32 bit packed float (RG11B10F, no alpha, lower precision) instead of 64 bit, halving their memory bandwidth (BGFX only, applied on next start). Overridden by the VPX_PACKED_HDR environment variable"s,
-   VPX_STANDALONE_XR_DEFAULTS);
+   VPX_PACKED_HDR_DEFAULT);
 PropBool(Player, UseNVidiaAPI, "Alternative Depth Buffer"s, "Use NVidia API to manage Depth Buffer on a DirectX 9 build. May solve some rendering issues"s, false);
 PropBool(Player, SoftwareVertexProcessing, "Software Vertex Processing"s, "Activate this on a DirectX 9 build, if you have issues using an old Intel graphics chip"s, false);
 PropBool(Player, DisableAO, "Disable Ambient Occlusion"s, ""s, false);
