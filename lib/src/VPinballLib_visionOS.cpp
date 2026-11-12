@@ -68,10 +68,12 @@ VPINBALLAPI void VPinballVisionTick(void)
    lib.AppIterate();
 
    // Log each plumb tilt, with the largest swing of the second before it, for the hand-shove wear tests.
+   // The bob can touch the ring many times in one swing, so contacts within a second of the last one
+   // belong to the same tilt.
    static const Player* player = nullptr;
-   static int tilts = 0;
+   static int tilts = 0, episodes = 0;
    static float peak = 0.f;
-   static uint64_t peakAt = 0;
+   static uint64_t peakAt = 0, lastContact = 0;
    if (g_pplayer && g_pplayer->m_physics)
    {
       const auto& plumb = g_pplayer->m_physics->m_plumbHandler;
@@ -79,6 +81,7 @@ VPINBALLAPI void VPinballVisionTick(void)
       {
          player = g_pplayer;
          tilts = plumb.GetPlumbTiltIndex();
+         episodes = 0;
          peak = 0.f;
       }
       const auto& pos = plumb.GetPlumbPos();
@@ -92,7 +95,9 @@ VPINBALLAPI void VPinballVisionTick(void)
       if (plumb.GetPlumbTiltIndex() != tilts)
       {
          tilts = plumb.GetPlumbTiltIndex();
-         PLOGI << "Vision Pro plumb tilt " << tilts << ": swing reached " << RADTOANG(peak) << " degrees against a " << RADTOANG(plumb.GetPlumbTiltThreshold()) << " degree threshold";
+         if (now - lastContact > 1000000)
+            PLOGI << "Vision Pro plumb tilt " << ++episodes << ": swing reached " << RADTOANG(peak) << " degrees against a " << RADTOANG(plumb.GetPlumbTiltThreshold()) << " degree threshold";
+         lastContact = now;
       }
    }
    else

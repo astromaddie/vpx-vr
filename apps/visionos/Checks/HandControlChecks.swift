@@ -6,6 +6,10 @@ import simd
 @main
 struct HandControlChecks {
     static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--recordings"), CommandLine.arguments.indices.contains(index + 1) {
+            checkRecordings(CommandLine.arguments[index + 1])
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--replay") {
             replay(CommandLine.arguments.dropFirst(index + 1).map { $0 })
             return
@@ -289,10 +293,14 @@ struct HandControlChecks {
         precondition(feed(.right, [0.18, 0, -1], roll: true).isEmpty)
         precondition(feed(.right, [-0.18, 0, -1], roll: true) == [.flipper(.right, pressed: true)])
         precondition(feed(.left, [0.12, 0, -1], arm: nil, roll: true).isEmpty)
+        // The hold reads the median of three samples, so a reference change takes one more.
+        precondition(feed(.left, straight).isEmpty)
         precondition(feed(.left, straight) == [.flipper(.left, pressed: false)])
         precondition(feed(.right, [-0.18, 0, -1], fist: true).isEmpty)
+        precondition(feed(.right, straight, fist: true).isEmpty)
         precondition(feed(.right, straight, fist: true) == [.flipper(.right, pressed: false)])
         precondition(feed(.right, [-0.18, 0, -1], fist: true) == [.flipper(.right, pressed: true)])
+        precondition(feed(.right, straight, fist: true).isEmpty)
         precondition(feed(.right, straight, fist: true) == [.flipper(.right, pressed: false)])
         precondition(controls.reset().isEmpty)
         precondition(feed(.left, straight, arm: nil).isEmpty)
@@ -317,6 +325,7 @@ struct HandControlChecks {
         precondition(grip(0, direction: straight, pose: sideways).isEmpty)
         precondition(grip(0, direction: inward, pose: sideways) == [.flipper(.right, pressed: true)])
         precondition(grip(0, direction: inward, pose: palmDown).isEmpty)
+        precondition(grip(0, direction: straight, pose: sideways).isEmpty)
         precondition(grip(0, direction: straight, pose: sideways) == [.flipper(.right, pressed: false)])
         precondition(grip(0, direction: straight, pose: palmDown) == [.pullPlunger(0)])
         precondition(grip(0.07, direction: inward, pose: palmDown) == [.pullPlunger(1)])
@@ -347,14 +356,17 @@ struct HandControlChecks {
         precondition(feed(17).isEmpty)
         precondition(feed(15).isEmpty)
         precondition(feed(13) == [.flipper(.right, pressed: false)])
+        // A flick that overshoots and settles 8 degrees back onto a held bend stays down,
+        // as the build 30 hold recordings did. Relaxing 5 degrees from there releases.
         precondition(feed(24) == [.flipper(.right, pressed: true)])
-        precondition(feed(32).isEmpty)
-        precondition(feed(33).isEmpty)
-        precondition(feed(29).isEmpty)
-        precondition(feed(27).isEmpty)
-        precondition(feed(25) == [.flipper(.right, pressed: false)])
+        for angle: Float in [32, 33, 29, 27, 25] { precondition(feed(angle).isEmpty) }
+        for _ in 0..<8 { precondition(feed(26).isEmpty) }
+        precondition(feed(22).isEmpty)
+        precondition(feed(20).isEmpty)
+        precondition(feed(19) == [.flipper(.right, pressed: false)])
         precondition(feed(36) == [.flipper(.right, pressed: true)])
-        // A quick relaxation of 10 degrees releases at once.
+        // Once settled, a quick relaxation of 10 degrees releases at once.
+        for _ in 0..<10 { precondition(feed(36).isEmpty) }
         precondition(feed(25) == [.flipper(.right, pressed: false)])
         precondition(feed(36) == [.flipper(.right, pressed: true)])
         // A held wrist flipper rides out a short gap and drops after 250 ms.
@@ -596,11 +608,11 @@ struct HandControlChecks {
                 let s = Self.minimumJerk(Float(step) / Float(frames))
                 hands(left * s, right * s, rightBend: rightBend(step))
             }
-            for step in 1...returnFrames {
+            for step in stride(from: 1, through: returnFrames, by: 1) {
                 let s = 1 - Self.minimumJerk(Float(step) / Float(returnFrames))
                 hands(left * s, right * s)
             }
-            still(25)
+            if returnFrames > 0 { still(25) }
         }
     }
 
@@ -615,13 +627,24 @@ struct HandControlChecks {
         rig.stroke(left: [-0.08, 0, 0.10], frames: 25)
         precondition(rig.shoves.isEmpty && rig.flips.isEmpty, "Repositioning moved the cabinet: \(rig.shoves)")
 
-        // A firm two-hand shove right, 5 cm in 120 ms, with a right flip halfway.
-        // The way back doesn't shove.
-        rig.stroke(left: [0.05, 0, 0], right: [0.05, 0, 0], frames: 11, rightBend: { $0 >= 5 ? 24 : 0 })
+        // A two-hand shove right, 5 cm in 120 ms. A right wrist bend in its first
+        // 150 ms is the hand overrunning the arm, as in the build 30 recordings, so it
+        // doesn't flip. A flick once the hands have stopped does. The way back doesn't shove.
+        rig.stroke(left: [0.05, 0, 0], right: [0.05, 0, 0], frames: 11, returnFrames: 0, rightBend: { $0 >= 5 ? 24 : 0 })
         precondition(rig.shoves.count == 1 && rig.shoves[0].x > 0 && abs(rig.shoves[0].y) < 0.3 * rig.shoves[0].x)
-        precondition(rig.flips.first == .flipper(.right, pressed: true), "No flip mid-shove: \(rig.flips)")
+        precondition(rig.flips.isEmpty, "Flip from the shoving hand: \(rig.flips)")
+        for _ in 0..<10 { rig.hands([0.05, 0, 0], [0.05, 0, 0]) }
+        rig.hands([0.05, 0, 0], [0.05, 0, 0], rightBend: 24)
+        precondition(rig.flips.first == .flipper(.right, pressed: true), "No flip after the shove: \(rig.flips)")
+        for step in 1...30 {
+            let back = SIMD3<Float>(0.05 * (1 - ShoveRig.minimumJerk(Float(step) / 30)), 0, 0)
+            rig.hands(back, back)
+        }
+        rig.still(25)
         let firm = simd_length(rig.shoves[0])
-        precondition((4.5...10.3).contains(firm), "Firm shove strength \(firm)")
+        // Recorded firm shoves moved each hand at 1.5 to 3.6 m/s. This one peaks near
+        // 0.8 m/s per hand, so it lands at about two thirds of a strong nudge.
+        precondition((3.5...6.0).contains(firm), "Medium shove strength \(firm)")
         // Forward and back with both hands.
         rig.stroke(left: [0, 0, -0.05], right: [0, 0, -0.05], frames: 11)
         precondition(rig.shoves.count == 2 && rig.shoves[1].y < 0 && abs(rig.shoves[1].x) < 0.3 * -rig.shoves[1].y)
@@ -630,7 +653,7 @@ struct HandControlChecks {
 
         // One-hand slaps inward, from light to hard, have proportional strength.
         var slaps: [Float] = []
-        for distance: Float in [0.02, 0.04, 0.07] {
+        for distance: Float in [0.03, 0.05, 0.08] {
             let count = rig.shoves.count
             rig.stroke(left: [distance, 0, 0], frames: 9)
             precondition(rig.shoves.count == count + 1 && rig.shoves.last!.x > 0, "Left slap \(distance) m: \(rig.shoves)")
@@ -655,7 +678,7 @@ struct HandControlChecks {
         }
         rig.still(30)
         precondition(rig.flips.count == flipsBefore, "Arm translation flipped: \(rig.flips.dropFirst(flipsBefore))")
-        print(String(format: "Shoves passed: repositioning ignored, firm shove %.1f m/s2 with a flip mid-shove, return ignored, forward and back, slaps %.1f/%.1f/%.1f m/s2, letting go ignored, arm translation no flip",
+        print(String(format: "Shoves passed: repositioning ignored, two-hand shove %.1f m/s2 with the shoving hand's overrun ignored and a flick after it, return ignored, forward and back, slaps %.1f/%.1f/%.1f m/s2, letting go ignored, arm translation no flip",
                      firm, slaps[0], slaps[1], slaps[2]))
     }
 
@@ -702,7 +725,7 @@ struct HandControlChecks {
         precondition(dropNotes.count == 1, "\(dropNotes) \(events)")
         // A glitch that releases while the hand stays bent is noted as a drop.
         feed(0); feed(0); feed(12); feed(22)
-        for _ in 0..<10 { feed(22) }
+        for _ in 0..<20 { feed(22) }
         feed(10)
         for _ in 0..<15 { feed(22) }
         let glitchNotes = controls.takeNotes()
@@ -741,5 +764,86 @@ struct HandControlChecks {
             lines.forEach { print("  " + $0) }
             if !take.events.isEmpty { print("  live: " + take.events.joined(separator: "; ")) }
         }
+    }
+
+    /// Replays the build 30 headset takes and checks each against what its label asks.
+    /// Takes where ARKit lost the hands (both slap takes and Flip During Shoves) are
+    /// listed but not checked.
+    static func checkRecordings(_ folder: String) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder))?.filter { $0.hasSuffix(".json") }.sorted() ?? []
+        precondition(!names.isEmpty, "No recordings in \(folder)")
+        let strong = CabinetHandControls.Shove.strongNudge
+        var medians: [HandTake: Float] = [:]
+        for name in names {
+            let data = try! Data(contentsOf: URL(filePath: folder).appending(path: name))
+            let take = try! JSONDecoder().decode(CabinetHandRecording.self, from: data)
+            var controls = CabinetHandControls(layout: take.layout)
+            var shoves: [SIMD2<Float>] = []
+            var downAt: [CabinetHandSide: Double] = [:]
+            var presses: [(side: CabinetHandSide, length: Double)] = []
+            var bentDrops = 0
+            for sample in take.decoded {
+                let hand = sample.frame.map { CabinetHandSample(sample.side, frame: $0, layout: take.layout) }
+                for event in controls.update(sample.side, sample: hand, at: sample.time) + controls.expire(at: sample.time) {
+                    switch event {
+                    case let .shove(acceleration, update):
+                        if update, !shoves.isEmpty { shoves[shoves.count - 1] = acceleration } else { shoves.append(acceleration) }
+                    case let .flipper(side, pressed):
+                        if pressed { downAt[side] = sample.time } else if let start = downAt.removeValue(forKey: side) {
+                            presses.append((side, sample.time - start))
+                        }
+                    default: break
+                    }
+                }
+                bentDrops += controls.takeNotes().filter { $0.contains("dropped while bent") }.count
+            }
+            let end = take.decoded.last?.time ?? 0
+            for (side, start) in downAt { presses.append((side, end - start)) }
+            let strengths = shoves.map { simd_length($0) / strong }.sorted()
+            let median = strengths.isEmpty ? 0 : strengths[strengths.count / 2]
+            var verdict = "checked"
+            func expect(_ condition: Bool, _ message: String) {
+                precondition(condition, "\(take.take.title): \(message)")
+            }
+            switch take.take {
+            case .rest, .reposition, .quickFlips, .holdLeftFlipper, .holdRightFlipper, .thumbTuck, .pinch:
+                expect(shoves.isEmpty, "\(shoves.count) shoves")
+                if take.take == .rest { expect(presses.isEmpty, "\(presses.count) flips at rest") }
+                if take.take == .holdLeftFlipper || take.take == .holdRightFlipper {
+                    let side: CabinetHandSide = take.take == .holdLeftFlipper ? .left : .right
+                    let longest = presses.filter { $0.side == side }.map(\.length).max() ?? 0
+                    expect(longest >= 3.5, String(format: "longest hold %.2f s", longest))
+                    expect(bentDrops == 0, "\(bentDrops) holds dropped while bent")
+                }
+                if take.take == .quickFlips {
+                    let lengths = presses.map(\.length).sorted()
+                    expect(lengths.count >= 8 && lengths[lengths.count / 2] <= 0.15,
+                           "\(lengths.count) flips, median \(lengths.isEmpty ? 0 : lengths[lengths.count / 2]) s")
+                    expect(bentDrops == 0, "\(bentDrops) holds dropped while bent")
+                }
+            case .lightShoveLeft, .firmShoveLeft, .lightShoveRight, .firmShoveRight, .lightShoveForward, .firmShoveForward:
+                let labelled = shoves.filter { shove in
+                    switch take.take {
+                    case .lightShoveLeft, .firmShoveLeft: shove.x < 0 && abs(shove.x) > abs(shove.y)
+                    case .lightShoveRight, .firmShoveRight: shove.x > 0 && abs(shove.x) > abs(shove.y)
+                    default: shove.y < 0 && abs(shove.y) > abs(shove.x)
+                    }
+                }
+                expect(labelled.count >= 3 && labelled.count * 4 >= shoves.count * 3, "\(labelled.count) of \(shoves.count) shoves in the labelled direction")
+                expect(presses.isEmpty, "\(presses.count) flips while shoving")
+                medians[take.take] = median
+            default:
+                verdict = "not checked, the hands were mostly out of tracking"
+            }
+            print(String(format: "  %@: %d shoves (median %.0f%% of a strong nudge), %d flips, %d dropped while bent, %@",
+                         take.take.title, shoves.count, median * 100, presses.count, bentDrops, verdict))
+        }
+        for (light, firm) in [(HandTake.lightShoveLeft, HandTake.firmShoveLeft), (.lightShoveRight, .firmShoveRight),
+                              (.lightShoveForward, .firmShoveForward)] {
+            guard let lightMedian = medians[light], let firmMedian = medians[firm] else { continue }
+            precondition(lightMedian < firmMedian && (0.85...1.35).contains(firmMedian),
+                         "\(firm.title) median \(firmMedian) against \(light.title) \(lightMedian)")
+        }
+        print("Recordings passed: no shoves at rest, moving around, flipping or plunging; shoves in each labelled direction with light below firm and firm near a strong nudge; no flips while shoving; holds unbroken; quick flips release promptly")
     }
 }

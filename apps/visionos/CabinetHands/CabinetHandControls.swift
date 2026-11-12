@@ -364,11 +364,12 @@ struct CabinetHandControls {
         // bend, so the hand lagging or overrunning the arm at the end of a
         // shove doesn't count as a flick.
         let translating = shove.isTranslating(side, at: time)
+        let shoving = shove.isShoving(side, at: time)
         let buttons = switch side {
         case .left: left.update(.left, sample: sample, layout: layout, blockFlipper: blockFlipper,
-                                translating: translating, time: time, notes: &notes)
+                                translating: translating, shoving: shoving, time: time, notes: &notes)
         case .right: right.update(.right, sample: sample, layout: layout, blockFlipper: blockFlipper,
-                                  translating: translating, time: time, notes: &notes)
+                                  translating: translating, shoving: shoving, time: time, notes: &notes)
         }
         return buttons + plungerEvents + shoves
     }
@@ -395,25 +396,34 @@ struct CabinetHandControls {
     /// accelerometer cabinet. Strength and direction follow the hands.
     ///
     /// A shove starts from a hand that rested in the shove zone beside the
-    /// cabinet. It needs a sharp start: the mean acceleration from rest to the
-    /// onset speed must reach 5 m/s² with both hands moving together, or 6 m/s²
-    /// for one hand alone. Minimum-jerk models of an ordinary 10 cm reach take
-    /// about 100 ms to get to that speed (2 to 4.6 m/s²), while a 2 cm bump
-    /// in 100 ms gets there in about 30 ms (6.7 m/s²) and a slap faster still.
-    /// The strength follows the hand speed for the first 80 ms of the stroke.
+    /// cabinet, at 0.30 m/s or more. It needs a sharp start: the mean acceleration
+    /// from rest to that speed must reach 6 m/s² with both hands moving together,
+    /// or 8 m/s² for one hand alone. In the build 30 recordings, light shoves
+    /// started at 9 to 29 m/s² (a few at 5 to 7) and firm ones at 13 to 53 m/s²,
+    /// while moving the hands around peaked at 5.2 m/s². Flicks reach 15 m/s² but
+    /// move the wrist at no more than 0.48 m/s, which the strength floor drops.
+    /// The strength follows the combined hand speed for the first 80 ms of the
+    /// stroke, and a hand joining within 200 ms raises the same shove.
     struct Shove {
         static let restSpeed: Float = 0.10
-        static let onsetSpeed: Float = 0.22
-        static let pairedAcceleration: Float = 5
-        static let loneAcceleration: Float = 6
+        static let onsetSpeed: Float = 0.30
+        static let pairedAcceleration: Float = 6
+        static let loneAcceleration: Float = 8
         static let restWindow = 0.15
         static let dwell = 0.10
         static let velocityWindow = 0.030
         static let strokeWindow = 0.08
-        static let returnWindow = 0.40
-        /// Combined push speed for no nudge and for VPX's strong keyboard nudge.
-        static let gentleSpeed: Float = 0.15
-        static let firmSpeed: Float = 1.40
+        static let joinWindow = 0.20
+        /// Returns of firm forward shoves came up to 480 ms after the shove.
+        static let returnWindow = 0.60
+        /// Combined push speed (both hands added) for no nudge and for VPX's strong
+        /// keyboard nudge. Recorded light two-hand shoves pushed at 0.6 to 2.3 m/s
+        /// (median 1.3) and firm ones at 1.5 to 4.9 m/s (median 2.5). The curve
+        /// puts a firm shove at 100%, a light one near 55%, and the 0.74 m/s median
+        /// of play in build 30 at 30% instead of 47%, so it takes more to move.
+        static let gentleSpeed: Float = 0.35
+        static let firmSpeed: Float = 2.50
+        static let strengthCurve: Float = 0.7
         static let maxStrength: Float = 1.5
         /// VPX's NudgeSensor::StrongNudgeAcceleration.
         static let strongNudge: Float = 0.7 * 9.80665
@@ -432,11 +442,13 @@ struct CabinetHandControls {
             let start: Double
             var push: SIMD2<Float>
             var strength: Float
-            let hands: Set<Int>
+            var hands: Set<Int>
         }
 
         private var tracks = [Track(), Track()]
         private var stroke: Stroke?
+        /// The last shove, so a hand that joins it late raises it instead of shoving again.
+        private var lastStroke: Stroke?
         private var lastDirection: (direction: SIMD2<Float>, time: Double)?
         private(set) var lastShove: SIMD2<Float>?
 
@@ -448,6 +460,21 @@ struct CabinetHandControls {
             let track = tracks[side == .left ? 0 : 1]
             return time - track.lastStroke <= 0.15
                 || (time - track.velocityAt <= 0.05 && simd_length(track.velocity) >= Self.translatingSpeed)
+        }
+
+        /// A wrist that can't press a flipper: in the first 150 ms of its shove, still
+        /// moving at 0.45 m/s within 300 ms of it, or moving at 0.6 m/s or more.
+        /// In the build 30 recordings the inward hand's bend swung 20 to 34 degrees
+        /// through each light shove to the left, faster than a flick, peaking 60 to
+        /// 100 ms after the shove started as the arm slowed. In play, 62 of 75 shoves
+        /// pressed that hand's flipper within 150 ms. A fast reach did the same. The
+        /// wrist moved at 0.39 m/s or less at every deliberate press in the
+        /// recordings, and at 0.45 to 1.05 m/s at these.
+        func isShoving(_ side: CabinetHandSide, at time: Double) -> Bool {
+            let track = tracks[side == .left ? 0 : 1]
+            let since = time - track.lastStroke
+            let speed = time - track.velocityAt <= 0.05 ? simd_length(track.velocity) : 0
+            return since <= 0.15 || (since <= 0.30 && speed >= 0.45) || speed >= 0.6
         }
 
         mutating func expire(at time: Double) {
@@ -495,8 +522,13 @@ struct CabinetHandControls {
             let flat = SIMD2(velocity.x, velocity.z)
 
             if var stroke {
-                // Grow the shove in progress while the hands keep speeding up.
-                guard stroke.hands.contains(index) else { return [] }
+                // Grow the shove in progress while the hands keep speeding up. The
+                // other hand joins it when it moves the same way.
+                if !stroke.hands.contains(index) {
+                    guard simd_length(flat) >= 0.15, simd_dot(simd_normalize(flat), simd_normalize(stroke.push)) > 0.5 else { return [] }
+                    stroke.hands.insert(index)
+                    tracks[index].lastStroke = time
+                }
                 var push = SIMD2<Float>.zero
                 for hand in stroke.hands {
                     if let v = recent(hand, at: time) { push += Self.contribution(SIMD2(v.x, v.z), side: hand == 0 ? .left : .right, lone: stroke.hands.count == 1) }
@@ -506,6 +538,7 @@ struct CabinetHandControls {
                 stroke.push = push
                 stroke.strength = strength
                 self.stroke = stroke
+                lastStroke = stroke
                 lastShove = Self.acceleration(push, strength: strength)
                 return [.shove(lastShove!, update: true)]
             }
@@ -537,9 +570,24 @@ struct CabinetHandControls {
             // The way back after a shove isn't another shove.
             if let last = lastDirection, time - last.time <= Self.returnWindow,
                simd_dot(direction, last.direction) < -0.3 { return [] }
+            // The other hand often starts 90 to 110 ms after the first in a
+            // two-hand shove. It raises that shove rather than starting another.
+            if let last = lastStroke, time - last.start <= Self.joinWindow, !last.hands.contains(index),
+               simd_dot(direction, simd_normalize(last.push)) > 0.5 {
+                let joined = hands.count > 1 ? push : last.push + Self.contribution(flat, side: side, lone: false)
+                let strength = Self.strength(joined)
+                let merged = Stroke(start: time, push: joined, strength: max(strength, last.strength), hands: last.hands.union(hands))
+                stroke = merged
+                lastStroke = merged
+                for hand in hands { tracks[hand].lastStroke = time }
+                guard strength > last.strength * 1.1 else { return [] }
+                lastShove = Self.acceleration(joined, strength: strength)
+                return [.shove(lastShove!, update: true)]
+            }
             let strength = Self.strength(push)
             guard strength > 0 else { return [] }
             stroke = Stroke(start: time, push: push, strength: strength, hands: hands)
+            lastStroke = stroke
             lastDirection = (direction, time)
             for hand in hands { tracks[hand].lastStroke = time }
             lastShove = Self.acceleration(push, strength: strength)
@@ -554,8 +602,15 @@ struct CabinetHandControls {
             return SIMD2(flat.x * inward > 0 ? flat.x : 0, min(flat.y, 0))
         }
 
+        /// Pushing away or pulling uses the whole arm. Recorded forward shoves ran
+        /// 1.6 to 1.8 times the speed of side shoves of the same effort, so that
+        /// axis counts at 0.6 of its speed.
+        static let depthWeight: Float = 0.6
+
         static func strength(_ push: SIMD2<Float>) -> Float {
-            min(max((simd_length(push) - gentleSpeed) / (firmSpeed - gentleSpeed), 0), maxStrength)
+            let weighted = SIMD2(push.x, push.y * depthWeight)
+            let share = max((simd_length(weighted) - gentleSpeed) / (firmSpeed - gentleSpeed), 0)
+            return min(pow(share, strengthCurve), maxStrength)
         }
 
         private static func acceleration(_ push: SIMD2<Float>, strength: Float) -> SIMD2<Float> {
@@ -678,6 +733,7 @@ struct CabinetHandControls {
             layout: CabinetControlsLayout,
             blockFlipper: Bool,
             translating: Bool = false,
+            shoving: Bool = false,
             time: Double,
             notes: inout [String]
         ) -> [CabinetInput] {
@@ -693,7 +749,7 @@ struct CabinetHandControls {
                     usingForearm = nil
                     wristFlick = WristFlick()
                 } else {
-                    updateWristGesture(sample, side: side, translating: translating, at: time, notes: &notes)
+                    updateWristGesture(sample, side: side, translating: translating, shoving: shoving, at: time, notes: &notes)
                 }
             } else {
                 updateFlipper(sample, side: side, button: layout.flipper(side), mapped: layout.flipperCap(side) != nil)
@@ -722,7 +778,7 @@ struct CabinetHandControls {
         }
 
         private mutating func updateWristGesture(_ sample: CabinetHandSample?, side: CabinetHandSide, translating: Bool,
-                                                 at time: Double, notes: inout [String]) {
+                                                 shoving: Bool = false, at time: Double, notes: inout [String]) {
             guard let direction = sample?.fingerDirection, simd_length_squared(direction) > 1e-8 else {
                 // Keep a held flipper through the grace period.
                 guard !wristFlick.isDown else { return }
@@ -756,7 +812,7 @@ struct CabinetHandControls {
             lastBend = time
             // Without the arm direction, a moving arm turns the hand as a whole.
             if let drop = wristFlick.update(angle: angle, at: time, translating: translating,
-                                            allowPress: hasForearm || !translating) {
+                                            allowPress: hasForearm || !translating, moving: shoving) {
                 notes.append(String(format: "%@ flipper hold dropped while bent: the hand stayed at %.0f degrees or more of its %.0f degree bend, after %.0f ms held",
                                     side == .left ? "Left" : "Right", drop.bend, drop.peak, drop.held * 1000))
             }
@@ -791,10 +847,17 @@ struct CabinetHandControls {
         }
 
         /// The wrist flipper. A press needs an 8-degree inward bend at 140 degrees per
-        /// second or faster, or 14 degrees while the wrist is moving fast. A held press
-        /// follows the peak of the median of its last three samples, so one noisy
-        /// sample can't move it. It releases once that median relaxes 5 degrees from
-        /// the peak, or when a single sample relaxes 10 degrees.
+        /// second or faster, or 14 degrees while the wrist is moving fast.
+        ///
+        /// A held press works from the median of its last three samples, so one noisy
+        /// sample can't release it. Build 30 recordings showed why holds dropped: a
+        /// flick overshoots, then the wrist settles back 7 to 17 degrees onto a held
+        /// bend that is still 50 to 75% of the flick above where it started, and it
+        /// keeps drifting a few degrees a second while held. So for the first 200 ms
+        /// the press only releases when the hand comes back below half the flick.
+        /// After that it follows a held level that sinks at up to 15 degrees a second,
+        /// and releases when the median relaxes 5 degrees below that level, when one
+        /// sample relaxes 10 degrees, or when the hand is back below 35% of the flick.
         private struct WristFlick {
             private static let historyDuration = 0.10
             private static let pressAngle: Float = 8 * .pi / 180
@@ -802,12 +865,19 @@ struct CabinetHandControls {
             private static let pressSpeed: Float = 140 * .pi / 180
             private static let releaseRollback: Float = 5 * .pi / 180
             private static let quickRollback: Float = 10 * .pi / 180
+            private static let settleTime = 0.15
+            private static let settleShare: Float = 0.6
+            private static let heldShare: Float = 0.45
+            private static let levelLeak: Float = 20 * .pi / 180
 
             private struct Hold {
                 var base: Float
                 var peak: Float
                 var recent: [Float]
                 let since: Double
+                /// The held level once the flick has settled.
+                var level: Float?
+                var levelAt: Double = 0
                 var median: Float {
                     let sorted = recent.sorted()
                     return sorted[sorted.count / 2]
@@ -827,12 +897,15 @@ struct CabinetHandControls {
                 hold.base = angle - bend
                 hold.peak = angle
                 hold.recent = [angle]
+                hold.level = hold.level.map { _ in angle }
                 self.hold = hold
             }
 
             /// Returns the peak bend and hold time when a hold dropped while the hand stayed bent.
+            /// `moving` holds presses back and restarts the flick from the current bend,
+            /// so a swing that happened while the arm moved can't press afterwards.
             mutating func update(angle: Float, at time: Double, translating: Bool = false,
-                                 allowPress: Bool = true) -> (bend: Float, peak: Float, held: Double)? {
+                                 allowPress: Bool = true, moving: Bool = false) -> (bend: Float, peak: Float, held: Double)? {
                 var dropped: (bend: Float, peak: Float, held: Double)?
                 if var watch = released {
                     watch.lowest = min(watch.lowest, angle)
@@ -841,26 +914,40 @@ struct CabinetHandControls {
                         released = nil
                     } else if time - watch.at >= 0.15 || hold != nil {
                         released = nil
-                        dropped = ((watch.lowest - watch.bent + 0.7 * watch.peak) * 180 / .pi, watch.peak * 180 / .pi, watch.held)
+                        dropped = ((watch.lowest - watch.bent + 0.5 * watch.peak) * 180 / .pi, watch.peak * 180 / .pi, watch.held)
                     }
                 }
                 if var hold {
                     hold.recent = Array((hold.recent + [angle]).suffix(3))
                     let median = hold.median
-                    if hold.peak - median >= Self.releaseRollback || hold.peak - angle >= Self.quickRollback {
+                    hold.peak = max(hold.peak, median)
+                    let span = hold.peak - hold.base
+                    var release: Bool
+                    if time - hold.since < Self.settleTime {
+                        release = median < hold.base + Self.settleShare * span
+                    } else {
+                        let level = max(median, (hold.level ?? median) - Self.levelLeak * Float(time - hold.levelAt))
+                        release = median < hold.base + Self.heldShare * span
+                            || level - median >= Self.releaseRollback || level - angle >= Self.quickRollback
+                        hold.level = level
+                        hold.levelAt = time
+                    }
+                    if release {
                         self.hold = nil
                         history = [(angle, time)]
-                        let peak = hold.peak - hold.base
-                        // Still bent means at least 70% of the peak bend.
-                        // Judge by the samples after the release, so one glitch reads as a drop.
-                        released = (hold.base + 0.7 * peak, peak, time - hold.since, time, .infinity)
+                        // Still bent means at least half the flick. Judge by the samples
+                        // after the release, so one glitch reads as a drop.
+                        released = (hold.base + 0.5 * span, span, time - hold.since, time, .infinity)
                         return dropped
                     }
-                    hold.peak = max(hold.peak, median)
                     self.hold = hold
                     return dropped
                 }
 
+                if moving {
+                    history = [(angle, time)]
+                    return dropped
+                }
                 history.removeAll { time - $0.time > Self.historyDuration }
                 let minimum = translating ? Self.movingPressAngle : Self.pressAngle
                 if allowPress, let start = history.first(where: { previous in
